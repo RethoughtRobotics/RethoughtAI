@@ -5,10 +5,6 @@
 <p align="center"><b>RAI - Record · Adapt · Infer</b></p>
 
 <p align="center">
-  <img src="RAI.jpg" alt="RethoughtAI" width="80%" />
-</p>
-
-<p align="center">
   A ROS2-native pipeline for robot learning. Collect demonstrations, convert to training-ready datasets, and deploy trained policies.
 </p>
 
