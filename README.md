@@ -1,6 +1,7 @@
 
-
-<h1 align="center">RethoughtAI</h1>
+<h1 align="center">
+  <font color="#d9d2e9">R</font>ethought<font color="#8e7cc3">A</font><font color="#351c75">I</font>
+</h1>
 
 <p align="center"><b>RAI - Record · Adapt · Infer</b></p>
 
