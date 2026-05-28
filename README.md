@@ -4,7 +4,7 @@
 
 A ROS2-native pipeline for robot learning. Collect demonstrations, convert to training-ready datasets, and deploy trained policies — without leaving ROS2.
 
-![pipeline overview](RAI.png)
+![pipeline overview](RAI.jpg)
 
 ---
 
