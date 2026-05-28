@@ -47,7 +47,7 @@ class EpisodeBag:
         self._proc.wait()
 
 
-def run_session(session_dir: Path, config: dict, topics: list[str]) -> None:
+def run_session(session_dir: Path, config: dict, topics: list[str], viz: bool) -> None:
     max_cache = config["recording"].get("max_cache_duration", 0)
     trig = config["trigger"]
     episode = 0
@@ -56,7 +56,10 @@ def run_session(session_dir: Path, config: dict, topics: list[str]) -> None:
     success_evt = threading.Event()
     discard_evt = threading.Event()
 
-    _start_trigger(trig, start_evt, success_evt, discard_evt)
+    _start_ros(trig, config, start_evt, success_evt, discard_evt, viz)
+
+    if trig["type"] == "keyboard":
+        _start_keyboard(trig, start_evt, success_evt, discard_evt)
 
     click.echo(f"Session: {session_dir}")
     click.echo("Press start to begin an episode. Ctrl+C to end session.\n")
@@ -87,41 +90,43 @@ def run_session(session_dir: Path, config: dict, topics: list[str]) -> None:
         click.echo(f"\nSession ended — {episode} episode(s) recorded.")
 
 
-def _start_trigger(trig: dict, start_evt, success_evt, discard_evt) -> None:
-    target = _keyboard_trigger if trig["type"] == "keyboard" else _digital_io_trigger
-    threading.Thread(
-        target=target,
-        args=(trig, start_evt, success_evt, discard_evt),
-        daemon=True,
-    ).start()
+def _start_ros(trig: dict, config: dict, start_evt, success_evt, discard_evt, viz: bool) -> None:
+    needs_ros = trig["type"] == "digital_io" or viz
+    if not needs_ros:
+        return
 
-
-def _keyboard_trigger(trig: dict, start_evt, success_evt, discard_evt) -> None:
-    key_map = {
-        trig["start"]: start_evt,
-        trig["success"]: success_evt,
-        trig["discard"]: discard_evt,
-    }
-    click.echo(f"Keys — start: [{trig['start']}]  commit: [{trig['success']}]  discard: [{trig['discard']}]\n")
-    while True:
-        ch = click.getchar()
-        if ch in key_map:
-            key_map[ch].set()
-
-
-def _digital_io_trigger(trig: dict, start_evt, success_evt, discard_evt) -> None:
     try:
         import rclpy
-        from rclpy.node import Node
+        from rclpy.executors import MultiThreadedExecutor
     except ImportError:
-        raise RuntimeError("rclpy not found - source your ROS2 workspace first.")
+        raise RuntimeError("rclpy not found — source your ROS2 workspace first.")
 
+    rclpy.init()
+    nodes = []
+
+    if trig["type"] == "digital_io":
+        nodes.append(_make_trigger_node(trig, start_evt, success_evt, discard_evt))
+
+    if viz:
+        from recorder.viz import init_rerun, make_viz_node
+        init_rerun()
+        nodes.append(make_viz_node(config))
+
+    executor = MultiThreadedExecutor()
+    for node in nodes:
+        executor.add_node(node)
+
+    threading.Thread(target=executor.spin, daemon=True).start()
+
+
+def _make_trigger_node(trig: dict, start_evt, success_evt, discard_evt):
     try:
         from baxter_core_msgs.msg import DigitalIOState
     except ImportError:
         raise RuntimeError("baxter_core_msgs not found — source your Baxter workspace.")
 
-    rclpy.init()
+    from rclpy.node import Node
+
     node = Node("rai_recorder_trigger")
 
     def make_cb(evt):
@@ -133,5 +138,21 @@ def _digital_io_trigger(trig: dict, start_evt, success_evt, discard_evt) -> None
     node.create_subscription(DigitalIOState, trig["start"],   make_cb(start_evt),   10)
     node.create_subscription(DigitalIOState, trig["success"], make_cb(success_evt), 10)
     node.create_subscription(DigitalIOState, trig["discard"], make_cb(discard_evt), 10)
+    return node
 
-    rclpy.spin(node)
+
+def _start_keyboard(trig: dict, start_evt, success_evt, discard_evt) -> None:
+    key_map = {
+        trig["start"]: start_evt,
+        trig["success"]: success_evt,
+        trig["discard"]: discard_evt,
+    }
+    click.echo(f"Keys — start: [{trig['start']}]  commit: [{trig['success']}]  discard: [{trig['discard']}]\n")
+
+    def loop():
+        while True:
+            ch = click.getchar()
+            if ch in key_map:
+                key_map[ch].set()
+
+    threading.Thread(target=loop, daemon=True).start()

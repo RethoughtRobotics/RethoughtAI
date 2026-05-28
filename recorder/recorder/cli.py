@@ -42,28 +42,6 @@ def record(config, output, no_viz):
     config_path = resolve_config(config)
     cfg = yaml.safe_load(config_path.read_text())
     session_dir = make_session_dir(output, config_path)
-    run_session(session_dir, cfg, all_topics(cfg))
+    run_session(session_dir, cfg, all_topics(cfg), viz=not no_viz)
 
 
-@main.command()
-def stop():
-    """Stop the active recording session."""
-    click.echo("recorder stop — not yet implemented")
-
-
-@main.command()
-def commit():
-    """Commit the current snapshot buffer as a successful episode."""
-    click.echo("recorder commit — not yet implemented")
-
-
-@main.command()
-def discard():
-    """Discard the current snapshot buffer."""
-    click.echo("recorder discard — not yet implemented")
-
-
-@main.command()
-def status():
-    """Show currently subscribed topics."""
-    click.echo("recorder status — not yet implemented")
