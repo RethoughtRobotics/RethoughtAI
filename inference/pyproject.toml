@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=61"]
-build-backend = "setuptools.backends.legacy:BuildBackend"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "rai-inference"
@@ -15,5 +15,5 @@ dependencies = [
 [project.scripts]
 inference = "inference.cli:main"
 
-[tool.setuptools.packages.find]
-where = ["."]
+[tool.hatch.build.targets.wheel]
+packages = ["inference"]
