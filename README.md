@@ -24,9 +24,7 @@ RAI is a 3-step pipeline for learning from demonstrations with ROS2: record, ada
 
 ## The Pipeline
 
-<p align="center">
-  <img src="overview.png" alt="RAI" width="80%" />
-</p>
+<img src="overview.png" alt="RAI" width="100%" />
 
 **[recorder](recorder/)** — Record demonstrations to MCAP with live Rerun visualization. Trigger via physical buttons (Baxter, Sawyer) or keyboard (any robot).
 
