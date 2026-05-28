@@ -1,32 +1,46 @@
-# RethoughtAI
 
-**RAI - Record · Adapt · Infer**
 
-A ROS2-native pipeline for robot learning. Collect demonstrations, convert to training-ready datasets, and deploy trained policies — without leaving ROS2.
+<h1 align="center">RethoughtAI</h1>
 
-![pipeline overview](RAI.jpg)
+<p align="center"><b>RAI - Record · Adapt · Infer</b></p>
+
+<p align="center">
+  <img src="RAI.jpg" alt="RethoughtAI" width="80%" />
+</p>
+
+<p align="center">
+  A ROS2-native pipeline for robot learning. Collect demonstrations, convert to training-ready datasets, and deploy trained policies.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/ROS2_Jazzy-compatible-brightgreen?logo=ros&logoColor=white" />
+  <img src="https://img.shields.io/badge/ROS2_Kilted-compatible-brightgreen?logo=ros&logoColor=white" />
+  <img src="https://img.shields.io/badge/ROS2_Lyrical-compatible-brightgreen?logo=ros&logoColor=white" />
+  <img src="https://img.shields.io/badge/LeRobot-v3-brightgreen?logo=huggingface&logoColor=white" />
+  <img src="https://img.shields.io/badge/uv-workspace-brightgreen" />
+</p>
 
 ---
 
 ## Why
 
-RAI is a 3 step pipeline for learning from demonstrations with ROS2: record, adapter, and inference. Each package is designed to be modular and extensible, so you can use the whole pipeline or just the pieces you need.
+RAI is a 3-step pipeline for learning from demonstrations with ROS2: record, adapt, and infer.
 
 ---
 
 ## The Pipeline
 
 ```
-recorder  →  adapter  →  inference
+record  →  adapt  →  infer
  record       convert      deploy
  demos        to LeRobot   policy
 ```
 
-**[recorder](recorder/)** - Record demonstrations to MCAP with live Rerun visualization. Trigger via physical buttons (Baxter, Sawyer) or keyboard (any robot).
+**[recorder](recorder/)** — Record demonstrations to MCAP with live Rerun visualization. Trigger via physical buttons (Baxter, Sawyer) or keyboard (any robot).
 
-**[adapter](adapter/)** - Convert MCAP recordings to LeRobot v3 datasets, quality-filter episodes, and push to HuggingFace Hub.
+**[adapter](adapter/)** — Convert MCAP recordings to LeRobot v3 datasets, quality-filter episodes, and push to HuggingFace Hub.
 
-**[inference](inference/)** - Deploy a trained policy from HuggingFace back to your ROS2 robot.
+**[inference](inference/)** — Deploy a trained policy from HuggingFace back to your ROS2 robot.
 
 ---
 
@@ -50,7 +64,7 @@ cd RethoughtAI
 uv sync
 ```
 
-All three packages are installed into a single virtual environment. Use `uv run` to invoke any command.
+All three packages install into a single virtual environment.
 
 ```bash
 uv run recorder --help
@@ -64,26 +78,29 @@ uv run inference --help
 
 ```bash
 # 1. Record demonstrations
-recorder record --config recorder/configs/baxter.yaml
+uv run recorder record --config recorder/configs/baxter.yaml
 
-# 2. Convert to LeRobot dataset
-adapter convert --config recorder/configs/baxter.yaml --input ./recordings --push-to-hub yourname/your-dataset
+# 2. Convert to LeRobot dataset and push to HuggingFace
+uv run adapter convert --config recorder/configs/baxter.yaml \
+  --input ./recordings \
+  --push-to-hub yourname/your-dataset
 
 # 3. Train with LeRobot (standard LeRobot workflow)
 # https://github.com/huggingface/lerobot
 
 # 4. Deploy policy (coming soon)
-# inference run --config recorder/configs/baxter.yaml --model yourname/your-model
+# uv run inference run --config recorder/configs/baxter.yaml --model yourname/your-model
 ```
 
 ---
 
 ## Part of Rethought Robotics
 
-RAI is part of the [Rethought Robotics](https://github.com/RethoughtRobotics) ecosystem — bringing Baxter and Sawyer into the modern robotics stack.
-
-| Repo | What it does |
-|---|---|
-| [baxter-zenoh](https://github.com/RethoughtRobotics/baxter-zenoh) | ROS2 bridge for Baxter |
-| [BaxterSDK](https://github.com/RethoughtRobotics/BaxterSDK) | Tools, MoveIt2, pre-made scripts |
-| **RethoughtAI** | Robot learning pipeline |
+<p>
+  <a href="https://github.com/RethoughtRobotics/baxter-zenoh">
+    <img src="https://gh-card.dev/repos/RethoughtRobotics/baxter-zenoh.svg?fullname=" width="40%" />
+  </a>
+  <a href="https://github.com/RethoughtRobotics/BaxterSDK">
+    <img src="https://gh-card.dev/repos/RethoughtRobotics/BaxterSDK.svg?fullname=" width="40%" />
+  </a>
+</p>
