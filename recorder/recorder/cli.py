@@ -1,5 +1,23 @@
+import importlib.resources
+from pathlib import Path
+
 import click
+
 from recorder import __version__
+
+
+def resolve_config(path: str) -> Path:
+    p = Path(path)
+    if p.exists():
+        return p
+    bundled = importlib.resources.files("recorder") / "configs" / Path(path).name
+    try:
+        resolved = Path(str(bundled))
+        if resolved.exists():
+            return resolved
+    except (TypeError, FileNotFoundError):
+        pass
+    raise click.BadParameter(f"Config not found: {path}")
 
 
 @click.group()
@@ -10,13 +28,14 @@ def main():
 
 
 @main.command()
-@click.option("--config", required=True, type=click.Path(exists=True), help="Robot config YAML")
+@click.option("--config", required=True, help="Robot config YAML (name or path)")
 @click.option("--name", default=None, help="Episode name prefix")
 @click.option("--output", default="./recordings", show_default=True, help="Output directory")
 @click.option("--no-viz", is_flag=True, help="Disable Rerun visualization")
 def record(config, name, output, no_viz):
     """Start a recording session."""
-    click.echo(f"Loading config: {config}")
+    config_path = resolve_config(config)
+    click.echo(f"Loading config: {config_path}")
     click.echo("recorder record — not yet implemented")
 
 

@@ -18,3 +18,4 @@ recorder = "recorder.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["recorder"]
+artifacts = ["recorder/configs/*.yaml"]
