@@ -4,6 +4,7 @@ import click
 import yaml
 
 from recorder import __version__
+from recorder.session import make_session_dir, run_session
 
 
 def resolve_config(path: str) -> Path:
@@ -34,17 +35,14 @@ def main():
 
 @main.command()
 @click.option("--config", required=True, help="Robot config YAML (name or path)")
-@click.option("--name", default=None, help="Episode name prefix")
 @click.option("--output", default="./recordings", show_default=True, help="Output directory")
 @click.option("--no-viz", is_flag=True, help="Disable Rerun visualization")
-def record(config, name, output, no_viz):
+def record(config, output, no_viz):
     """Start a recording session."""
     config_path = resolve_config(config)
     cfg = yaml.safe_load(config_path.read_text())
-    click.echo(f"Robot:   {cfg['robot']}")
-    click.echo(f"Topics:  {all_topics(cfg)}")
-    click.echo(f"Trigger: {cfg['trigger']['type']}")
-    click.echo("recorder record — not yet implemented")
+    session_dir = make_session_dir(output, config_path)
+    run_session(session_dir, cfg, all_topics(cfg))
 
 
 @main.command()
