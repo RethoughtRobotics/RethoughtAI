@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.backends.legacy:BuildBackend"
+
+[project]
+name = "rai-inference"
+version = "0.1.0"
+description = "RAI Inference — deploy trained LeRobot policies to ROS2 robots"
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml",
+    "click",
+]
+
+[project.scripts]
+inference = "inference.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]

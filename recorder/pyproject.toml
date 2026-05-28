@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.backends.legacy:BuildBackend"
+
+[project]
+name = "rai-recorder"
+version = "0.1.0"
+description = "RAI Recorder — collect robot demonstrations and stream live to Rerun"
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml",
+    "click",
+    "rclpy",
+    "rerun-sdk",
+]
+
+[project.scripts]
+recorder = "recorder.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]

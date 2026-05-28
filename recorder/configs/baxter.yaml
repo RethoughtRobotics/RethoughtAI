@@ -1,0 +1,25 @@
+robot: baxter
+
+topics:
+  images:
+    - topic: /cameras/left/image_raw
+      key: observation.images.left
+    - topic: /cameras/right/image_raw
+      key: observation.images.right
+  state:
+    - topic: /robot/joint_states
+      key: observation.state
+  extra:
+    - /robot/end_effector/left/state
+    - /robot/end_effector/right/state
+
+trigger:
+  type: digital_io
+  start:   /robot/digital_io/left_itb_button0/state
+  success: /robot/digital_io/right_itb_button0/state
+  discard: /robot/digital_io/left_itb_button1/state
+
+recording:
+  fps: 30
+  snapshot_mode: true
+  max_cache_duration: 60

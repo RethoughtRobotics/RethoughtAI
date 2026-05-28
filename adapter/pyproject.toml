@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.backends.legacy:BuildBackend"
+
+[project]
+name = "rai-adapter"
+version = "0.1.0"
+description = "RAI Adapter — convert MCAP recordings to LeRobot datasets and push to HuggingFace"
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml",
+    "click",
+    "forge-robotics",
+    "huggingface_hub",
+]
+
+[project.scripts]
+adapter = "adapter.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]

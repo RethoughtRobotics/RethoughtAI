@@ -1,0 +1,21 @@
+robot: generic
+
+topics:
+  images:
+    - topic: /camera/image_raw
+      key: observation.images.main
+  state:
+    - topic: /joint_states
+      key: observation.state
+  extra: []
+
+trigger:
+  type: keyboard
+  start:   space
+  success: enter
+  discard: q
+
+recording:
+  fps: 30
+  snapshot_mode: true
+  max_cache_duration: 60
