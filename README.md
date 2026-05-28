@@ -71,7 +71,7 @@ uv run inference --help
 uv run recorder record --config baxter.yaml
 
 # 2. Convert to LeRobot dataset and push to HuggingFace
-uv run adapter convert --config baxter.yaml \
+uv run adapter convert --config configs/baxter.yaml \
   --input ./recordings \
   --push-to-hub yourname/your-dataset
 

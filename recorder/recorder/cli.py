@@ -1,7 +1,7 @@
-import importlib.resources
 from pathlib import Path
 
 import click
+import yaml
 
 from recorder import __version__
 
@@ -10,14 +10,19 @@ def resolve_config(path: str) -> Path:
     p = Path(path)
     if p.exists():
         return p
-    bundled = importlib.resources.files("recorder") / "configs" / Path(path).name
-    try:
-        resolved = Path(str(bundled))
-        if resolved.exists():
-            return resolved
-    except (TypeError, FileNotFoundError):
-        pass
+    fallback = Path("configs") / p.name
+    if fallback.exists():
+        return fallback
     raise click.BadParameter(f"Config not found: {path}")
+
+
+def all_topics(config: dict) -> list[str]:
+    t = config["topics"]
+    return (
+        [i["topic"] for i in t["images"]]
+        + [s["topic"] for s in t["state"]]
+        + t.get("extra", [])
+    )
 
 
 @click.group()
@@ -35,7 +40,10 @@ def main():
 def record(config, name, output, no_viz):
     """Start a recording session."""
     config_path = resolve_config(config)
-    click.echo(f"Loading config: {config_path}")
+    cfg = yaml.safe_load(config_path.read_text())
+    click.echo(f"Robot:   {cfg['robot']}")
+    click.echo(f"Topics:  {all_topics(cfg)}")
+    click.echo(f"Trigger: {cfg['trigger']['type']}")
     click.echo("recorder record — not yet implemented")
 
 
