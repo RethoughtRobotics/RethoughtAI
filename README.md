@@ -1,13 +1,11 @@
 
 <h1 align="center">
-  <font color="#d9d2e9">R</font>ethought<font color="#8e7cc3">A</font><font color="#351c75">I</font>
+  <font color="#8e7cc3">R</font>ethought<font color="#8e7cc3">A</font><font color="#8e7cc3">I</font>
 </h1>
 
 <p align="center"><b>RAI - Record · Adapt · Infer</b></p>
 
-<p align="center">
   A ROS2-native pipeline for robot learning. Collect demonstrations, convert to training-ready datasets, and deploy trained policies.
-</p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/ROS2-compatible-brightgreen?logo=ros&logoColor=white" />
