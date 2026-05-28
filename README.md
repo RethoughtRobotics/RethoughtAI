@@ -68,10 +68,10 @@ uv run inference --help
 
 ```bash
 # 1. Record demonstrations
-uv run recorder record --config recorder/configs/baxter.yaml
+uv run recorder record --config baxter.yaml
 
 # 2. Convert to LeRobot dataset and push to HuggingFace
-uv run adapter convert --config recorder/configs/baxter.yaml \
+uv run adapter convert --config baxter.yaml \
   --input ./recordings \
   --push-to-hub yourname/your-dataset
 
