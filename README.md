@@ -13,16 +13,14 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/ROS2_Jazzy-compatible-brightgreen?logo=ros&logoColor=white" />
-  <img src="https://img.shields.io/badge/ROS2_Kilted-compatible-brightgreen?logo=ros&logoColor=white" />
-  <img src="https://img.shields.io/badge/ROS2_Lyrical-compatible-brightgreen?logo=ros&logoColor=white" />
+  <img src="https://img.shields.io/badge/ROS2-compatible-brightgreen?logo=ros&logoColor=white" />
   <img src="https://img.shields.io/badge/LeRobot-v3-brightgreen?logo=huggingface&logoColor=white" />
-  <img src="https://img.shields.io/badge/uv-workspace-brightgreen" />
+
 </p>
 
 ---
 
-## Why
+## About
 
 RAI is a 3-step pipeline for learning from demonstrations with ROS2: record, adapt, and infer.
 
@@ -30,11 +28,9 @@ RAI is a 3-step pipeline for learning from demonstrations with ROS2: record, ada
 
 ## The Pipeline
 
-```
-record  →  adapt  →  infer
- record       convert      deploy
- demos        to LeRobot   policy
-```
+<p align="center">
+  <img src="overview.png" alt="RAI" width="80%" />
+</p>
 
 **[recorder](recorder/)** — Record demonstrations to MCAP with live Rerun visualization. Trigger via physical buttons (Baxter, Sawyer) or keyboard (any robot).
 
