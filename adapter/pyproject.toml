@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "rai-adapter"
 version = "0.1.0"
 description = "RAI Adapter — convert MCAP recordings to LeRobot datasets and push to HuggingFace"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "pyyaml",
     "click",

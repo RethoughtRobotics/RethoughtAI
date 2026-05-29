@@ -2,9 +2,9 @@ robot: baxter
 
 topics:
   images:
-    - topic: /cameras/left/image_raw
+    - topic: /cameras/left_hand_camera/image
       key: observation.images.left
-    - topic: /cameras/right/image_raw
+    - topic: /cameras/right_hand_camera/image
       key: observation.images.right
   state:
     - topic: /robot/joint_states

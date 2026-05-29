@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "rai-inference"
 version = "0.1.0"
 description = "RAI Inference — deploy trained LeRobot policies to ROS2 robots"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "pyyaml",
     "click",

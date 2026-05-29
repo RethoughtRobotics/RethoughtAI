@@ -97,7 +97,6 @@ def _start_ros(trig: dict, config: dict, start_evt, success_evt, discard_evt, vi
 
     try:
         import rclpy
-        from rclpy.executors import MultiThreadedExecutor
     except ImportError:
         raise RuntimeError("rclpy not found — source your ROS2 workspace first.")
 
@@ -112,11 +111,8 @@ def _start_ros(trig: dict, config: dict, start_evt, success_evt, discard_evt, vi
         init_rerun()
         nodes.append(make_viz_node(config))
 
-    executor = MultiThreadedExecutor()
     for node in nodes:
-        executor.add_node(node)
-
-    threading.Thread(target=executor.spin, daemon=True).start()
+        threading.Thread(target=_spin_node, args=(node,), daemon=True).start()
 
 
 def _make_trigger_node(trig: dict, start_evt, success_evt, discard_evt):
@@ -139,6 +135,13 @@ def _make_trigger_node(trig: dict, start_evt, success_evt, discard_evt):
     node.create_subscription(DigitalIOState, trig["success"], make_cb(success_evt), 10)
     node.create_subscription(DigitalIOState, trig["discard"], make_cb(discard_evt), 10)
     return node
+
+
+def _spin_node(node) -> None:
+    from rclpy.executors import SingleThreadedExecutor
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    executor.spin()
 
 
 def _start_keyboard(trig: dict, start_evt, success_evt, discard_evt) -> None:

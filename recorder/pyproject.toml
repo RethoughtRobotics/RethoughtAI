@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "rai-recorder"
 version = "0.1.0"
 description = "RAI Recorder — collect robot demonstrations and stream live to Rerun"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "pyyaml",
     "click",
