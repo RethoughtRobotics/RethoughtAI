@@ -78,19 +78,6 @@ uv run adapter convert --config configs/baxter.yaml \
 # 3. Train with LeRobot (standard LeRobot workflow)
 # https://github.com/huggingface/lerobot
 
-# 4. Deploy policy (coming soon)
-# uv run inference run --config recorder/configs/baxter.yaml --model yourname/your-model
+# 4. Deploy policy
 ```
 
----
-
-## Part of Rethought Robotics
-
-<p>
-  <a href="https://github.com/RethoughtRobotics/baxter-zenoh">
-    <img src="https://gh-card.dev/repos/RethoughtRobotics/baxter-zenoh.svg?fullname=" width="40%" />
-  </a>
-  <a href="https://github.com/RethoughtRobotics/BaxterSDK">
-    <img src="https://gh-card.dev/repos/RethoughtRobotics/BaxterSDK.svg?fullname=" width="40%" />
-  </a>
-</p>
