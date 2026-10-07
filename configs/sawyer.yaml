@@ -1,0 +1,24 @@
+robot: sawyer
+
+topics:
+  images:
+    - topic: /cameras/right_hand_camera/image
+      key: observation.images.right
+    - topic: /cameras/head_camera/image
+      key: observation.images.head
+  state:
+    - topic: /robot/joint_states
+      key: observation.state
+  extra:
+    - /robot/end_effector/right/state
+
+trigger:
+  type: digital_io
+  msg_type: intera_core_msgs/DigitalIOState
+  state_field: state
+  record:  /robot/digital_io/right_lower_cuff/state
+  success: /robot/digital_io/right_upper_button/state
+  discard: /robot/digital_io/right_lower_button/state
+
+recording:
+  fps: 30
