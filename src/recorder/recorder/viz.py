@@ -3,7 +3,11 @@ import rerun as rr
 
 
 def init_rerun() -> None:
-    rr.init("rai_recorder", spawn=True)
+    rr.init("rai_recorder")
+    # The viewer keeps every streamed frame; its default limit (75% of RAM) let it grow past 20 GB in
+    # one session and swap-stall the teleop and recording. At the limit it drops the oldest frames
+    # from the viewer only (the bags are unaffected).
+    rr.spawn(memory_limit="2GB")
 
 
 def make_viz_node(config: dict):
