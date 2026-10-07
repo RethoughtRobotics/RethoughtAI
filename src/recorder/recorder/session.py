@@ -1,3 +1,4 @@
+"""Session management: episode bag lifecycle and the main recording loop."""
 import shutil
 import subprocess
 import threading
@@ -8,154 +9,164 @@ from pathlib import Path
 import click
 
 
-def make_session_dir(output: str, config_path: Path) -> Path:
-    ts = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-    session_dir = Path(output) / f"session_{ts}"
-    session_dir.mkdir(parents=True)
+def make_session_dir(output: str, config_path: Path, name: str | None = None) -> Path:
+    """Create the session directory (output/<name>, or a timestamped one) and copy the config into it.
+    A named session that already exists is reused: its new episodes continue the numbering."""
+    name = name or "session_" + datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+    session_dir = Path(output) / name
+    session_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy(config_path, session_dir / config_path.name)
     return session_dir
 
 
 class EpisodeBag:
-    def __init__(self, episode_dir: Path, topics: list[str], max_cache_duration: int):
+    """One ros2 bag record process per episode.
+
+    SIGTERM triggers a clean shutdown (cache flush + metadata write).
+    A 5-second timeout followed by SIGKILL guards against hung processes.
+    """
+
+    def __init__(self, episode_dir: Path, topics: list[str]) -> None:
         self._dir = episode_dir
-        self._proc = subprocess.Popen([
-            "ros2", "bag", "record",
-            "--snapshot-mode",
-            "--max-cache-duration", str(max_cache_duration),
-            "--repeat-all-transient-local",
-            "--output", str(episode_dir),
-            "--topics", *topics,
-        ])
+        self._proc = subprocess.Popen(
+            ["ros2", "bag", "record", "--storage", "mcap", "--output", str(episode_dir), "--topics", *topics]
+        )
 
-    def commit(self):
-        subprocess.run([
-            "ros2", "service", "call",
-            "/rosbag2_recorder/snapshot",
-            "rosbag2_interfaces/srv/Snapshot", "{}",
-        ], check=True, capture_output=True)
-        time.sleep(0.5)
-        self._stop()
+    def _terminate(self):
+        """SIGTERM with 5 s timeout, then SIGKILL."""
+        self._proc.terminate()
+        try:
+            self._proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
+            self._proc.wait()
 
+    def stop(self):   self._terminate()
     def discard(self):
-        self._stop()
+        """Stop recording (if still running) and delete the bag directory."""
+        self._terminate()
         if self._dir.exists():
             shutil.rmtree(self._dir)
 
-    def _stop(self):
-        self._proc.terminate()
-        self._proc.wait()
+    def frames(self, image_topic: str | None) -> int | None:
+        """Messages recorded on image_topic, from the stopped bag's metadata; None if unknown."""
+        import yaml
+        try:
+            info = yaml.safe_load((self._dir / "metadata.yaml").read_text())["rosbag2_bagfile_information"]
+        except (OSError, KeyError, TypeError, yaml.YAMLError):
+            return None
+        return next((t["message_count"] for t in info.get("topics_with_message_count", [])
+                     if t["topic_metadata"]["name"] == image_topic), None)
 
 
 def run_session(session_dir: Path, config: dict, topics: list[str], viz: bool) -> None:
-    max_cache = config["recording"].get("max_cache_duration", 0)
+    """Run an interactive session until Ctrl+C, recording one bag per episode.
+
+    The active bag is always terminated on exit — even mid-episode — to
+    prevent orphaned ros2 bag record processes from leaking memory.
+    """
     trig = config["trigger"]
-    episode = 0
+    episode = _next_episode(session_dir)
+    saved = 0
+    images = config["topics"].get("images") or [{}]
+    image_topic = images[0].get("topic")  # its message count is the episode's frame count
+    start_evt, stop_evt, success_evt, discard_evt = (threading.Event() for _ in range(4))
 
-    start_evt = threading.Event()
-    success_evt = threading.Event()
-    discard_evt = threading.Event()
-
-    _start_ros(trig, config, start_evt, success_evt, discard_evt, viz)
-
-    if trig["type"] == "keyboard":
-        _start_keyboard(trig, start_evt, success_evt, discard_evt)
+    ros_started, trigger, screen = _setup(trig, config, start_evt, stop_evt, success_evt, discard_evt, viz,
+                                          session_dir.name)
+    trigger.start()
 
     click.echo(f"Session: {session_dir}")
-    click.echo("Press start to begin an episode. Ctrl+C to end session.\n")
+    click.echo("Press record to begin. Ctrl+C to end session.\n")
+    if screen: screen.episode = episode; screen.idle()
+    _set_title(episode, "idle")
 
+    bag = None
     try:
         while True:
-            start_evt.wait()
-            start_evt.clear()
-            success_evt.clear()
-            discard_evt.clear()
+            # Clear stale signals from the previous episode before waiting.
+            for e in (stop_evt, success_evt, discard_evt): e.clear()
+            start_evt.wait(); start_evt.clear()
 
-            episode_dir = session_dir / f"episode_{episode:03d}"
-            click.echo(f"[episode {episode:03d}] Buffering — commit or discard when done.")
-            bag = EpisodeBag(episode_dir, topics, max_cache)
+            episode = _next_episode(session_dir)  # rescan: episodes may have been removed or renumbered
+            bag = EpisodeBag(session_dir / f"episode_{episode:03d}", topics)
+            started = time.monotonic()
+            if screen: screen.episode = episode; screen.recording()
+            _set_title(episode, "recording")
+            click.echo(f"[episode {episode:03d}] Recording — press record again to stop.")
+
+            stop_evt.wait()
+            # Only a save/discard made after stopping counts, not one pressed while recording.
+            success_evt.clear(); discard_evt.clear()
+            length = time.monotonic() - started
+            bag.stop()  # the episode ends at stop, not when it is saved or discarded
+            if screen: screen.decide(length, bag.frames(image_topic))
+            _set_title(episode, "save or discard?")
+            click.echo(f"[episode {episode:03d}] Stopped — save or discard.")
 
             while not success_evt.is_set() and not discard_evt.is_set():
                 time.sleep(0.05)
 
+            done = episode
             if success_evt.is_set():
-                bag.commit()
-                click.echo(f"[episode {episode:03d}] Committed.\n")
-                episode += 1
+                if screen: screen.saving()
+                _set_title(done, "saving")
+                bag = None; saved += 1
+                click.echo(f"[episode {done:03d}] Saved.\n")
             else:
-                bag.discard()
-                click.echo(f"[episode {episode:03d}] Discarded.\n")
+                if screen: screen.discarding()
+                _set_title(done, "discarding")
+                bag.discard(); bag = None
+                click.echo(f"[episode {done:03d}] Discarded.\n")
+            time.sleep(1.0)  # long enough to see the choice on the screen
+            episode = _next_episode(session_dir)
+            if screen: screen.episode = episode; screen.idle()
+            _set_title(episode, "idle")
 
     except KeyboardInterrupt:
-        click.echo(f"\nSession ended — {episode} episode(s) recorded.")
+        click.echo(f"\nSession ended — {saved} episode(s) saved, {episode} in {session_dir.name}.")
+    finally:
+        if bag is not None: bag.discard()
+        if ros_started:
+            import rclpy; rclpy.shutdown()
 
 
-def _start_ros(trig: dict, config: dict, start_evt, success_evt, discard_evt, viz: bool) -> None:
+def _setup(trig, config, start_evt, stop_evt, success_evt, discard_evt, viz, session=None):
+    """Init trigger backend, ROS2 nodes, and optional viz. Returns (ros_started, trigger, screen)."""
+    from recorder.trigger import KeyboardTrigger, RecorderTriggerNode, _spin_node
+
     needs_ros = trig["type"] == "digital_io" or viz
-    if not needs_ros:
-        return
+    if needs_ros:
+        try:
+            import rclpy
+        except ImportError:
+            raise RuntimeError("rclpy not found - source your ROS2 workspace first.")
+        rclpy.init()
 
-    try:
-        import rclpy
-    except ImportError:
-        raise RuntimeError("rclpy not found — source your ROS2 workspace first.")
-
-    rclpy.init()
-    nodes = []
-
-    if trig["type"] == "digital_io":
-        nodes.append(_make_trigger_node(trig, start_evt, success_evt, discard_evt))
-
-    if viz:
+    def start_viz():
         from recorder.viz import init_rerun, make_viz_node
         init_rerun()
-        nodes.append(make_viz_node(config))
+        threading.Thread(target=_spin_node, args=(make_viz_node(config),), daemon=True).start()
 
-    for node in nodes:
-        threading.Thread(target=_spin_node, args=(node,), daemon=True).start()
+    if trig["type"] == "keyboard":
+        if viz: start_viz()
+        return needs_ros, KeyboardTrigger(trig, start_evt, stop_evt, success_evt, discard_evt), None
 
-
-def _make_trigger_node(trig: dict, start_evt, success_evt, discard_evt):
-    try:
-        from baxter_core_msgs.msg import DigitalIOState
-    except ImportError:
-        raise RuntimeError("baxter_core_msgs not found — source your Baxter workspace.")
-
-    from rclpy.node import Node
-
-    node = Node("rai_recorder_trigger")
-
-    def make_cb(evt):
-        def cb(msg):
-            if msg.state != 0:
-                evt.set()
-        return cb
-
-    node.create_subscription(DigitalIOState, trig["start"],   make_cb(start_evt),   10)
-    node.create_subscription(DigitalIOState, trig["success"], make_cb(success_evt), 10)
-    node.create_subscription(DigitalIOState, trig["discard"], make_cb(discard_evt), 10)
-    return node
+    trigger = RecorderTriggerNode(trig, start_evt, stop_evt, success_evt, discard_evt)
+    screen = None
+    if trig.get("screen"):  # "session": drawn screens; true: the image screens in assets/
+        from recorder.screen import BaxterScreen, SessionScreen
+        screen = (SessionScreen if trig["screen"] == "session" else BaxterScreen)(trigger.node, session)
+    if viz: start_viz()
+    return True, trigger, screen
 
 
-def _spin_node(node) -> None:
-    from rclpy.executors import SingleThreadedExecutor
-    executor = SingleThreadedExecutor()
-    executor.add_node(node)
-    executor.spin()
+def _next_episode(session_dir: Path) -> int:
+    """One past the highest existing episode_NNN, so a reused session resumes after its last episode."""
+    return 1 + max((int(d.name.split("_")[-1]) for d in session_dir.glob("episode_*")
+                    if d.name.split("_")[-1].isdigit()), default=-1)
 
 
-def _start_keyboard(trig: dict, start_evt, success_evt, discard_evt) -> None:
-    key_map = {
-        trig["start"]: start_evt,
-        trig["success"]: success_evt,
-        trig["discard"]: discard_evt,
-    }
-    click.echo(f"Keys — start: [{trig['start']}]  commit: [{trig['success']}]  discard: [{trig['discard']}]\n")
-
-    def loop():
-        while True:
-            ch = click.getchar()
-            if ch in key_map:
-                key_map[ch].set()
-
-    threading.Thread(target=loop, daemon=True).start()
+def _set_title(episode: int, state: str) -> None:
+    """Update the terminal window title with current episode and state."""
+    click.echo(f"\033]0;RAI — Ep {episode:03d} | {state}\007", nl=False)

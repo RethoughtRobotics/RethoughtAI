@@ -29,19 +29,26 @@ def all_topics(config: dict) -> list[str]:
 @click.group()
 @click.version_option(__version__)
 def main():
-    """RAI Recorder — collect robot demonstrations."""
+    """RAI record_cli — collect robot demonstrations."""
     pass
 
 
 @main.command()
-@click.option("--config", required=True, help="Robot config YAML (name or path)")
-@click.option("--output", default="./recordings", show_default=True, help="Output directory")
+@click.argument("config")
+@click.option("--output", default="./recorder/data", show_default=True, help="Output directory")
 @click.option("--no-viz", is_flag=True, help="Disable Rerun visualization")
-def record(config, output, no_viz):
-    """Start a recording session."""
+@click.option("--session", default=None, help="Session name: episodes go to <output>/<session>/ "
+              "(reused if it exists). Default: session_<timestamp>")
+def record(config, output, no_viz, session):
+    """Start a recording session.
+
+    \b
+    Examples:
+      record_cli record baxter.yaml
+      record_cli record baxter.yaml --output ./my_recordings --no-viz
+      record_cli record baxter.yaml --session CupInCube
+    """
     config_path = resolve_config(config)
     cfg = yaml.safe_load(config_path.read_text())
-    session_dir = make_session_dir(output, config_path)
+    session_dir = make_session_dir(output, config_path, session)
     run_session(session_dir, cfg, all_topics(cfg), viz=not no_viz)
-
-

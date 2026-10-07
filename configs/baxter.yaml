@@ -6,6 +6,8 @@ topics:
       key: observation.images.left
     - topic: /cameras/right_hand_camera/image
       key: observation.images.right
+    - topic: /cameras/third_eye/color/image_raw
+      key: observation.images.third_eye
   state:
     - topic: /robot/joint_states
       key: observation.state
@@ -15,11 +17,25 @@ topics:
 
 trigger:
   type: digital_io
-  start:   /robot/digital_io/left_itb_button0/state
-  success: /robot/digital_io/right_itb_button0/state
-  discard: /robot/digital_io/left_itb_button1/state
+  msg_type: baxter_core_msgs/DigitalIOState
+  state_field: state
+  record:  /robot/digital_io/left_button_show/state
+  success: /robot/digital_io/left_button_ok/state
+  discard: /robot/digital_io/left_button_back/state
+  screen: session  # drawn session screens; true for the image screens in assets/
+  light:
+    topic: /robot/digital_io/command
+    msg_type: baxter_core_msgs/DigitalOutputCommand
+    name: left_inner_light
+  # Both VR thumbsticks (libsurvive_ros2) pushed the same way for `hold` s.
+  thumbstick:
+    topics: [/vive/left/thumbstick, /vive/right/thumbstick]
+    hold: 2.0
+    start:   north
+    stop:    south
+    success: east
+    discard: west
 
 recording:
   fps: 30
-  snapshot_mode: true
-  max_cache_duration: 60
+
