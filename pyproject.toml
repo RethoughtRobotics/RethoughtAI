@@ -16,6 +16,7 @@ dependencies = [
     "scipy",
     "forge-robotics",
     "huggingface-hub",
+    "lerobot[dataset]>=0.6.1",
 ]
 
 [project.scripts]
