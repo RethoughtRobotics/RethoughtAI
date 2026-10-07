@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import click
@@ -15,6 +16,18 @@ def resolve_config(path: str) -> Path:
     if fallback.exists():
         return fallback
     raise click.BadParameter(f"Config not found: {path}")
+
+
+def exclude_topics(config: dict, patterns: tuple[str, ...]) -> dict:
+    """Drop every configured topic matching any regex in patterns (e.g. 'right' for a left-arm task)."""
+    def keep(topic):
+        return not any(re.search(p, topic) for p in patterns)
+
+    t = config["topics"]
+    t["images"] = [i for i in t["images"] if keep(i["topic"])]
+    t["state"] = [s for s in t["state"] if keep(s["topic"])]
+    t["extra"] = [e for e in t.get("extra", []) if keep(e)]
+    return config
 
 
 def all_topics(config: dict) -> list[str]:
@@ -39,7 +52,9 @@ def main():
 @click.option("--no-viz", is_flag=True, help="Disable Rerun visualization")
 @click.option("--session", default=None, help="Session name: episodes go to <output>/<session>/ "
               "(reused if it exists). Default: session_<timestamp>")
-def record(config, output, no_viz, session):
+@click.option("--exclude", multiple=True, metavar="REGEX",
+              help="Skip configured topics matching REGEX (repeatable), e.g. --exclude right")
+def record(config, output, no_viz, session, exclude):
     """Start a recording session.
 
     \b
@@ -47,8 +62,11 @@ def record(config, output, no_viz, session):
       record_cli record baxter.yaml
       record_cli record baxter.yaml --output ./my_recordings --no-viz
       record_cli record baxter.yaml --session CupInCube
+      record_cli record baxter.yaml --session CupInCube --exclude right
     """
     config_path = resolve_config(config)
-    cfg = yaml.safe_load(config_path.read_text())
+    cfg = exclude_topics(yaml.safe_load(config_path.read_text()), exclude)
+    if exclude:
+        click.echo(f"Excluding topics matching {list(exclude)}")
     session_dir = make_session_dir(output, config_path, session)
     run_session(session_dir, cfg, all_topics(cfg), viz=not no_viz)
