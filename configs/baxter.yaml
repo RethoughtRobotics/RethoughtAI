@@ -12,8 +12,18 @@ topics:
     - topic: /robot/joint_states
       key: observation.state
   extra:
-    - /robot/end_effector/left/state
-    - /robot/end_effector/right/state
+    # Teleop (bringbackbaxter): measured TCP (state, delta anchor), the goal its servo chases
+    # (action labels; only while clutched), and its settings incl. the measured tcp_offset.
+    - /teleop/left/tcp
+    - /teleop/left/goal
+    - /teleop/left/config
+    - /teleop/right/tcp
+    - /teleop/right/goal
+    - /teleop/right/config
+    - /robot/end_effector/left_gripper/state
+    - /robot/end_effector/left_gripper/command
+    - /robot/end_effector/right_gripper/state
+    - /robot/end_effector/right_gripper/command
 
 trigger:
   type: digital_io
