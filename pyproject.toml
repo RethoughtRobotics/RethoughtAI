@@ -13,6 +13,7 @@ dependencies = [
     "rerun-sdk",
     "opencv-python-headless",
     "pillow",
+    "scipy",
     "forge-robotics",
     "huggingface-hub",
 ]
