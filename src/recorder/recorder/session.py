@@ -28,8 +28,11 @@ class EpisodeBag:
 
     def __init__(self, episode_dir: Path, topics: list[str]) -> None:
         self._dir = episode_dir
+        # zstd_fast: lossless and keeps up live (~30% smaller than raw images); recompress a finished
+        # session with storage preset zstd_small for ~65%.
         self._proc = subprocess.Popen(
-            ["ros2", "bag", "record", "--storage", "mcap", "--output", str(episode_dir), "--topics", *topics]
+            ["ros2", "bag", "record", "--storage", "mcap", "--storage-preset-profile", "zstd_fast",
+             "--output", str(episode_dir), "--topics", *topics]
         )
 
     def _terminate(self):
