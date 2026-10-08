@@ -98,6 +98,11 @@ class LeRobotPolicy:
         self.type, self.chunk_size = cfg.type, cfg.chunk_size
         self.features = list(cfg.input_features)
 
+    def reset(self):
+        self.policy.reset()
+        self.pre.reset()
+        self.post.reset()
+
     def __call__(self, observation, delay=0, prev=None):
         from lerobot.policies.utils import prepare_observation_for_inference
         from lerobot.processor import TransitionKey, create_transition

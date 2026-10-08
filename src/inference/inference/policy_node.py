@@ -7,6 +7,7 @@ inference never blocks ROS callbacks, and publishes:
               (base frame) and the `{arm}_gripper` trigger, at k / fps
   chunk_path  nav_msgs/Path of the targets, for RViz
 With RTC, each chunk continues the last one over the measured inference delay.
+When the runtime engages or releases (`engaged`), the policy starts fresh: no chunk carries over.
 """
 
 import math
@@ -21,7 +22,9 @@ from moveit_msgs.msg import RobotTrajectory
 from nav_msgs.msg import Path
 from rclpy.time import Time
 from scipy.spatial.transform import Rotation
+from rclpy.qos import DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import Image, JointState
+from std_msgs.msg import Bool
 from trajectory_msgs.msg import JointTrajectoryPoint, MultiDOFJointTrajectoryPoint
 
 from adapter.labels import apply_actions, model_state, relative_actions
@@ -49,6 +52,7 @@ class PolicyNode:
         self.latency = LatencyTracker()
         self.count = 0
         self.warned = False
+        self.fresh = threading.Event()  # set: drop the last chunk and the policy's state
 
         self.cameras = {c["key"]: c["topic"] for c in images if c["key"] in policy.features}
         missing = [k for k in policy.features if k.startswith("observation.images.") and k not in self.cameras]
@@ -60,6 +64,9 @@ class PolicyNode:
         node.create_subscription(JointState, cfg["joint_states"], self._on_joints, 10)
         node.create_subscription(EndEffectorState, cfg["gripper"],
                                  lambda m: self._store("gripper", 1.0 - float(m.position) / 100.0), 10)
+        if cfg.get("engaged"):
+            latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+            node.create_subscription(Bool, cfg["engaged"], lambda m: self.fresh.set(), latched)
         self.chunk_pub = node.create_publisher(RobotTrajectory, cfg["chunk"], 10)
         self.path_pub = node.create_publisher(Path, cfg["chunk"] + "_path", 10)
         threading.Thread(target=self._run, daemon=True, name="policy").start()
@@ -114,6 +121,10 @@ class PolicyNode:
             wait = next_start - time.monotonic()
             if wait > 0:
                 time.sleep(wait)
+            if self.fresh.is_set():
+                self.fresh.clear()
+                self.last = None
+                self.policy.reset()
             observed = self._observation()
             if observed is None:
                 self.last = None

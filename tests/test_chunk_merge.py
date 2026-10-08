@@ -14,6 +14,9 @@ class FakeNode:
     def __getattr__(self, name):  # create_subscription, create_publisher, create_service, create_timer
         return lambda *a, **k: None
 
+    def get_logger(self):
+        return type("Logger", (), {"info": lambda self, text: None})()
+
 
 def runtime(merge):
     return Runtime(FakeNode(), CFG, merge=merge)
@@ -116,3 +119,10 @@ def test_in_process_policy_chunks_run_through_the_same_merge():
         rt._policy_step(k / FPS)
     p, R, trigger = rt.segment[1]
     assert np.allclose(p, [0.52, 0, 0.1]) and trigger == pytest.approx(1.0) and len(rt.chunks) == 5
+
+
+def test_home_disconnects_and_clears():
+    rt = runtime({"type": "ensemble", "coeff": 0.01})
+    rt.requested, rt.chunks, rt.segment = True, [line(0.0, 0.0, 0.0, 0.1)], (0.0, None, None)
+    rt._on_home(None)
+    assert not rt.requested and rt.chunks == [] and rt.segment is None

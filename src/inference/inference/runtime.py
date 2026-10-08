@@ -6,7 +6,8 @@ human's. It publishes what libsurvive_ros2 publishes for a hand:
   target   PoseStamped, desired TCP pose in the base frame; frozen while released, which the
            teleop reads as a released clutch
   trigger  Float32, 0 open .. 1 closed
-Engaged: the deadman held (or the `engage` service) and a fresh TCP.
+Engaged: the deadman held (or the `engage` service) and a fresh TCP. Published on `engaged`.
+B (`home`, the teleop's home button) disconnects the policy and drops its chunks: ./start again.
 
 A chunk is a trajectory of TCP targets timed from its observation: from a policy called here (a
 replay) or the `chunk` topic (policy_node). Each policy step merges the chunks covering it:
@@ -23,8 +24,9 @@ import numpy as np
 from geometry_msgs.msg import PoseStamped
 from moveit_msgs.msg import RobotTrajectory
 from scipy.spatial.transform import Rotation, Slerp
+from rclpy.qos import DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import Joy
-from std_msgs.msg import Float32
+from std_msgs.msg import Bool, Empty, Float32
 from std_srvs.srv import SetBool
 
 from adapter.labels import apply_actions
@@ -142,9 +144,14 @@ class Runtime:
         if policy is None:
             node.create_subscription(RobotTrajectory, cfg["chunk"], self._on_chunk, 10)
         node.create_service(SetBool, cfg["engage"], self._on_engage)
+        if cfg.get("home"):
+            node.create_subscription(Empty, cfg["home"], self._on_home, 10)
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.engaged_pub = node.create_publisher(Bool, cfg["engaged"], latched) if cfg.get("engaged") else None
         self.target_pub = node.create_publisher(PoseStamped, cfg["target"], 10)
         self.trigger_pub = node.create_publisher(Float32, cfg["trigger"], 10)
         node.create_timer(1.0 / float(cfg["publish_rate"]), self._tick)
+        self._announce()
 
     def _now(self):
         return self.node.get_clock().now().nanoseconds * 1e-9
@@ -161,6 +168,12 @@ class Runtime:
         self.requested = bool(request.data)
         response.success, response.message = True, "engage requested" if self.requested else "released"
         return response
+
+    def _on_home(self, msg):
+        """B: the teleop homes the arm; nothing of this run may carry over after it."""
+        self.requested = False
+        self.chunks, self.segment, self.entry, self.approach = [], None, None, None
+        self._log("B: policy disconnected and cleared. ./start to run again")
 
     def _on_chunk(self, msg):
         t0 = msg.joint_trajectory.header.stamp
@@ -190,6 +203,7 @@ class Runtime:
         if not self.engaged:
             self._log(f"Engaged at step {self.step}")
             self.engaged, self.chunks, self.segment, self.approach = True, [], None, None
+            self._announce()
             self.hold, self.accept_after = (self.tcp[0], Rotation.from_quat(self.tcp[1])), now
         if self.start is not None:
             self._approach(now)
@@ -229,6 +243,7 @@ class Runtime:
         if self.engaged:
             self._log(f"Released at step {self.step}" + (": episode finished, B sends the arm home" if self.done else ""))
             self.engaged, self.frozen = False, None
+            self._announce()
         if tcp_fresh:
             p, q, _ = self.tcp
             if self.frozen is None or (
@@ -301,6 +316,10 @@ class Runtime:
             span = max(1.0, min(ramp + 1.0, overlap))
             merged = blend(merged, sample, min(1.0, ((t - chunk.arrival) * self.fps + 1.0) / span))
         return merged
+
+    def _announce(self):
+        if self.engaged_pub is not None:
+            self.engaged_pub.publish(Bool(data=self.engaged))
 
     def _publish(self, position, quaternion, trigger, engaged=False):
         position = np.asarray(position, dtype=float)

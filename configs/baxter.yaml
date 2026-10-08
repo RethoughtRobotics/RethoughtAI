@@ -106,7 +106,9 @@ inference:
   tcp: /teleop/left/tcp
   target: /policy/left/target
   trigger: /policy/left/trigger
-  engage: /policy/left/engage   # std_srvs/SetBool: engage without the deadman (sim)
+  engage: /policy/left/engage   # std_srvs/SetBool: engage without the deadman (./start, ./stop)
+  engaged: /policy/left/engaged # runtime -> policy server: start fresh on every change
+  home: /vive/right/b_button    # B: disconnect and clear (swap_hands: right controller, left arm)
   chunk: /policy/left/chunk     # serve -> run
   joint_states: /robot/joint_states
   gripper: /robot/end_effector/left_gripper/state
