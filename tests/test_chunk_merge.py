@@ -124,5 +124,8 @@ def test_in_process_policy_chunks_run_through_the_same_merge():
 def test_home_clears_but_keeps_the_run_on():
     rt = runtime({"type": "ensemble", "coeff": 0.01})
     rt.requested, rt.chunks, rt.segment = True, [line(0.0, 0.0, 0.0, 0.1)], (0.0, None, None)
+    rt.trigger_pub = type("Pub", (), {"publish": lambda self, msg: setattr(self, "sent", msg.data)})()
+    rt.trigger = 1.0
     rt._on_home(None)
     assert rt.requested and rt.chunks == [] and rt.segment is None
+    assert rt.trigger == 0.0 and rt.trigger_pub.sent == 0.0  # gripper open

@@ -7,7 +7,8 @@ human's. It publishes what libsurvive_ros2 publishes for a hand:
            teleop reads as a released clutch
   trigger  Float32, 0 open .. 1 closed
 Engaged: the deadman held (or the `engage` service) and a fresh TCP. Published on `engaged`.
-B (`home`, the teleop's home button) clears the run; while still engaged it resumes fresh after homing.
+B (`home`, the teleop's home button) clears the run and opens the gripper; while still engaged it
+resumes fresh after homing.
 
 A chunk is a trajectory of TCP targets timed from its observation: from a policy called here (a
 replay) or the `chunk` topic (policy_node). Each policy step merges the chunks covering it:
@@ -173,9 +174,11 @@ class Runtime:
         """B: the teleop homes the arm. Release once, so nothing carries over: the policy server
         resets, and re-engaging (./start still on, or the clutch held) starts from fresh chunks."""
         self.chunks, self.segment, self.entry, self.approach = [], None, None, None
+        self.trigger = 0.0  # open: the teleop opens it to home, and follows this trigger after
+        self.trigger_pub.publish(Float32(data=self.trigger))
         if self.engaged:
             self._released(self.tcp is not None)
-        self._log("B: cleared; resumes fresh after homing while ./start is on or the clutch is held")
+        self._log("B: cleared, gripper open; resumes fresh after homing while ./start is on or the clutch is held")
 
     def _on_chunk(self, msg):
         t0 = msg.joint_trajectory.header.stamp
