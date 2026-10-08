@@ -39,6 +39,9 @@ START_TOLERANCE = (0.005, np.radians(2.0))  # m, rad
 # The teleop reads an unchanged pose as a released clutch. A human holding still while clutched never
 # repeats one (tracker noise), so an engaged target that would repeat alternates by this much (m).
 ENGAGED_JITTER = 1e-6
+# Engage only once the frozen target has held at the current TCP this long, longer than the teleop's
+# release_after (0.2 s): it then re-references on matching poses, so the first target is no stroke.
+SETTLE = 0.3  # s
 MERGES = ("ensemble", "latest", "ramp")
 ENTRY_RAMP = 1.0  # s
 
@@ -122,6 +125,7 @@ class Runtime:
         self.alive = -np.inf if deadman.get("alive") else np.inf  # last pose of the deadman's controller
         self.tcp = None  # (position, quaternion, receive time)
         self.frozen = None  # (position, quaternion) published while released
+        self.settled = -np.inf  # when the frozen target was last moved
         self.trigger = None
         self.engaged = False
         self.done = False
@@ -176,9 +180,12 @@ class Runtime:
         self.chunks, self.segment, self.entry, self.approach = [], None, None, None
         self.trigger = 0.0  # open: the teleop opens it to home, and follows this trigger after
         self.trigger_pub.publish(Float32(data=self.trigger))
+        self.settled = self._now()  # re-engage only after homing and a settled freeze
         if self.engaged:
             self._released(self.tcp is not None)
-        self._log("B: cleared, gripper open; resumes fresh after homing while ./start is on or the clutch is held")
+        if self.settled - getattr(self, "_home_logged", -np.inf) > 1.0:  # B repeats while held
+            self._home_logged = self.settled
+            self._log("B: cleared, gripper open; resumes fresh after homing while ./start is on or the clutch is held")
 
     def _on_chunk(self, msg):
         t0 = msg.joint_trajectory.header.stamp
@@ -202,6 +209,9 @@ class Runtime:
         tcp_fresh = self.tcp is not None and now - self.tcp[2] < TCP_STALE
         deadman = self.held and now - self.alive < TCP_STALE
         engage = (deadman or self.requested) and tcp_fresh and not self.done
+        if engage and not self.engaged and (self.frozen is None or self._moved(*self.tcp[:2])
+                                            or now - self.settled < SETTLE):
+            engage = False  # e.g. just back from homing: freeze at the new TCP first
         if not engage:
             self._released(tcp_fresh)
             return
@@ -209,7 +219,7 @@ class Runtime:
             self._log(f"Engaged at step {self.step}")
             self.engaged, self.chunks, self.segment, self.approach = True, [], None, None
             self._announce()
-            self.hold, self.accept_after = (self.tcp[0], Rotation.from_quat(self.tcp[1])), now
+            self.hold, self.accept_after = (self.frozen[0], Rotation.from_quat(self.frozen[1])), now
         if self.start is not None:
             self._approach(now)
             return
@@ -251,13 +261,15 @@ class Runtime:
             self._announce()
         if tcp_fresh:
             p, q, _ = self.tcp
-            if self.frozen is None or (
-                np.linalg.norm(p - self.frozen[0]) > REFREEZE[0]
-                or (Rotation.from_quat(q).inv() * Rotation.from_quat(self.frozen[1])).magnitude() > REFREEZE[1]
-            ):
-                self.frozen = (p, q)
+            if self.frozen is None or self._moved(p, q):
+                self.frozen, self.settled = (p, q), self._now()
         if self.frozen is not None:
             self._publish(*self.frozen, self.trigger)
+
+    def _moved(self, p, q):
+        """The TCP (p, q) is off the frozen target."""
+        return (np.linalg.norm(p - self.frozen[0]) > REFREEZE[0]
+                or (Rotation.from_quat(q).inv() * Rotation.from_quat(self.frozen[1])).magnitude() > REFREEZE[1])
 
     def _policy_step(self, now):
         t = now if self.segment is None else self.segment[0] + self.dt  # this step's time

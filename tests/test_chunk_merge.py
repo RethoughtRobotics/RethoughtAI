@@ -125,7 +125,29 @@ def test_home_clears_but_keeps_the_run_on():
     rt = runtime({"type": "ensemble", "coeff": 0.01})
     rt.requested, rt.chunks, rt.segment = True, [line(0.0, 0.0, 0.0, 0.1)], (0.0, None, None)
     rt.trigger_pub = type("Pub", (), {"publish": lambda self, msg: setattr(self, "sent", msg.data)})()
-    rt.trigger = 1.0
+    rt.trigger, rt._now = 1.0, lambda: 0.0
     rt._on_home(None)
     assert rt.requested and rt.chunks == [] and rt.segment is None
     assert rt.trigger == 0.0 and rt.trigger_pub.sent == 0.0  # gripper open
+
+
+def test_reengages_only_after_freezing_at_the_new_tcp():
+    """Back from homing: the teleop must see the target frozen at the new TCP before it moves."""
+    rt = runtime({"type": "ensemble", "coeff": 0.01})
+    clock = [0.0]
+    rt._now, rt._publish, rt._announce = (lambda: clock[0]), (lambda *a, **k: None), (lambda: None)
+    rt.requested = True
+    home = (np.array([0.6, 0.2, 0.2]), np.array([0, 0, 0, 1.0]))
+    rt.frozen, rt.settled = (np.array([0.8, 0.0, 0.0]), home[1]), -10.0  # frozen before homing
+    clock[0] = 5.0
+    rt.tcp = (*home, 5.0)  # TCP back, at home
+    rt._tick()
+    assert not rt.engaged and np.allclose(rt.frozen[0], home[0])  # re-frozen at home, not engaged yet
+    clock[0] = 5.2
+    rt.tcp = (*home, 5.2)
+    rt._tick()
+    assert not rt.engaged
+    clock[0] = 5.35
+    rt.tcp = (*home, 5.35)
+    rt._tick()
+    assert rt.engaged and np.allclose(rt.hold[0], home[0])  # engaged from the frozen home pose
