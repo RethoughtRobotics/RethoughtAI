@@ -107,16 +107,20 @@ gripper state, /teleop/left/tcp ──▶│ policy node (serve)  │───�
   On a laptop RTX 500 (4 GB) next to the sim: ACT ~30 ms, run every step; SmolVLA with RTC ~450 ms,
   run every 10 steps with `execution_horizon` 25 (it must exceed the delay in steps, ~13).
 
-**Shadow rollout** (`launch/shadow.launch.py`): the policy drives a simulated arm (BaxFlow-T)
-while it watches a held-out episode's recorded cameras, played by `ros2 bag play`. The runtime moves
-the arm to the episode's start pose, then seeks the bag player to the episode's first step and
-resumes it.
+**Running a checkpoint** from `models/<name>_*/step-<N>/` opens tmux. The top pane runs the policy
+(`launch/policy.launch.py`). The bottom pane has `./start` typed, ready to connect the policy to the
+arm. `./stop` holds the arm where it is.
 
 ```bash
-# bringbackbaxter: ./run_sim_teleop.sh --left --policy --objects
-ros2 launch launch/shadow.launch.py model:=yourname/your-model episode:=recorder/data/CupToContainer/episode_004
-ros2 service call /policy/left/engage std_srvs/srv/SetBool "{data: true}"
+# bringbackbaxter: ./run_sim_teleop.sh --left --policy
+./run_inference --act 100000                  # shadow rollout of held-out episode 4
+./run_inference --smolvla 30000 --episode 24
+./run_inference --act 100000 --live           # the robot's own cameras
 ```
+
+A **shadow rollout** drives the arm while the policy watches a recorded episode's cameras, played
+by `ros2 bag play`. The arm first moves to the episode's start pose, then the bag plays from the
+episode's first step.
 
 ---
 

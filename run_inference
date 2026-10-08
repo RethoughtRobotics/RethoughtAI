@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Run a downloaded checkpoint (models/<name>_*/step-<N>/) in tmux: the policy above, a shell below
+# with ./start typed. ./start connects the policy to the arm, ./stop holds the arm where it is.
+#   ./run_inference --act 100000                 shadow rollout of episode 4 (sim)
+#   ./run_inference --smolvla 30000 --episode 24
+#   ./run_inference --smolvla                    newest checkpoint
+#   ./run_inference --act 100000 --live          the robot's own cameras
+# Bring the arm and teleop up first (bringbackbaxter: run_sim_teleop.sh --left --policy).
+set -eo pipefail
+cd "$(dirname "$0")"
+
+NAME="" STEP="" EPISODE=4 LIVE="" CONFIG=configs/baxter.yaml
+while (( $# )); do
+    case "$1" in
+        --episode) EPISODE="$2"; shift ;;
+        --live) LIVE=1 ;;
+        --config) CONFIG="$2"; shift ;;
+        -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
+        --*) NAME="${1#--}"; [[ "${2:-}" =~ ^(step-)?[0-9]+$ ]] && { STEP="$2"; shift; } ;;
+        *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+    shift
+done
+[[ -n "$NAME" ]] || { echo "Name a model: ./run_inference --act 100000 (models: $(ls models | tr '\n' ' '))" >&2; exit 2; }
+
+# models/<name> or models/<name>_*, then its step-<N> (newest without a step)
+shopt -s nullglob
+dirs=(); for d in models/"$NAME" models/"$NAME"_*; do [[ -d "$d" ]] && dirs+=("$d"); done
+(( ${#dirs[@]} == 1 )) || { echo "--$NAME matches ${#dirs[@]} of: $(ls models | tr '\n' ' ')" >&2; exit 2; }
+if [[ -z "$STEP" ]]; then
+    MODEL=$(ls -d "${dirs[0]}"/step-* | sort | tail -1)
+else
+    MODEL="${dirs[0]}/step-$(printf %06d "$((10#${STEP#step-}))")"
+fi
+[[ -f "$MODEL/config.json" ]] || { echo "No checkpoint $MODEL (have: $(ls "${dirs[0]}" | tr '\n' ' '))" >&2; exit 2; }
+EPISODE_DIR="recorder/data/CupToContainer/episode_$(printf %03d "$((10#$EPISODE))")"
+[[ -n "$LIVE" || -d "$EPISODE_DIR" ]] || { echo "No episode $EPISODE_DIR" >&2; exit 2; }
+
+source launch/env.sh
+SESSION=rai_inference
+
+# One run at a time: two runtimes would fight over the arm. [x]: never match this script.
+OLD="[p]olicy.launch.py|[i]nference serve|[i]nference run|[r]os2 bag play"
+if pgrep -f "$OLD" >/dev/null; then
+    echo "Stopping the previous run..."
+    timeout 5 ros2 service call "$ENGAGE" std_srvs/srv/SetBool "{data: false}" >/dev/null 2>&1 || true
+    pkill -INT -f "$OLD" || true
+    for _ in $(seq 20); do pgrep -f "$OLD" >/dev/null || break; sleep 0.5; done
+    pkill -TERM -f "$OLD" || true
+fi
+tmux kill-session -t "$SESSION" 2>/dev/null || true
+timeout 10 ros2 topic echo --once /robot/joint_states >/dev/null 2>&1 \
+    || echo "Warning: no /robot/joint_states on ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}: is the sim (or robot) up?" >&2
+
+LAUNCH="ros2 launch launch/policy.launch.py model:=$MODEL config:=$CONFIG"
+[[ -n "$LIVE" ]] || LAUNCH+=" episode:=$EPISODE_DIR"
+tmux new-session -d -s "$SESSION" -c "$PWD" -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" -e CONFIG="$CONFIG" \
+    "source launch/env.sh; echo 'Model: $MODEL'; $LAUNCH; read -rp 'Policy stopped. Enter to close.'"
+tmux split-window -v -l 8 -t "$SESSION" -c "$PWD" -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" -e CONFIG="$CONFIG"
+for _ in $(seq 50); do [[ -n "$(tmux capture-pane -p -t "$SESSION":0.1 | tr -d "[:space:]")" ]] && break; sleep 0.1; done
+# typed at the prompt, not entered; a non-default domain spelled out (shell rc files may unset it)
+tmux send-keys -t "$SESSION":0.1 "${ROS_DOMAIN_ID:+ROS_DOMAIN_ID=$ROS_DOMAIN_ID }./start"
+if [[ -t 1 ]]; then
+    [[ -n "$TMUX" ]] && tmux switch-client -t "$SESSION" || tmux attach -t "$SESSION"
+else
+    echo "tmux session $SESSION started: tmux attach -t $SESSION"
+fi
