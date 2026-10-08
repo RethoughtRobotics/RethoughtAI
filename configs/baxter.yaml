@@ -24,11 +24,50 @@ topics:
     - /robot/end_effector/left_gripper/command
     - /robot/end_effector/right_gripper/state
     - /robot/end_effector/right_gripper/command
+    # Joint-space actions: the velocity command that reached the arm, and the teleop's IK
+    # (position: q, velocity: IK qdot, effort: qdot sent) and TCP twist.
+    - /robot/limb/left/joint_command
+    - /robot/limb/right/joint_command
+    - /teleop/left/ik
+    - /teleop/right/ik
+    - /teleop/left/tcp_twist
+    - /teleop/right/tcp_twist
+    # Contact and load: SEA commanded vs actual position/velocity/effort and gravity model,
+    # Baxter's endpoint pose/twist/wrench estimate, collision detection.
+    - /robot/limb/left/gravity_compensation_torques
+    - /robot/limb/right/gravity_compensation_torques
+    - /robot/limb/left/endpoint_state
+    - /robot/limb/right/endpoint_state
+    - /robot/limb/left/collision_detection_state
+    - /robot/limb/right/collision_detection_state
+    # Hand sensors: IMU, IR range to what is below the gripper.
+    - /robot/accelerometer/left_accelerometer/state
+    - /robot/accelerometer/right_accelerometer/state
+    - /robot/range/left_hand_range/state
+    - /robot/range/right_hand_range/state
+    # Camera intrinsics, static frames, robot enable/estop state.
+    - /cameras/left_hand_camera/camera_info
+    - /cameras/right_hand_camera/camera_info
+    - /cameras/third_eye/color/camera_info
+    - /tf_static
+    - /robot/state
     # inference run (policy runtime): what it sent the teleop
     - /policy/left/target
     - /policy/left/trigger
     - /policy/right/target
     - /policy/right/trigger
+  # Operator inputs (libsurvive_ros2), never --excluded: with swap_hands the right controller
+  # drives the left arm. Replaying them re-runs the teleop offline.
+  operator:
+    - /vive/left/target
+    - /vive/right/target
+    - /vive/left/trigger
+    - /vive/right/trigger
+    - /vive/left/b_button
+    - /vive/right/b_button
+    - /vive/left/thumbstick
+    - /vive/right/thumbstick
+    - /libsurvive/joy
 
 trigger:
   type: digital_io
