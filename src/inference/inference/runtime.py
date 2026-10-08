@@ -19,6 +19,7 @@ replay) or the `chunk` topic (policy_node). Each policy step merges the chunks c
   ensemble  ACT temporal ensembling, exp(-coeff * i), i = 0 the oldest
   latest    the newest chunk (RTC chunks already continue the last)
   ramp      each new chunk crossfades in over `ramp` steps, finishing within the overlap
+`horizon` keeps only a chunk's first steps: the merge reacts sooner, without retraining.
 After a hold, chunks crossfade in over `entry_ramp` s: a policy's first targets lead the TCP.
 With a `start` pose, the arm moves there first, then `on_start` runs.
 """
@@ -99,6 +100,7 @@ def check_merge(merge, chunk_size, every=1):
     kind = merge.get("type", "ensemble")
     if kind not in MERGES:
         raise ValueError(f"merge type {kind!r}: one of {', '.join(MERGES)}")
+    chunk_size = min(chunk_size, int(merge.get("horizon") or chunk_size))
     if every >= chunk_size:
         raise ValueError(f"every ({every}) must be below the chunk size ({chunk_size}), or the chunks leave gaps")
     if kind == "ramp":
@@ -121,6 +123,7 @@ class Runtime:
         self.n_action_steps = int(cfg.get("n_action_steps") or self.chunk_size)
         self.merge = merge or {"type": "ensemble" if cfg.get("temporal_ensemble_coeff") is not None else "latest",
                                "coeff": cfg.get("temporal_ensemble_coeff")}
+        self.horizon = int(self.merge["horizon"]) if self.merge.get("horizon") else None
         deadman = cfg["deadman"]
         self.deadman_id, self.deadman_button = deadman["frame_id"], int(deadman["button"])
         self.held = False
@@ -204,7 +207,8 @@ class Runtime:
         rotations = Rotation.from_quat([[x.rotation.x, x.rotation.y, x.rotation.z, x.rotation.w] for x in tf])
         joints = msg.joint_trajectory.points
         triggers = np.array([p.positions[0] for p in joints]) if len(joints) == len(points) else None
-        self.chunks.append(Chunk(t, positions, rotations, triggers, self._now()))
+        n = self.horizon or len(t)
+        self.chunks.append(Chunk(t[:n], positions[:n], rotations[:n], None if triggers is None else triggers[:n], self._now()))
 
     def _log(self, text):
         self.node.get_logger().info(text)
@@ -310,7 +314,8 @@ class Runtime:
         p_obs, q_obs, _ = self.tcp
         actions = self.policy({"step": self.step, "tcp_position": p_obs, "tcp_orientation": q_obs})
         positions, rotations = apply_actions(actions, p_obs, q_obs)
-        self.chunks.append(Chunk(t + self.dt * np.arange(len(actions)), positions, rotations, actions[:, 6], t))
+        n = self.horizon or len(actions)
+        self.chunks.append(Chunk(t + self.dt * np.arange(n), positions[:n], rotations[:n], actions[:n, 6], t))
 
     def _combine(self, t):
         """(position, Rotation, trigger) at t from the chunks covering it, or None."""

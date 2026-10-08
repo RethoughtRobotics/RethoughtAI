@@ -122,7 +122,9 @@ inference:
   policies:
     act:
       every: 1
-      merge: {type: ensemble, coeff: 0.01}
+      # held-out, vs the demonstrator's goal: 100 / +0.01 (ACT paper) 95 mm off; 30 / -0.05 65 mm,
+      # with 99th-percentile steps 10 -> 16 mm. Newest-favouring, last 1.2 s: reacts sooner.
+      merge: {type: ensemble, coeff: -0.05, horizon: 30}
     smolvla:
       every: 10
       merge: {type: latest}

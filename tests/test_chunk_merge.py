@@ -174,3 +174,19 @@ def test_engaged_goals_map_through_the_teleops_stroke_rule():
     rt._publish(home + [0.05, 0, 0], q, None, engaged=True)  # goal 5 cm ahead of the TCP
     teleop_goal = rt.ref[0] + (sent[-1] - rt.ref[2])  # what the teleop servos to
     assert np.allclose(teleop_goal, home + [0.05, 0, 0], atol=1e-5)
+
+
+def test_horizon_keeps_only_the_first_steps():
+    class Still:
+        def __call__(self, observation):
+            return np.tile([0.02, 0, 0, 0, 0, 0, 1.0], (100, 1))
+
+    rt = Runtime(FakeNode(), {**CFG, "temporal_ensemble_coeff": 0.01, "n_action_steps": 1, "entry_ramp": 0},
+                 Still(), merge={"type": "ensemble", "coeff": 0.01, "horizon": 20})
+    rt.tcp = (np.array([0.5, 0.0, 0.1]), np.array([0, 0, 0, 1.0]), 0.0)
+    rt.hold = (rt.tcp[0], Rotation.identity())
+    rt._policy_step(0.0)
+    assert len(rt.chunks[0].t) == 20
+    with pytest.raises(ValueError):
+        check_merge({"type": "ensemble", "coeff": 0.01, "horizon": 10}, 100, every=10)
+
