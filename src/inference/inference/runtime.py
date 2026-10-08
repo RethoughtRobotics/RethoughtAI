@@ -1,33 +1,31 @@
 """Policy runtime: drives a robot's teleop the way its VR controller does, from action chunks.
 
-The teleop is left as is and pointed at this node instead of the controller (bringbackbaxter:
-run_teleop.sh --policy), so a policy's actions go through the same servo, IK, gripper filter and
-home button as a human's. It publishes what libsurvive_ros2 publishes for a hand:
-  target   PoseStamped, the desired TCP pose in the base frame, streamed at publish_rate while
-           engaged and exactly frozen while not, which the teleop reads as a released clutch (the
-           arm holds). It freezes at the measured TCP, so the next engage starts without an offset.
-  trigger  Float32, 0 open .. 1 closed.
-Engaged = the deadman button held, its controller tracked, and a fresh TCP from the teleop (which
-stops publishing it while the arm moves home).
+The teleop is pointed at this node instead of the controller (bringbackbaxter: run_teleop.sh
+--policy), so policy actions go through the same servo, IK, gripper filter and home button as a
+human's. It publishes what libsurvive_ros2 publishes for a hand:
+  target   PoseStamped, desired TCP pose in the base frame; frozen while released, which the
+           teleop reads as a released clutch
+  trigger  Float32, 0 open .. 1 closed
+Engaged: the deadman held (or the `engage` service) and a fresh TCP.
 
-Each policy step (1/fps, counted only while engaged) the policy maps the observation to an action
-chunk (adapter.labels: targets relative to the TCP at observation time, plus the trigger), which
-is anchored on the TCP measured then. As in ACT: with temporal_ensemble_coeff set, a chunk is
-predicted every step and a step's target is the exp(-coeff * i) weighted mean of every chunk's
-prediction for it (i = 0 the oldest); without it, n_action_steps of each chunk run before the
-next prediction. Between steps the target moves linearly to the next step's.
-
-A policy with a `start` pose (a replay) is first approached: the target moves there from the TCP
-at APPROACH_SPEED, and step 0 runs once the TCP is within START_TOLERANCE of it.
+A chunk is a trajectory of TCP targets timed from its observation: from a policy called here (a
+replay) or the `chunk` topic (policy_node). Each policy step merges the chunks covering it:
+  ensemble  ACT temporal ensembling, exp(-coeff * i), i = 0 the oldest
+  latest    the newest chunk (RTC chunks already continue the last)
+  ramp      each new chunk crossfades in over `ramp` steps, finishing within the overlap
+After a hold, chunks crossfade in over `entry_ramp` s: a policy's first targets lead the TCP.
+With a `start` pose, the arm moves there first, then `on_start` runs.
 """
 
-import time
+from dataclasses import dataclass
 
 import numpy as np
 from geometry_msgs.msg import PoseStamped
+from moveit_msgs.msg import RobotTrajectory
 from scipy.spatial.transform import Rotation, Slerp
 from sensor_msgs.msg import Joy
 from std_msgs.msg import Float32
+from std_srvs.srv import SetBool
 
 from adapter.labels import apply_actions
 
@@ -38,18 +36,86 @@ START_TOLERANCE = (0.005, np.radians(2.0))  # m, rad
 # The teleop reads an unchanged pose as a released clutch. A human holding still while clutched never
 # repeats one (tracker noise), so an engaged target that would repeat alternates by this much (m).
 ENGAGED_JITTER = 1e-6
+MERGES = ("ensemble", "latest", "ramp")
+ENTRY_RAMP = 1.0  # s
+
+
+def continuous(q):
+    """Quaternions with consecutive ones in the same hemisphere, for interpolation."""
+    q = np.array(q, dtype=float)
+    flips = np.cumsum(np.r_[0, np.einsum("ij,ij->i", q[1:], q[:-1]) < 0]) % 2 == 1
+    q[flips] *= -1
+    return q
+
+
+@dataclass
+class Chunk:
+    """TCP targets and triggers at times t (s, ROS clock)."""
+    t: np.ndarray
+    positions: np.ndarray
+    rotations: Rotation
+    triggers: np.ndarray | None
+    arrival: float  # executed from here on
+
+    def __post_init__(self):
+        self.quats = continuous(self.rotations.as_quat())
+
+    @property
+    def end(self):
+        return self.t[-1]
+
+    def sample(self, t):
+        """(position, quaternion, trigger) at t. nlerp: steps are close, and slerp is too slow here."""
+        i = int(np.clip(np.searchsorted(self.t, t, side="right") - 1, 0, len(self.t) - 2))
+        a = float(np.clip((t - self.t[i]) / (self.t[i + 1] - self.t[i]), 0.0, 1.0))
+        q = (1 - a) * self.quats[i] + a * self.quats[i + 1]
+        trigger = None if self.triggers is None else (1 - a) * self.triggers[i] + a * self.triggers[i + 1]
+        return (1 - a) * self.positions[i] + a * self.positions[i + 1], q / np.linalg.norm(q), trigger
+
+    def at(self, t):
+        """(position, Rotation, trigger) at time t."""
+        p, q, trigger = self.sample(t)
+        return p, Rotation.from_quat(q), trigger
+
+
+def blend(x, y, w):
+    """(position, Rotation, trigger) w of the way from x to y."""
+    R = x[1] * Rotation.from_rotvec(w * (x[1].inv() * y[1]).as_rotvec())
+    trigger = y[2] if x[2] is None else x[2] if y[2] is None else (1 - w) * x[2] + w * y[2]
+    return (1 - w) * x[0] + w * y[0], R, trigger
+
+
+def check_merge(merge, chunk_size, every=1):
+    """Reject merge settings that leave gaps or jumps; return a warning, if any."""
+    kind = merge.get("type", "ensemble")
+    if kind not in MERGES:
+        raise ValueError(f"merge type {kind!r}: one of {', '.join(MERGES)}")
+    if every >= chunk_size:
+        raise ValueError(f"every ({every}) must be below the chunk size ({chunk_size}), or the chunks leave gaps")
+    if kind == "ramp":
+        ramp = int(merge["ramp"])
+        if not 0 < ramp < chunk_size:
+            raise ValueError(f"ramp ({ramp}) must be in 1 .. chunk size - 1 ({chunk_size - 1})")
+        if ramp > chunk_size - every:
+            return (f"ramp ({ramp}) is longer than a chunk's overlap with the next ({chunk_size - every}): "
+                    "crossfades are cut short")
+    return None
 
 
 class Runtime:
-    def __init__(self, node, cfg, policy):
+    def __init__(self, node, cfg, policy=None, merge=None, start=None, on_start=None):
+        """Chunks from `policy` (e.g. a replay) or, without one, from cfg["chunk"]."""
         self.node, self.policy = node, policy
         self.fps = float(cfg["fps"])
+        self.dt = 1.0 / self.fps
         self.chunk_size = int(cfg["chunk_size"])
         self.n_action_steps = int(cfg.get("n_action_steps") or self.chunk_size)
-        self.coeff = cfg.get("temporal_ensemble_coeff")
+        self.merge = merge or {"type": "ensemble" if cfg.get("temporal_ensemble_coeff") is not None else "latest",
+                               "coeff": cfg.get("temporal_ensemble_coeff")}
         deadman = cfg["deadman"]
         self.deadman_id, self.deadman_button = deadman["frame_id"], int(deadman["button"])
         self.held = False
+        self.requested = False  # engage service
         self.alive = -np.inf if deadman.get("alive") else np.inf  # last pose of the deadman's controller
         self.tcp = None  # (position, quaternion, receive time)
         self.frozen = None  # (position, quaternion) published while released
@@ -57,9 +123,14 @@ class Runtime:
         self.engaged = False
         self.done = False
         self.step = 0
-        self.chunks = []  # (start step, positions (K, 3), Rotations, triggers (K,)), oldest first
+        self.chunks = []  # Chunk, oldest first
+        self.accept_after = np.inf  # older chunks predate this run
         self.segment = None  # (start time, (p, R, trigger) at this step, (p, R) at the next)
-        self.start = getattr(policy, "start", None)  # (position, quaternion) to reach before step 0
+        self.hold = None  # (p, R) when no chunk covers a step
+        self.entry = None  # (time, (p, R, trigger)) chunks resumed from a hold
+        self.entry_ramp = float(cfg.get("entry_ramp", ENTRY_RAMP))
+        self.start = start if start is not None else getattr(policy, "start", None)  # pose to reach before step 0
+        self.on_start = on_start
         self.approach = None  # (time, position, Rotation) the approach target was last at
         self.published = None  # last position sent
         self.jitter = ENGAGED_JITTER
@@ -67,36 +138,63 @@ class Runtime:
         node.create_subscription(PoseStamped, cfg["tcp"], self._on_tcp, 10)
         node.create_subscription(Joy, deadman["topic"], self._on_joy, 10)
         if deadman.get("alive"):
-            node.create_subscription(PoseStamped, deadman["alive"], lambda m: setattr(self, "alive", time.monotonic()), 10)
+            node.create_subscription(PoseStamped, deadman["alive"], lambda m: setattr(self, "alive", self._now()), 10)
+        if policy is None:
+            node.create_subscription(RobotTrajectory, cfg["chunk"], self._on_chunk, 10)
+        node.create_service(SetBool, cfg["engage"], self._on_engage)
         self.target_pub = node.create_publisher(PoseStamped, cfg["target"], 10)
         self.trigger_pub = node.create_publisher(Float32, cfg["trigger"], 10)
         node.create_timer(1.0 / float(cfg["publish_rate"]), self._tick)
 
+    def _now(self):
+        return self.node.get_clock().now().nanoseconds * 1e-9
+
     def _on_tcp(self, msg):
         p, o = msg.pose.position, msg.pose.orientation
-        self.tcp = (np.array([p.x, p.y, p.z]), np.array([o.x, o.y, o.z, o.w]), time.monotonic())
+        self.tcp = (np.array([p.x, p.y, p.z]), np.array([o.x, o.y, o.z, o.w]), self._now())
 
     def _on_joy(self, msg):
         if msg.header.frame_id == self.deadman_id and len(msg.buttons) > self.deadman_button:
             self.held = bool(msg.buttons[self.deadman_button])
 
+    def _on_engage(self, request, response):
+        self.requested = bool(request.data)
+        response.success, response.message = True, "engage requested" if self.requested else "released"
+        return response
+
+    def _on_chunk(self, msg):
+        t0 = msg.joint_trajectory.header.stamp
+        t0 = t0.sec + t0.nanosec * 1e-9
+        points = msg.multi_dof_joint_trajectory.points
+        if not self.engaged or self.start is not None or t0 < self.accept_after or len(points) < 2:
+            return
+        t = t0 + np.array([p.time_from_start.sec + p.time_from_start.nanosec * 1e-9 for p in points])
+        tf = [p.transforms[0] for p in points]
+        positions = np.array([[x.translation.x, x.translation.y, x.translation.z] for x in tf])
+        rotations = Rotation.from_quat([[x.rotation.x, x.rotation.y, x.rotation.z, x.rotation.w] for x in tf])
+        joints = msg.joint_trajectory.points
+        triggers = np.array([p.positions[0] for p in joints]) if len(joints) == len(points) else None
+        self.chunks.append(Chunk(t, positions, rotations, triggers, self._now()))
+
     def _log(self, text):
         self.node.get_logger().info(text)
 
     def _tick(self):
-        now = time.monotonic()
+        now = self._now()
         tcp_fresh = self.tcp is not None and now - self.tcp[2] < TCP_STALE
-        engage = self.held and tcp_fresh and now - self.alive < TCP_STALE and not self.done
+        deadman = self.held and now - self.alive < TCP_STALE
+        engage = (deadman or self.requested) and tcp_fresh and not self.done
         if not engage:
             self._released(tcp_fresh)
             return
         if not self.engaged:
             self._log(f"Engaged at step {self.step}")
             self.engaged, self.chunks, self.segment, self.approach = True, [], None, None
+            self.hold, self.accept_after = (self.tcp[0], Rotation.from_quat(self.tcp[1])), now
         if self.start is not None:
             self._approach(now)
             return
-        if self.segment is None or now - self.segment[0] >= 1.0 / self.fps:
+        if self.segment is None or now - self.segment[0] >= self.dt:
             if not self._policy_step(now):
                 return
         start, (p0, R0, trigger), (p1, R1) = self.segment
@@ -122,7 +220,9 @@ class Runtime:
         if (np.linalg.norm(p_tcp - p_goal) < START_TOLERANCE[0]
                 and (Rotation.from_quat(q_tcp).inv() * R_goal).magnitude() < START_TOLERANCE[1]):
             self._log("At the start pose: running the policy")
-            self.start = None
+            self.start, self.hold, self.accept_after = None, (p, R), now
+            if self.on_start is not None:
+                self.on_start()
 
     def _released(self, tcp_fresh):
         """Hold: freeze the target at the TCP (again only if the arm moved, e.g. homed)."""
@@ -140,39 +240,67 @@ class Runtime:
             self._publish(*self.frozen, self.trigger)
 
     def _policy_step(self, now):
-        if hasattr(self.policy, "__len__") and self.step >= len(self.policy):
-            self.done = True
-            self._released(True)
-            return False
-        if not self.chunks or self.coeff is not None or self.step - self.chunks[-1][0] >= self.n_action_steps:
-            p_obs, q_obs, _ = self.tcp
-            actions = self.policy({"step": self.step, "tcp_position": p_obs, "tcp_orientation": q_obs})
-            positions, rotations = apply_actions(actions, p_obs, q_obs)
-            self.chunks.append((self.step, positions, rotations, actions[:, 6]))
-            self.chunks = [c for c in self.chunks if c[0] + len(c[1]) > self.step]
-            if self.coeff is None:
-                self.chunks = self.chunks[-1:]
-        current = self._combine(self.step)
-        following = self._combine(self.step + 1) or current
-        start = now if self.segment is None else self.segment[0] + 1.0 / self.fps
-        self.segment = (start, current, following[:2])
+        t = now if self.segment is None else self.segment[0] + self.dt  # this step's time
+        if self.policy is not None:
+            if hasattr(self.policy, "__len__") and self.step >= len(self.policy):
+                self.done = True
+                self._released(True)
+                return False
+            if (not self.chunks or self.merge["type"] == "ensemble"
+                    or t - self.chunks[-1].t[0] >= (self.n_action_steps - 0.5) * self.dt):
+                self._call_policy(t)
+        self.chunks = [c for c in self.chunks if c.end >= t]
+        if self.merge["type"] != "ensemble":  # drop superseded chunks
+            settle = 0.0 if self.merge["type"] == "latest" else (int(self.merge["ramp"]) + 1) * self.dt
+            done = [i for i, c in enumerate(self.chunks) if c.arrival + settle <= t]
+            self.chunks = self.chunks[done[-1]:] if done else self.chunks
+        merged, merged_next = self._combine(t), self._combine(t + self.dt)
+        if merged is None:
+            self.entry, current = None, (*self.hold, self.trigger)
+        else:
+            if self.entry is None:
+                self.entry = (t, (*self.hold, self.trigger))
+            current = self._entered(t, merged)
+        following = current if merged is None or merged_next is None else self._entered(t + self.dt, merged_next)
+        self.hold = current[:2]
+        self.segment = (t, current, following[:2])
         self.step += 1
         return True
 
-    def _combine(self, step):
-        """(position, Rotation, trigger) for `step` from the chunks covering it, or None."""
-        covering = [(c[1][step - c[0]], c[2][step - c[0]], c[3][step - c[0]])
-                    for c in self.chunks if c[0] <= step < c[0] + len(c[1])]
+    def _entered(self, t, merged):
+        """`merged`, crossfaded in from the hold."""
+        w = (t - self.entry[0]) / self.entry_ramp if self.entry_ramp > 0 else 1.0
+        return merged if w >= 1.0 else blend(self.entry[1], merged, max(w, 0.0))
+
+    def _call_policy(self, t):
+        p_obs, q_obs, _ = self.tcp
+        actions = self.policy({"step": self.step, "tcp_position": p_obs, "tcp_orientation": q_obs})
+        positions, rotations = apply_actions(actions, p_obs, q_obs)
+        self.chunks.append(Chunk(t + self.dt * np.arange(len(actions)), positions, rotations, actions[:, 6], t))
+
+    def _combine(self, t):
+        """(position, Rotation, trigger) at t from the chunks covering it, or None."""
+        covering = [c for c in self.chunks if c.t[0] <= t <= c.end and c.arrival <= t + 1e-9]
         if not covering:
             return None
-        if self.coeff is None:
-            return covering[-1]
-        w = np.exp(-float(self.coeff) * np.arange(len(covering)))
-        w /= w.sum()
-        positions = np.array([c[0] for c in covering])
-        rotations = Rotation.concatenate([c[1] for c in covering])
-        triggers = np.array([c[2] for c in covering])
-        return w @ positions, rotations.mean(weights=w), float(w @ triggers)
+        kind = self.merge["type"]
+        if kind == "latest":
+            return covering[-1].at(t)
+        if kind == "ensemble":
+            samples = [c.sample(t) for c in covering]
+            w = np.exp(-float(self.merge["coeff"]) * np.arange(len(samples)))
+            w /= w.sum()
+            trigger = None if samples[0][2] is None else float(w @ [s[2] for s in samples])
+            return (w @ np.array([s[0] for s in samples]),
+                    Rotation.from_quat([s[1] for s in samples]).mean(weights=w), trigger)
+        samples = [c.at(t) for c in covering]
+        ramp = int(self.merge["ramp"])
+        merged = samples[0]
+        for older, chunk, sample in zip(covering, covering[1:], samples[1:]):
+            overlap = (older.end - chunk.arrival) * self.fps  # the ramp must finish within it
+            span = max(1.0, min(ramp + 1.0, overlap))
+            merged = blend(merged, sample, min(1.0, ((t - chunk.arrival) * self.fps + 1.0) / span))
+        return merged
 
     def _publish(self, position, quaternion, trigger, engaged=False):
         position = np.asarray(position, dtype=float)

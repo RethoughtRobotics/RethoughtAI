@@ -1,0 +1,118 @@
+import numpy as np
+import pytest
+from scipy.spatial.transform import Rotation
+
+from adapter.labels import apply_actions, model_state, relative_actions
+from inference.runtime import Chunk, Runtime, check_merge
+
+FPS = 25.0
+CFG = {"fps": FPS, "chunk_size": 100, "publish_rate": 100, "tcp": "tcp", "target": "target", "trigger": "trigger",
+       "engage": "engage", "chunk": "chunk", "deadman": {"topic": "joy", "frame_id": "x", "button": 0}}
+
+
+class FakeNode:
+    def __getattr__(self, name):  # create_subscription, create_publisher, create_service, create_timer
+        return lambda *a, **k: None
+
+
+def runtime(merge):
+    return Runtime(FakeNode(), CFG, merge=merge)
+
+
+def line(t0, arrival, x0, slope, k=100):
+    """A chunk moving along x at `slope` m/s from x0, observed at t0."""
+    t = t0 + np.arange(k) / FPS
+    positions = np.column_stack([x0 + slope * (t - t0), np.zeros(k), np.zeros(k)])
+    return Chunk(t, positions, Rotation.identity(k), np.zeros(k), arrival)
+
+
+def test_chunk_interpolates_between_steps():
+    c = Chunk(np.array([0.0, 0.04]), np.array([[0, 0, 0], [1, 0, 0]], float),
+              Rotation.from_rotvec([[0, 0, 0], [0, 0, 0.1]]), np.array([0.0, 1.0]), 0.0)
+    p, R, trigger = c.at(0.01)
+    assert np.allclose(p, [0.25, 0, 0]) and trigger == pytest.approx(0.25)
+    assert R.as_rotvec() == pytest.approx([0, 0, 0.025], abs=1e-4)  # nlerp = slerp at a step's rotation
+
+
+def test_interpolation_takes_the_short_way_across_quaternion_sign_flips():
+    q = Rotation.from_rotvec([[0, 0, 3.1], [0, 0, -3.1]]).as_quat()  # 0.08 rad apart, across +-pi
+    q[1] *= -1 if np.dot(q[0], q[1]) > 0 else 1                     # stored in opposite hemispheres
+    c = Chunk(np.array([0.0, 0.04]), np.zeros((2, 3)), Rotation.from_quat(q), None, 0.0)
+    assert (c.at(0.02)[1].inv() * Rotation.from_rotvec([0, 0, np.pi])).magnitude() < 1e-3
+
+
+def test_ramp_reaches_the_new_chunk_without_a_jump_even_when_the_overlap_is_short():
+    rt = runtime({"type": "ramp", "ramp": 40})
+    old = line(0.0, 0.0, 0.0, 0.1)            # ends at t = 3.96 s
+    new = line(3.5, 3.6, 0.05, 0.1)           # offset 5 cm; overlap with old: ~9 steps < ramp
+    rt.chunks = [old, new]
+    ts = np.arange(3.6, 3.96, 1 / FPS)
+    x = np.array([rt._combine(t)[0][0] for t in ts])
+    assert np.diff(x).max() < 0.1 / FPS + 0.05 / 5  # the 5 cm offset spread over the overlap's steps
+    assert rt._combine(old.end)[0][0] == pytest.approx(new.at(old.end)[0][0])  # weight 1 by the old chunk's end
+
+
+def test_ensemble_of_identical_chunks_is_the_chunk():
+    rt = runtime({"type": "ensemble", "coeff": 0.01})
+    rt.chunks = [line(0.0, 0.0, 0.0, 0.1), line(0.04, 0.04, 0.004, 0.1)]
+    assert rt._combine(1.0)[0][0] == pytest.approx(0.1)
+
+
+def test_chunks_are_used_only_from_their_arrival():
+    rt = runtime({"type": "latest"})
+    rt.chunks = [line(0.0, 0.0, 0.0, 0.1), line(0.5, 0.7, 1.0, 0.1)]
+    assert rt._combine(0.6)[0][0] == pytest.approx(0.06)
+    assert rt._combine(0.8)[0][0] == pytest.approx(1.03)
+
+
+def test_merge_guards():
+    with pytest.raises(ValueError):
+        check_merge({"type": "ramp", "ramp": 100}, 100)
+    with pytest.raises(ValueError):
+        check_merge({"type": "ensemble", "coeff": 0.01}, 50, every=50)
+    assert check_merge({"type": "ramp", "ramp": 40}, 50, every=25) is not None
+    assert check_merge({"type": "latest"}, 50, every=10) is None
+
+
+def test_relative_actions_invert_apply_actions():
+    rng = np.random.default_rng(0)
+    actions = np.column_stack([rng.normal(0, 0.1, (5, 3)), rng.normal(0, 0.3, (5, 3)), rng.uniform(0, 1, 5)])
+    tcp_p, tcp_q = np.array([0.6, 0.1, 0.0]), Rotation.random(random_state=1).as_quat()
+    positions, rotations = apply_actions(actions, tcp_p, tcp_q)
+    assert relative_actions(positions, rotations, actions[:, 6], tcp_p, tcp_q) == pytest.approx(actions)
+
+
+def test_model_state_uses_rotation_columns_and_ignores_quaternion_sign():
+    q = Rotation.from_euler("xyz", [0.3, -0.2, 1.0]).as_quat()
+    s = model_state(np.zeros(3), q, 0.5, np.arange(7.0))
+    R = Rotation.from_quat(q).as_matrix()
+    assert s.shape == (17,) and np.allclose(s[3:6], R[:, 0]) and np.allclose(s[6:9], R[:, 1])
+    assert np.allclose(s, model_state(np.zeros(3), -q, 0.5, np.arange(7.0)))
+
+
+def test_chunks_after_a_hold_crossfade_in_instead_of_jumping():
+    rt = runtime({"type": "ensemble", "coeff": 0.01})
+    rt.hold, rt.tcp = (np.zeros(3), Rotation.identity()), (np.zeros(3), np.array([0, 0, 0, 1.0]), 0.0)
+    rt.chunks = [line(0.0, 0.0, 0.066, 0.0)]  # a still chunk 66 mm ahead (the servo lead)
+    x = []
+    for k in range(40):
+        rt._policy_step(k / FPS)
+        x.append(rt.segment[1][0][0])
+    assert x[0] == 0.0  # starts at the hold
+    assert np.diff(x).max() <= 0.066 / (FPS * 1.0) + 1e-9  # spread over the 1 s entry ramp
+    assert x[-1] == pytest.approx(0.066)
+
+
+def test_in_process_policy_chunks_run_through_the_same_merge():
+    """--replay: a policy called each step, its chunk anchored on the TCP at that step."""
+    class Still:  # every chunk: 2 cm ahead in x, gripper closed
+        def __call__(self, observation):
+            return np.tile([0.02, 0, 0, 0, 0, 0, 1.0], (100, 1))
+
+    rt = Runtime(FakeNode(), {**CFG, "temporal_ensemble_coeff": 0.01, "n_action_steps": 1, "entry_ramp": 0}, Still())
+    rt.tcp = (np.array([0.5, 0.0, 0.1]), np.array([0, 0, 0, 1.0]), 0.0)
+    rt.hold = (rt.tcp[0], Rotation.identity())
+    for k in range(5):
+        rt._policy_step(k / FPS)
+    p, R, trigger = rt.segment[1]
+    assert np.allclose(p, [0.52, 0, 0.1]) and trigger == pytest.approx(1.0) and len(rt.chunks) == 5
