@@ -45,10 +45,12 @@ topics:
     - /robot/accelerometer/right_accelerometer/state
     - /robot/range/left_hand_range/state
     - /robot/range/right_hand_range/state
-    # Camera intrinsics, static frames, robot enable/estop state.
+    # Camera intrinsics, robot frames (for bag viewers; also rebuildable from joints + URDF),
+    # robot enable/estop state.
     - /cameras/left_hand_camera/camera_info
     - /cameras/right_hand_camera/camera_info
     - /cameras/third_eye/color/camera_info
+    - /tf
     - /tf_static
     - /robot/state
     # inference run (policy runtime): what it sent the teleop
@@ -68,6 +70,8 @@ topics:
     - /vive/left/thumbstick
     - /vive/right/thumbstick
     - /libsurvive/joy
+    - /libsurvive/tf          # VR tracking tree, kept off /tf
+    - /libsurvive/tf_static
 
 trigger:
   type: digital_io
