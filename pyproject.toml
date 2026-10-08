@@ -16,7 +16,9 @@ dependencies = [
     "scipy",
     "forge-robotics",
     "huggingface-hub",
-    "lerobot[dataset]>=0.6.1",
+    "lerobot[dataset,smolvla]>=0.6.1",
+    "torch",
+    "torchvision",
 ]
 
 [project.scripts]
@@ -30,3 +32,13 @@ packages = [
     "src/adapter/adapter",
     "src/inference/inference",
 ]
+
+# CUDA 12.8 torch: runs on NVIDIA driver >= 525; PyPI's CUDA 13 build needs >= 580
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
