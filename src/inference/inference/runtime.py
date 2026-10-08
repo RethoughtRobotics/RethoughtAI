@@ -19,8 +19,7 @@ replay) or the `chunk` topic (policy_node). Each policy step merges the chunks c
   ensemble  ACT temporal ensembling, exp(-coeff * i), i = 0 the oldest
   latest    the newest chunk (RTC chunks already continue the last)
   ramp      each new chunk crossfades in over `ramp` steps, finishing within the overlap
-Execution waits for `warmup` chunks observed after engaging, then crossfades in over `entry_ramp` s
-from the hold: a policy's first targets lead the TCP.
+After a hold, chunks crossfade in over `entry_ramp` s: a policy's first targets lead the TCP.
 With a `start` pose, the arm moves there first, then `on_start` runs.
 """
 
@@ -113,7 +112,7 @@ def check_merge(merge, chunk_size, every=1):
 
 
 class Runtime:
-    def __init__(self, node, cfg, policy=None, merge=None, start=None, on_start=None, warmup=1):
+    def __init__(self, node, cfg, policy=None, merge=None, start=None, on_start=None):
         """Chunks from `policy` (e.g. a replay) or, without one, from cfg["chunk"]."""
         self.node, self.policy = node, policy
         self.fps = float(cfg["fps"])
@@ -132,7 +131,6 @@ class Runtime:
         self.settled = -np.inf  # since when the teleop can have re-referenced (release, B, TCP back)
         self.fresh = False  # TCP fresh last tick
         self.ref = None  # (TCP p, TCP Rotation, target p, target Rotation) at engage: goal -> target
-        self.warmup, self.received = max(1, int(warmup)), 0  # chunks to wait for; received this run
         self.trigger = None
         self.engaged = False
         self.done = False
@@ -184,7 +182,7 @@ class Runtime:
     def _on_home(self, msg):
         """B: the teleop homes the arm. Release once, so nothing carries over: the policy server
         resets, and re-engaging (./start still on, or the clutch held) starts from fresh chunks."""
-        self.chunks, self.segment, self.entry, self.approach, self.received = [], None, None, None, 0
+        self.chunks, self.segment, self.entry, self.approach = [], None, None, None
         self.trigger = 0.0  # open: the teleop opens it to home, and follows this trigger after
         self.trigger_pub.publish(Float32(data=self.trigger))
         self.settled = self._now()  # re-engage only after homing
@@ -207,7 +205,6 @@ class Runtime:
         joints = msg.joint_trajectory.points
         triggers = np.array([p.positions[0] for p in joints]) if len(joints) == len(points) else None
         self.chunks.append(Chunk(t, positions, rotations, triggers, self._now()))
-        self.received += 1
 
     def _log(self, text):
         self.node.get_logger().info(text)
@@ -227,7 +224,7 @@ class Runtime:
             return
         if not self.engaged:
             self._log(f"Engaged at step {self.step}")
-            self.engaged, self.chunks, self.segment, self.approach, self.received = True, [], None, None, 0
+            self.engaged, self.chunks, self.segment, self.approach = True, [], None, None
             self._announce()
             p, R = self.tcp[0], Rotation.from_quat(self.tcp[1])
             self.ref = (p, R, self.frozen[0], Rotation.from_quat(self.frozen[1]))
@@ -261,7 +258,7 @@ class Runtime:
         if (np.linalg.norm(p_tcp - p_goal) < START_TOLERANCE[0]
                 and (Rotation.from_quat(q_tcp).inv() * R_goal).magnitude() < START_TOLERANCE[1]):
             self._log("At the start pose: running the policy")
-            self.start, self.hold, self.accept_after, self.received = None, (p, R), now, 0
+            self.start, self.hold, self.accept_after = None, (p, R), now
             if self.on_start is not None:
                 self.on_start()
 
@@ -291,10 +288,7 @@ class Runtime:
             settle = 0.0 if self.merge["type"] == "latest" else (int(self.merge["ramp"]) + 1) * self.dt
             done = [i for i, c in enumerate(self.chunks) if c.arrival + settle <= t]
             self.chunks = self.chunks[done[-1]:] if done else self.chunks
-        if self.policy is None and self.received < self.warmup:  # wait for chunks from fresh images
-            merged = merged_next = None
-        else:
-            merged, merged_next = self._combine(t), self._combine(t + self.dt)
+        merged, merged_next = self._combine(t), self._combine(t + self.dt)
         if merged is None:
             self.entry, current = None, (*self.hold, self.trigger)
         else:

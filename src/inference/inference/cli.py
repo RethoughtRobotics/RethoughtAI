@@ -135,8 +135,7 @@ def run(config, episode, model, start_at, player, revision):
 
     def setup(node):
         on_start = start_player(node, player, first) if player else None
-        Runtime(node, cfg, merge=settings["merge"], start=start, on_start=on_start,
-                warmup=settings.get("warmup_chunks", 1))
+        Runtime(node, cfg, merge=settings["merge"], start=start, on_start=on_start)
 
     spin("policy_runtime", setup)
 

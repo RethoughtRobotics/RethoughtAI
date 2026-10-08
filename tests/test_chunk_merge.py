@@ -96,7 +96,7 @@ def test_model_state_uses_rotation_columns_and_ignores_quaternion_sign():
 def test_chunks_after_a_hold_crossfade_in_instead_of_jumping():
     rt = runtime({"type": "ensemble", "coeff": 0.01})
     rt.hold, rt.tcp = (np.zeros(3), Rotation.identity()), (np.zeros(3), np.array([0, 0, 0, 1.0]), 0.0)
-    rt.chunks, rt.received = [line(0.0, 0.0, 0.066, 0.0)], 1  # a still chunk 66 mm ahead (the servo lead)
+    rt.chunks = [line(0.0, 0.0, 0.066, 0.0)]  # a still chunk 66 mm ahead (the servo lead)
     x = []
     for k in range(40):
         rt._policy_step(k / FPS)
@@ -174,15 +174,3 @@ def test_engaged_goals_map_through_the_teleops_stroke_rule():
     rt._publish(home + [0.05, 0, 0], q, None, engaged=True)  # goal 5 cm ahead of the TCP
     teleop_goal = rt.ref[0] + (sent[-1] - rt.ref[2])  # what the teleop servos to
     assert np.allclose(teleop_goal, home + [0.05, 0, 0], atol=1e-5)
-
-
-def test_waits_for_warmup_chunks():
-    rt = runtime({"type": "latest"})
-    rt.warmup, rt.hold, rt.trigger = 2, (np.zeros(3), Rotation.identity()), None
-    rt.chunks = [line(0.0, 0.0, 0.066, 0.0)]
-    rt.received = 1
-    rt._policy_step(0.0)
-    assert rt.segment[1][0][0] == 0.0  # one chunk in: still holding
-    rt.received = 2
-    rt._policy_step(0.04)
-    assert rt.entry is not None  # two: executing (crossfading in)
