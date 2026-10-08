@@ -121,8 +121,8 @@ def test_in_process_policy_chunks_run_through_the_same_merge():
     assert np.allclose(p, [0.52, 0, 0.1]) and trigger == pytest.approx(1.0) and len(rt.chunks) == 5
 
 
-def test_home_disconnects_and_clears():
+def test_home_clears_but_keeps_the_run_on():
     rt = runtime({"type": "ensemble", "coeff": 0.01})
     rt.requested, rt.chunks, rt.segment = True, [line(0.0, 0.0, 0.0, 0.1)], (0.0, None, None)
     rt._on_home(None)
-    assert not rt.requested and rt.chunks == [] and rt.segment is None
+    assert rt.requested and rt.chunks == [] and rt.segment is None
