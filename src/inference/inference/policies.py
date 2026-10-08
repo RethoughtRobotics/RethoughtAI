@@ -60,7 +60,7 @@ class LeRobotPolicy:
     over the first `delay` steps (Real-Time Chunking).
     """
 
-    def __init__(self, model, device, task="", rtc=None, revision=None):
+    def __init__(self, model, device, task="", rtc=None, revision=None, overrides=None):
         import torch
         from lerobot.configs.policies import PreTrainedConfig
         from lerobot.policies import get_policy_class, make_pre_post_processors
@@ -69,6 +69,8 @@ class LeRobotPolicy:
         path = model_dir(model, revision)
         cfg = PreTrainedConfig.from_pretrained(path)
         cfg.device, cfg.pretrained_path = device, path
+        for key, value in (overrides or {}).items():  # e.g. num_steps: fewer flow steps, less latency
+            setattr(cfg, key, value)
         self.policy = get_policy_class(cfg.type).from_pretrained(path, config=cfg)
         if rtc:
             from lerobot.policies.rtc.configuration_rtc import RTCConfig

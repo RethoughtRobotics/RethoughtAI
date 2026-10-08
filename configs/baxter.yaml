@@ -124,8 +124,9 @@ inference:
       every: 1
       merge: {type: ensemble, coeff: 0.01}
     smolvla:
-      every: 10
+      every: 5
       merge: {type: latest}
+      overrides: {num_steps: 5}   # flow steps: 5 = 10's held-out error, ~170 ms less latency
       # execution_horizon > inference delay in steps (~13 next to the sim), or chunks seam
       rtc: {execution_horizon: 25, max_guidance_weight: 10.0}
   # --replay

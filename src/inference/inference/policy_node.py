@@ -34,6 +34,7 @@ from inference.runtime import Chunk
 STALE = 0.5  # s: older inputs pause inference (camera stopped, bag paused)
 LOG_EVERY = 10.0  # s
 WARMUP = 2  # inferences left out of the latency (CUDA init)
+LATENCY_WINDOW = 10  # recent inferences the RTC delay is taken from; one spike must not pin it
 
 
 class PolicyNode:
@@ -49,7 +50,7 @@ class PolicyNode:
         self.last = None  # last chunk published, for RTC
         from lerobot.policies.rtc import LatencyTracker
 
-        self.latency = LatencyTracker()
+        self.latency = LatencyTracker(maxlen=LATENCY_WINDOW)
         self.count = 0
         self.warned = False
         self.fresh = threading.Event()  # set: drop the last chunk and the policy's state
@@ -101,7 +102,7 @@ class PolicyNode:
 
     def _rtc_args(self, t, tcp):
         """(delay steps, the last chunk's actions from t on, relative to `tcp`) for Real-Time Chunking."""
-        delay = math.ceil(self.latency.max() / self.dt) if len(self.latency) else 0
+        delay = math.ceil(self.latency.percentile(0.9) / self.dt) if len(self.latency) else 0
         horizon = self.policy.policy.config.rtc_config.execution_horizon
         if delay >= horizon and not self.warned:
             self.warned = True
@@ -145,7 +146,7 @@ class PolicyNode:
             if self.count % max(1, round(LOG_EVERY * self.fps / self.every)) == 0:
                 self.node.get_logger().info(
                     f"{self.count} chunks; inference p50 {1000 * self.latency.percentile(0.5):.0f} ms, "
-                    f"max {1000 * self.latency.max():.0f} ms ({self.dt * 1000:.0f} ms per step)")
+                    f"recent max {1000 * self.latency.percentile(0.99):.0f} ms ({self.dt * 1000:.0f} ms per step)")
 
     def _publish(self, t, positions, rotations, triggers):
         stamp = Time(nanoseconds=round(t * 1e9)).to_msg()

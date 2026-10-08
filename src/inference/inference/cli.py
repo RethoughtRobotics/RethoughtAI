@@ -66,7 +66,7 @@ def serve(config, model, device, revision):
     from inference.runtime import check_merge
 
     settings = policy_settings(cfg, model_config(model, revision))
-    policy = LeRobotPolicy(model, device, cfg.get("task", ""), settings.get("rtc"), revision)
+    policy = LeRobotPolicy(model, device, cfg.get("task", ""), settings.get("rtc"), revision, settings.get("overrides"))
     check_merge(settings["merge"], policy.chunk_size, settings.get("every", 1))
     click.echo(f"Serving {model} ({policy.type}, chunks of {policy.chunk_size}) on {device}: every "
                f"{settings.get('every', 1)} step(s){', RTC' if policy.rtc else ''}, chunks on {cfg['chunk']}")
