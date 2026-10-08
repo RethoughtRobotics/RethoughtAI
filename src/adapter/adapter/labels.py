@@ -103,3 +103,16 @@ def chunk_actions(episode: Episode, step: int, chunk_size: int) -> np.ndarray:
 def apply_actions(actions, tcp_p, tcp_q):
     """Absolute targets (positions (K, 3), Rotations) from actions relative to the TCP (p, q)."""
     return tcp_p + actions[:, :3], Rotation.from_rotvec(actions[:, 3:6]) * Rotation.from_quat(tcp_q)
+
+
+def relative_actions(positions, rotations, triggers, tcp_p, tcp_q):
+    """Inverse of apply_actions."""
+    dr = (rotations * Rotation.from_quat(tcp_q).inv()).as_rotvec()
+    return np.column_stack([positions - tcp_p, dr, triggers])
+
+
+def model_state(tcp_p, tcp_q, gripper, joints):
+    """The policy's 17-D state: TCP position, R_tcp's first two columns (sign-free, unlike the
+    quaternion), gripper, 7 joints."""
+    R = Rotation.from_quat(tcp_q).as_matrix()
+    return np.concatenate([tcp_p, R[:, 0], R[:, 1], [gripper], joints]).astype(np.float32)

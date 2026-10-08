@@ -27,7 +27,7 @@ JOINTS = ("s0", "s1", "e0", "e1", "w0", "w1", "w2")
 MAX_IMAGE_AGE = 0.15  # s: a frame whose image is older than this is reported (a recording stall)
 
 
-def _rgb(msg):
+def image_rgb(msg):
     channels = {"rgb8": 3, "bgr8": 3, "rgba8": 4, "bgra8": 4}[msg.encoding]
     a = np.frombuffer(bytes(msg.data), np.uint8).reshape(msg.height, msg.width, channels)[..., :3]
     return np.ascontiguousarray(a[..., ::-1] if msg.encoding.startswith("bgr") else a)
@@ -87,7 +87,7 @@ def read_frames(path, arm, cameras, t):
             k += 1
         msg = deserialize_message(raw, get_message(types[topic]))
         if topic in cameras:
-            latest[topic] = (stamp, _rgb(msg))
+            latest[topic] = (stamp, image_rgb(msg))
         elif topic == joint_topic:
             if names[0] in msg.name:
                 latest[topic] = (stamp, np.array([msg.position[msg.name.index(n)] for n in names]))
