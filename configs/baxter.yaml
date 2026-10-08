@@ -118,14 +118,17 @@ inference:
     frame_id: LHR-12D31191 # right_serial in libsurvive_ros2 vive_devices.yaml; swap_hands gives it the left arm
     button: 17             # touch bit: SURVIVE_BUTTON_MAX (16) + SURVIVE_BUTTON_TRACKPAD (1)
     alive: /vive/right/target  # released when that controller is no longer tracked
-  # Per checkpoint type: inference every `every` steps, chunk merge (runtime.py), optional RTC.
+  # Per checkpoint type: inference every `every` steps, chunk merge (runtime.py), chunks from fresh
+  # images to wait for after engaging (warmup_chunks), optional RTC.
   policies:
     act:
       every: 1
       merge: {type: ensemble, coeff: 0.01}
+      warmup_chunks: 3
     smolvla:
-      every: 5
+      every: 10
       merge: {type: latest}
+      warmup_chunks: 2              # the first has no RTC prefix; the second continues it
       overrides: {num_steps: 5}   # flow steps: 5 = 10's held-out error, ~170 ms less latency
       # execution_horizon > inference delay in steps (~13 next to the sim), or chunks seam
       rtc: {execution_horizon: 25, max_guidance_weight: 10.0}

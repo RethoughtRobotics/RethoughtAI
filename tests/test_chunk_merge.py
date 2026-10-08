@@ -96,7 +96,7 @@ def test_model_state_uses_rotation_columns_and_ignores_quaternion_sign():
 def test_chunks_after_a_hold_crossfade_in_instead_of_jumping():
     rt = runtime({"type": "ensemble", "coeff": 0.01})
     rt.hold, rt.tcp = (np.zeros(3), Rotation.identity()), (np.zeros(3), np.array([0, 0, 0, 1.0]), 0.0)
-    rt.chunks = [line(0.0, 0.0, 0.066, 0.0)]  # a still chunk 66 mm ahead (the servo lead)
+    rt.chunks, rt.received = [line(0.0, 0.0, 0.066, 0.0)], 1  # a still chunk 66 mm ahead (the servo lead)
     x = []
     for k in range(40):
         rt._policy_step(k / FPS)
@@ -131,23 +131,58 @@ def test_home_clears_but_keeps_the_run_on():
     assert rt.trigger == 0.0 and rt.trigger_pub.sent == 0.0  # gripper open
 
 
-def test_reengages_only_after_freezing_at_the_new_tcp():
-    """Back from homing: the teleop must see the target frozen at the new TCP before it moves."""
-    rt = runtime({"type": "ensemble", "coeff": 0.01})
-    clock = [0.0]
-    rt._now, rt._publish, rt._announce = (lambda: clock[0]), (lambda *a, **k: None), (lambda: None)
+def released_runtime():
+    rt = runtime({"type": "latest"})
+    clock, sent = [0.0], []
+    rt._now, rt._announce = (lambda: clock[0]), (lambda: None)
+    rt.target_pub = type("Pub", (), {"publish": lambda self, m: sent.append(np.array([m.pose.position.x, m.pose.position.y, m.pose.position.z]))})()
+    rt.trigger_pub = type("Pub", (), {"publish": lambda self, m: None})()
+    rt.node = type("Node", (), {"get_clock": lambda self: type("C", (), {"now": lambda self: type("T", (), {"to_msg": lambda self: __import__("builtin_interfaces.msg").msg.Time()})()})(),
+                                "get_logger": lambda self: type("L", (), {"info": lambda self, t: None})()})()
+    return rt, clock, sent
+
+
+def test_released_target_never_follows_a_sagging_arm():
+    """A target that follows the TCP is a stroke to the teleop: it pushes the arm on (drift)."""
+    rt, clock, sent = released_runtime()
+    q = np.array([0, 0, 0, 1.0])
+    for k in range(100):  # the arm sags 10 cm while released
+        clock[0] = k * 0.01
+        rt.tcp = (np.array([0.6, 0.2, 0.1 - 0.001 * k]), q, clock[0])
+        rt._tick()
+    assert np.allclose(sent[0], sent[-1]) and np.allclose(sent[-1], [0.6, 0.2, 0.1])
+
+
+def test_engaged_goals_map_through_the_teleops_stroke_rule():
+    """Back from homing with the target still at the pre-home pose: no jump, and goals land."""
+    rt, clock, sent = released_runtime()
+    q = np.array([0, 0, 0, 1.0])
+    rt.tcp = (np.array([0.8, 0.0, 0.0]), q, 0.0)
+    rt._tick()  # frozen at the pre-home pose
+    home = np.array([0.6, 0.2, 0.2])
     rt.requested = True
-    home = (np.array([0.6, 0.2, 0.2]), np.array([0, 0, 0, 1.0]))
-    rt.frozen, rt.settled = (np.array([0.8, 0.0, 0.0]), home[1]), -10.0  # frozen before homing
+    clock[0] = 2.0
+    rt._tick()  # homing: the teleop publishes no TCP
     clock[0] = 5.0
-    rt.tcp = (*home, 5.0)  # TCP back, at home
+    rt.tcp = (home, q, 5.0)
     rt._tick()
-    assert not rt.engaged and np.allclose(rt.frozen[0], home[0])  # re-frozen at home, not engaged yet
-    clock[0] = 5.2
-    rt.tcp = (*home, 5.2)
-    rt._tick()
-    assert not rt.engaged
+    assert not rt.engaged  # the teleop is just back: wait for it to re-reference
     clock[0] = 5.35
-    rt.tcp = (*home, 5.35)
+    rt.tcp = (home, q, 5.35)
     rt._tick()
-    assert rt.engaged and np.allclose(rt.hold[0], home[0])  # engaged from the frozen home pose
+    assert rt.engaged and np.allclose(sent[-1], [0.8, 0.0, 0.0], atol=1e-5)  # first target: unchanged
+    rt._publish(home + [0.05, 0, 0], q, None, engaged=True)  # goal 5 cm ahead of the TCP
+    teleop_goal = rt.ref[0] + (sent[-1] - rt.ref[2])  # what the teleop servos to
+    assert np.allclose(teleop_goal, home + [0.05, 0, 0], atol=1e-5)
+
+
+def test_waits_for_warmup_chunks():
+    rt = runtime({"type": "latest"})
+    rt.warmup, rt.hold, rt.trigger = 2, (np.zeros(3), Rotation.identity()), None
+    rt.chunks = [line(0.0, 0.0, 0.066, 0.0)]
+    rt.received = 1
+    rt._policy_step(0.0)
+    assert rt.segment[1][0][0] == 0.0  # one chunk in: still holding
+    rt.received = 2
+    rt._policy_step(0.04)
+    assert rt.entry is not None  # two: executing (crossfading in)
