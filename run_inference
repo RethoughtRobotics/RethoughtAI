@@ -39,14 +39,20 @@ EPISODE_DIR="recorder/data/CupToContainer/episode_$(printf %03d "$((10#$EPISODE)
 source launch/env.sh
 SESSION=rai_inference
 
-# One run at a time: two runtimes would fight over the arm. [x]: never match this script.
-OLD="[p]olicy.launch.py|[i]nference serve|[i]nference run|[r]os2 bag play"
-if pgrep -f "$OLD" >/dev/null; then
+# One run at a time: two runtimes would fight over the arm.
+old_runs() {  # pids of a previous run, never this script or the shells that started it
+    local mine=" " p=$$
+    while (( p > 1 )); do mine+="$p "; p=$(awk '/^PPid/ {print $2}' /proc/$p/status); done
+    for p in $(pgrep -f "policy.launch.py|inference serve|inference run|ros2 bag play"); do
+        [[ "$mine" == *" $p "* ]] || echo "$p"
+    done
+}
+if [[ -n "$(old_runs)" ]]; then
     echo "Stopping the previous run..."
     timeout 5 ros2 service call "$ENGAGE" std_srvs/srv/SetBool "{data: false}" >/dev/null 2>&1 || true
-    pkill -INT -f "$OLD" || true
-    for _ in $(seq 20); do pgrep -f "$OLD" >/dev/null || break; sleep 0.5; done
-    pkill -TERM -f "$OLD" || true
+    kill -INT $(old_runs) 2>/dev/null || true
+    for _ in $(seq 20); do [[ -z "$(old_runs)" ]] && break; sleep 0.5; done
+    kill -TERM $(old_runs) 2>/dev/null || true
 fi
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 timeout 10 ros2 topic echo --once /robot/joint_states >/dev/null 2>&1 \
