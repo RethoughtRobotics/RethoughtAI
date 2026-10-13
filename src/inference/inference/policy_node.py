@@ -8,6 +8,9 @@ inference never blocks ROS callbacks, and publishes:
   chunk_path  nav_msgs/Path of the targets, for RViz
 With RTC, each chunk continues the last one over the measured inference delay.
 When the runtime engages or releases (`engaged`), the policy starts fresh: no chunk carries over.
+A cuff squeeze (`cuff`) is a correction by hand, for any policy: it restarts when one starts and
+ends; plans during it follow the hand (no previous chunk is continued), and on release the newest is
+re-anchored on the corrected pose, as the runtime executes it, so the next one continues from there.
 """
 
 import math
@@ -16,7 +19,7 @@ import time
 
 import numpy as np
 from builtin_interfaces.msg import Duration
-from baxter_core_msgs.msg import EndEffectorState
+from baxter_core_msgs.msg import DigitalIOState, EndEffectorState
 from geometry_msgs.msg import PoseStamped, Transform
 from moveit_msgs.msg import RobotTrajectory
 from nav_msgs.msg import Path
@@ -54,6 +57,8 @@ class PolicyNode:
         self.count = 0
         self.warned = False
         self.fresh = threading.Event()  # set: drop the last chunk and the policy's state
+        self.anchor = None  # TCP (p, R) the last chunk was planned from
+        self.squeezed = self.correcting = False  # the cuff now; a correction as the worker sees it
 
         self.cameras = {c["key"]: c["topic"] for c in images if c["key"] in policy.features}
         missing = [k for k in policy.features if k.startswith("observation.images.") and k not in self.cameras]
@@ -68,6 +73,8 @@ class PolicyNode:
         if cfg.get("engaged"):
             latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
             node.create_subscription(Bool, cfg["engaged"], lambda m: self.fresh.set(), latched)
+        if cfg.get("cuff"):
+            node.create_subscription(DigitalIOState, cfg["cuff"], lambda m: setattr(self, "squeezed", bool(m.state)), 10)
         self.chunk_pub = node.create_publisher(RobotTrajectory, cfg["chunk"], 10)
         self.path_pub = node.create_publisher(Path, cfg["chunk"] + "_path", 10)
         threading.Thread(target=self._run, daemon=True, name="policy").start()
@@ -126,6 +133,15 @@ class PolicyNode:
                 self.fresh.clear()
                 self.last = None
                 self.policy.reset()
+            if self.squeezed != self.correcting:  # a correction starts or ends
+                self.correcting = self.squeezed
+                self.policy.reset()
+                with self.lock:
+                    tcp = self.latest.get("tcp")
+                if not self.correcting and self.last is not None and tcp is not None:
+                    self.last = self.last.reanchored(*self.anchor, tcp[0][0], Rotation.from_quat(tcp[0][1]))
+            if self.correcting:
+                self.last = None  # plan from what the hand did, not the plan it overrode
             observed = self._observation()
             if observed is None:
                 self.last = None
@@ -142,6 +158,7 @@ class PolicyNode:
                 self.latency.add(latency)
             positions, rotations = apply_actions(actions, tcp_p, tcp_q)
             self.last = Chunk(t + self.dt * np.arange(len(actions)), positions, rotations, actions[:, 6], t)
+            self.anchor = (tcp_p, Rotation.from_quat(tcp_q))
             self._publish(t, positions, rotations, actions[:, 6])
             if self.count % max(1, round(LOG_EVERY * self.fps / self.every)) == 0:
                 self.node.get_logger().info(

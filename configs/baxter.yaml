@@ -109,6 +109,8 @@ inference:
   engage: /policy/left/engage   # std_srvs/SetBool: engage without the deadman (./start, ./stop)
   engaged: /policy/left/engaged # runtime -> policy server: start fresh on every change
   home: /vive/right/b_button    # B: clear the policy, resume fresh (swap_hands: right controller drives left arm)
+  cuff: /robot/digital_io/left_lower_cuff/state  # squeezed = correcting by hand (zero-g), any policy
+  resume_ramp: 0.3         # s, crossfade into the re-anchored chunk after a correction
   chunk: /policy/left/chunk     # serve -> run
   joint_states: /robot/joint_states
   gripper: /robot/end_effector/left_gripper/state

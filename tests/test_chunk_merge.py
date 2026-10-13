@@ -190,3 +190,44 @@ def test_horizon_keeps_only_the_first_steps():
     with pytest.raises(ValueError):
         check_merge({"type": "ensemble", "coeff": 0.01, "horizon": 10}, 100, every=10)
 
+
+def test_reanchored_chunk_keeps_its_plan_relative_to_the_tcp():
+    c = line(0.0, 0.0, 0.5, 0.1)  # planned from a TCP at x = 0.5
+    R_turn = Rotation.from_euler("z", 30, degrees=True)
+    moved = c.reanchored(np.array([0.5, 0, 0]), Rotation.identity(), np.array([0.6, 0.2, 0.1]), R_turn, arrival=9.0)
+    assert np.allclose(moved.positions - [0.6, 0.2, 0.1], c.positions - [0.5, 0, 0]) and moved.arrival == 9.0
+    assert np.allclose((moved.rotations * R_turn.inv()).as_rotvec(), c.rotations.as_rotvec())
+
+
+def test_cuff_correction_follows_the_arm_then_resumes_at_once_from_the_corrected_pose():
+    rt, clock, sent = released_runtime()
+    q = np.array([0, 0, 0, 1.0])
+    a, b = np.array([0.5, 0.0, 0.1]), np.array([0.65, 0.1, 0.05])  # where the policy had the arm; where the hand left it
+    rt.requested, rt.engaged, rt.frozen = True, True, (a, q)
+    rt.ref = (a, Rotation.identity(), a, Rotation.identity())  # goal -> target identity
+    rt.hold, rt.accept_after = (a, Rotation.identity()), 0.0
+    for k in range(10):
+        clock[0] = 0.01 * k
+        rt.tcp = (a, q, clock[0]); rt.history.append((clock[0], a, Rotation.identity()))
+    rt.chunks = [line(0.05, 0.05, 0.5, 0.1), line(0.09, 0.09, 0.5, 0.1)]  # planned from a, moving along x
+    rt.squeezed = True
+    for k in range(50):  # the hand moves the arm from a to b
+        clock[0] = 0.1 + 0.01 * k
+        p = a + (b - a) * k / 49
+        rt.tcp = (p, q, clock[0]); rt.history.append((clock[0], p, Rotation.identity()))
+        rt._tick()
+        assert np.allclose(sent[-1], p, atol=1e-5)  # the target (so the teleop's goal) stays on the arm
+    assert len(rt.chunks) == 1 and rt.engaged
+    rt.squeezed = False
+    clock[0] += 0.01
+    rt.tcp = (b, q, clock[0])
+    rt._tick()
+    assert np.allclose(sent[-1], b, atol=1e-3)  # released where the hand left it: no jump, no spring-back
+    assert rt.chunks[0].arrival == pytest.approx(clock[0]) and rt.entry[2] == pytest.approx(0.3)
+    planned = line(0.09, 0.09, 0.5, 0.1).at(clock[0])[0] - a  # the plan's offset from where it was planned
+    assert np.allclose(rt.chunks[0].at(clock[0])[0] - b, planned, atol=1e-6)  # the same offset, now from b
+    for k in range(40):  # resumes at once toward the plan, never back toward a
+        clock[0] += 0.01
+        rt.tcp = (b, q, clock[0])
+        rt._tick()
+        assert np.dot(sent[-1] - b, b - a) > -1e-4
