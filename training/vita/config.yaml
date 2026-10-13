@@ -1,0 +1,14 @@
+# VITA (vision-to-action flow matching). Reproduces vita_cup (2026-10-11) with upstream VITA settings.
+name: vita
+backend: task
+dataset: cup_to_container
+steps: 100000
+batch_size: 128
+save_freq: 10000
+gpu_mem_mib: 30000               # rough estimate, not measured
+retry_batch_sizes: [64]
+args:
+  policy_type: vita
+  precision: fp32                # upstream VITA trains in fp32
+  grad_clip: 1.0                 # upstream VITA value (task default is 10.0)
+  ema_power: 0.75
