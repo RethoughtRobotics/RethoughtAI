@@ -1,0 +1,19 @@
+# NVIDIA GR00T N1.7 (3B), full fine-tune in bf16. Reproduces groot_cup (2026-10-12).
+name: groot
+backend: lerobot
+dataset: blue_cup_to_container_46ep
+steps: 20000
+batch_size: 64
+save_freq: 5000
+log_freq: 50
+gpu_mem_mib: 42000               # batch 64 measured at 36 GB on an RTX 6000 Ada (48 GB)
+retry_batch_sizes: [32, 16]
+upload_steps: [10000, 20000]     # also pushed to step-* branches of the hub repo after training
+args:
+  policy.type: groot
+  policy.base_model_path: nvidia/GR00T-N1.7-3B
+  policy.embodiment_tag: new_embodiment
+  policy.chunk_size: 16
+  policy.n_action_steps: 16
+  policy.use_relative_actions: false
+  policy.use_bf16: true
