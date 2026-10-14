@@ -48,6 +48,34 @@ topics:
     - /robot/digital_io/left_lower_button/state
     - /robot/digital_io/right_upper_button/state
     - /robot/digital_io/right_lower_button/state
+    # What the controller holds the arm to, against where the hand moved it: in zero-g the commanded
+    # pose follows the hand; on release the arm springs back toward it. Reference joints likewise.
+    - /robot/limb/left/commanded_endpoint_state
+    - /robot/limb/right/commanded_endpoint_state
+    - /robot/ref_joint_states
+    # Two-arm demos: arm-arm avoidance engaging, each arm enabled/stopped/e-stopped, the right arm's
+    # navigator buttons and both shoulder buttons.
+    - /robot/limb/left/collision_avoidance_state
+    - /robot/limb/right/collision_avoidance_state
+    - /robot/limb/left/state
+    - /robot/limb/right/state
+    - /robot/digital_io/right_button_show/state
+    - /robot/digital_io/right_button_ok/state
+    - /robot/digital_io/right_button_back/state
+    - /robot/digital_io/left_shoulder_button/state
+    - /robot/digital_io/right_shoulder_button/state
+    # The person teaching: head sonar returns (who stands where around the robot), and third-eye
+    # depth aligned to colour (PNG-compressed) to mask them out of the images.
+    - /robot/sonar/head_sonar/state
+    - /cameras/third_eye/aligned_depth_to_color/image_raw/compressedDepth
+    - /cameras/third_eye/aligned_depth_to_color/camera_info
+    # Policy corrections: the chunks the policy planned and when it drove the arm.
+    - /policy/left/chunk
+    - /policy/left/engaged
+    - /policy/right/chunk
+    - /policy/right/engaged
+    # Log lines from the robot, teleop and policy nodes (homing, cuff control, errors).
+    - /rosout
     # Mode/safety overrides: distinguish cuff presses from whether guidance was allowed.
     # These are command events, not latched proof of the controller's current safety state.
     - /robot/limb/left/suppress_cuff_interaction
