@@ -86,7 +86,10 @@ def trace_policy(policy) -> Node:
     features = policy.policy.config.input_features
     observation = blank_observation(features)
     policy.reset()
-    root = trace(policy.policy, lambda: policy(observation))
+    import numpy as np
+
+    tcp = (np.zeros(3), np.array([0.0, 1.0, 0.0, 0.0]))  # any TCP: absolute-goal policies are made relative to it
+    root = trace(policy.policy, lambda: policy(observation, tcp=tcp))
     policy.reset()
     return root
 

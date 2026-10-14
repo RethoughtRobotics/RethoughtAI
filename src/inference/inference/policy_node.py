@@ -30,7 +30,7 @@ from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Bool
 from trajectory_msgs.msg import JointTrajectoryPoint, MultiDOFJointTrajectoryPoint
 
-from adapter.labels import apply_actions, model_state, relative_actions
+from adapter.labels import apply_actions, relative_actions
 from adapter.lerobot_export import JOINTS, image_rgb
 from inference.runtime import Chunk
 
@@ -107,7 +107,7 @@ class PolicyNode:
             return None
         tcp = latest["tcp"][0]
         obs = {key: latest[key][0] for key in self.cameras}
-        obs["observation.state"] = model_state(*tcp, latest["gripper"][0], latest["joints"][0])
+        obs["observation.state"] = self.policy.state(*tcp, latest["gripper"][0], latest["joints"][0])
         return now, obs, tcp
 
     def _rtc_args(self, t, tcp):
@@ -170,7 +170,7 @@ class PolicyNode:
             t, obs, (tcp_p, tcp_q) = observed
             started = time.perf_counter()
             delay, prev = self._rtc_args(t, (tcp_p, tcp_q)) if self.policy.rtc else (0, None)
-            actions = self.policy(obs, delay, prev)
+            actions = self.policy(obs, delay, prev, tcp=(tcp_p, tcp_q))
             latency = time.perf_counter() - started
             self.count += 1
             if self.count > WARMUP:
