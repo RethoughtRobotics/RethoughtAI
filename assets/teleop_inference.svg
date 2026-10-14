@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="760" viewBox="0 0 1400 760" font-family="Inter, 'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#B8B8B8"/>
+    </marker>
+    <marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#F2B544"/>
+    </marker>
+    <style>
+      .box { fill: #E9E9E9; rx: 18; }
+      .t { fill: #1E1E1E; font-size: 25px; text-anchor: middle; }
+      .s { fill: #555; font-size: 16px; text-anchor: middle; }
+      .lbl { fill: #B8B8B8; font-size: 15px; }
+      .band { fill: #9A9A9A; font-size: 20px; letter-spacing: 3px; }
+      .line { stroke: #B8B8B8; stroke-width: 2.5; fill: none; marker-end: url(#a); }
+      .hot { stroke: #F2B544; stroke-width: 3; fill: none; marker-end: url(#h); }
+    </style>
+  </defs>
+  <rect width="1400" height="760" fill="#121314"/>
+
+  <!-- bands -->
+  <text x="60" y="62" class="band">RECORD  ·  a human drives</text>
+  <text x="60" y="728" class="band">INFER  ·  a policy drives</text>
+  <line x1="40" y1="380" x2="1360" y2="380" stroke="#2A2B2D" stroke-width="2" stroke-dasharray="6 8"/>
+
+  <!-- inputs to the teleop -->
+  <rect class="box" x="60" y="110" width="270" height="96"/>
+  <text x="195" y="152" class="t">VR controller</text>
+  <text x="195" y="180" class="s">human hand · libsurvive</text>
+
+  <rect class="box" x="60" y="554" width="270" height="96"/>
+  <text x="195" y="596" class="t">Policy runtime</text>
+  <text x="195" y="624" class="s">merges action chunks</text>
+
+  <!-- the shared teleop -->
+  <rect x="420" y="300" width="270" height="160" rx="18" fill="#F2B544"/>
+  <text x="555" y="358" class="t" font-weight="600">Teleop</text>
+  <text x="555" y="388" class="s" fill="#3A2A00">servo · IK · gripper</text>
+  <text x="555" y="430" class="s" fill="#3A2A00" font-style="italic">same block for both</text>
+
+  <path class="hot" d="M330,158 C395,158 400,250 470,298"/>
+  <text x="392" y="252" class="lbl" text-anchor="end">goal pose + grip</text>
+  <path class="hot" d="M330,580 C395,580 400,510 470,462"/>
+  <text x="392" y="522" class="lbl" text-anchor="end">goal pose + grip</text>
+
+  <!-- robot -->
+  <rect class="box" x="780" y="300" width="230" height="160"/>
+  <text x="895" y="370" class="t">Baxter</text>
+  <text x="895" y="398" class="s">ROS 2 via Zenoh bridge</text>
+  <path class="line" d="M690,380 L778,380"/>
+  <text x="734" y="350" class="lbl" text-anchor="middle">joint</text>
+  <text x="734" y="368" class="lbl" text-anchor="middle">velocities</text>
+
+  <!-- recording path -->
+  <rect class="box" x="1090" y="100" width="250" height="70"/>
+  <text x="1215" y="134" class="t">Recorder</text>
+  <text x="1215" y="158" class="s">ROS 2 bags</text>
+  <rect class="box" x="1090" y="196" width="250" height="70"/>
+  <text x="1215" y="230" class="t">Adapter</text>
+  <text x="1215" y="254" class="s">LeRobot dataset</text>
+  <rect class="box" x="1090" y="292" width="250" height="70"/>
+  <text x="1215" y="326" class="t">Training</text>
+  <text x="1215" y="350" class="s">ACT · SmolVLA</text>
+  <path class="line" d="M1215,170 L1215,194"/>
+  <path class="line" d="M1215,266 L1215,290"/>
+
+  <!-- inference path -->
+  <rect class="box" x="1090" y="554" width="250" height="96"/>
+  <text x="1215" y="596" class="t">Policy server</text>
+  <text x="1215" y="624" class="s">GPU · action chunks</text>
+  <path class="line" d="M1215,362 L1215,552"/>
+  <text x="1228" y="462" class="lbl">trained weights</text>
+
+  <!-- sensors out of the robot -->
+  <path class="line" d="M1010,330 C1050,330 1040,135 1088,135"/>
+  <path class="line" d="M1010,430 C1050,430 1040,590 1088,590"/>
+  <text x="1030" y="226" class="lbl" text-anchor="end">cameras, joints, TCP</text>
+  <text x="1030" y="540" class="lbl" text-anchor="end">cameras, joints, TCP</text>
+
+  <path class="line" d="M1090,628 L332,628"/>
+  <text x="711" y="618" class="lbl" text-anchor="middle">action chunks, stamped with their observation time</text>
+</svg>
