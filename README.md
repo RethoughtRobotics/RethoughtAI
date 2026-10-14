@@ -103,9 +103,15 @@ gripper state, /teleop/left/tcp ──▶│ policy node (serve)  │───�
   carries its observation time, inference latency only shifts where execution starts in the chunk.
 - **The two are separate processes,** so inference never blocks the control loop. Putting the GPU
   on another machine is a ROS networking question, not new code.
-- **Per policy type settings** live in the config's `inference.policies` (`act`, `smolvla`, `vita`).
-  On a laptop RTX 500 (4 GB) next to the sim: ACT ~30 ms, run every step; SmolVLA with RTC ~450 ms,
-  run every 10 steps with `execution_horizon` 25 (it must exceed the delay in steps, ~13).
+- **Per policy type settings** live in the config's `inference.policies` (`act`, `smolvla`, `vita`,
+  `multi_task_dit`, `groot`). On a laptop RTX 500 (4 GB) next to the sim: ACT ~30 ms, run every step;
+  SmolVLA with RTC ~450 ms, run every 10 steps with `execution_horizon` 25 (it must exceed the delay
+  in steps, ~13); MultiTask DiT ~100 ms, every 4 steps.
+- **Two checkpoint layouts** are told apart by their feature shapes. A 17-D state and 7-D actions
+  relative to the TCP (TRAINING.md's transform: ACT, SmolVLA, VITA, MultiTask DiT), or the dataset as
+  exported, a 15-D state and 8-D absolute goals (GR00T), which the policy node makes relative to the
+  TCP it observed. Images are letterboxed to a checkpoint's image size when it differs from the
+  camera's, as `BlueCupToContainer`'s 224 x 224 frames were.
 
 **Running a checkpoint** from `models/<name>_*/step-<N>/` opens tmux. When a prefix like
 `--smolvla` matches several models, give the full name. The top pane runs the policy

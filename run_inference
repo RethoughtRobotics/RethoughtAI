@@ -7,16 +7,19 @@
 #   ./run_inference --act 100000
 #   ./run_inference --smolvla_CupToContainer 30000 --episode 24
 #   ./run_inference --smolvla_CupToContainer_wrist   newest checkpoint (wrist camera only)
+#   ./run_inference --multitaskdit                   MultiTask DiT (BlueCupToContainer)
+#   ./run_inference --groot                          GR00T N1.7 3B: needs a GPU with ~10 GB (--device: torch device)
 # Bring the arm and teleop up first (bringbackbaxter: run_teleop.sh or run_sim_teleop.sh, --left --policy).
 set -eo pipefail
 cd "$(dirname "$0")"
 
-NAME="" STEP="" EPISODE="" CONFIG=configs/baxter.yaml
+NAME="" STEP="" EPISODE="" CONFIG=configs/baxter.yaml DEVICE=cuda
 while (( $# )); do
     case "$1" in
         --episode) EPISODE="$2"; shift ;;
         --config) CONFIG="$2"; shift ;;
-        -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
+        --device) DEVICE="$2"; shift ;;
+        -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
         --*) NAME="${1#--}"; [[ "${2:-}" =~ ^(step-)?[0-9]+$ ]] && { STEP="$2"; shift; } ;;
         *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -71,7 +74,7 @@ live=()
 for topic in $(python3 -c "import yaml,sys; print(*(c['topic'] for c in yaml.safe_load(open(sys.argv[1]))['topics']['images']))" "$CONFIG"); do
     [[ "$(timeout 5 ros2 topic info "$topic" 2>/dev/null)" =~ Publisher\ count:\ [1-9] ]] && live+=("$topic")
 done
-LAUNCH="ros2 launch launch/policy.launch.py model:=$MODEL config:=$CONFIG"
+LAUNCH="ros2 launch launch/policy.launch.py model:=$MODEL config:=$CONFIG device:=$DEVICE"
 if (( ${#live[@]} )); then
     [[ -z "$EPISODE" ]] || { echo "--episode $EPISODE: the robot's cameras are up (${live[*]}), and a shadow rollout would mix their frames with the bag's" >&2; exit 2; }
     echo "Live: the robot's cameras (${live[*]})"
