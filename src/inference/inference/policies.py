@@ -7,6 +7,10 @@ import numpy as np
 
 from adapter.labels import chunk_actions, load_episode, model_state, relative_actions
 
+# Policies whose predict_action_chunk reads the last n_obs_steps observations from queues that only
+# select_action fills: LeRobotPolicy fills them itself from the observations it is given.
+OBS_HISTORY = {"multi_task_dit"}
+
 
 def raw_state(tcp_p, tcp_q, gripper, joints):
     """The dataset's 15-D state as exported (lerobot_export): TCP position, quaternion [x y z w],
@@ -169,6 +173,7 @@ class LeRobotPolicy:
         self.normalizer = next((s for s in self.pre.steps if isinstance(s, NormalizerProcessorStep)), None)
         self.torch, self.device, self.task, self.rtc = torch, torch.device(device), task, rtc
         self.type, self.chunk_size = cfg.type, chunk_length(vars(cfg))
+        self.n_obs_steps = cfg.n_obs_steps if cfg.type in OBS_HISTORY else 1
         self.features = list(cfg.input_features)
         self.image_shapes = {k: tuple(f.shape[1:]) for k, f in cfg.input_features.items() if k.startswith("observation.images.")}
 
@@ -181,20 +186,32 @@ class LeRobotPolicy:
         """observation.state for this checkpoint's layout."""
         return (raw_state if self.absolute else model_state)(tcp_p, tcp_q, gripper, joints)
 
-    def __call__(self, observation, delay=0, prev=None, tcp=None):
-        """`tcp` (position, quaternion), the TCP observed: absolute goals are made relative to it."""
-        from lerobot.policies.utils import prepare_observation_for_inference
+    def __call__(self, observation, delay=0, prev=None, tcp=None, history=()):
+        """`tcp` (position, quaternion), the TCP observed: absolute goals are made relative to it.
+        `history`: for a policy that sees past steps (n_obs_steps), the observations one step apart
+        before this one, oldest first; fewer repeat the oldest given, as LeRobot starts an episode."""
+        from lerobot.policies.utils import populate_queues, prepare_observation_for_inference
         from lerobot.processor import TransitionKey, create_transition
 
         if self.absolute and tcp is None:
             raise ValueError(f"{self.type} predicts absolute goals: pass the TCP observed")
         torch = self.torch
+
+        def preprocess(obs):
+            return self.pre(prepare_observation_for_inference(
+                {k: letterbox(obs[k], *self.image_shapes[k]) if k in self.image_shapes else obs[k]
+                 for k in self.features}, self.device, self.task))
+
         # RTC guidance needs gradients, which inference_mode forbids
         with torch.no_grad() if self.rtc else torch.inference_mode():
-            batch = prepare_observation_for_inference(
-                {k: letterbox(observation[k], *self.image_shapes[k]) if k in self.image_shapes else observation[k]
-                 for k in self.features}, self.device, self.task)
-            batch = self.pre(batch)
+            if self.type in OBS_HISTORY:  # its queues hold exactly these observations
+                self.policy.reset()
+                for obs in [*history[-(self.n_obs_steps - 1):], observation]:
+                    # cameras stacked, as the queue holds them; no `action` (None here), as select_action
+                    batch = self.policy._prepare_batch({k: v for k, v in preprocess(obs).items() if k != "action"})
+                    self.policy._queues = populate_queues(self.policy._queues, batch)
+            else:
+                batch = preprocess(observation)
             kwargs = {}
             if self.rtc:
                 if prev is not None:  # normalized, padded to the horizon, as LeRobot's RTC engine does

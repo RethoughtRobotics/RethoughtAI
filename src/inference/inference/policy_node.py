@@ -7,6 +7,8 @@ inference never blocks ROS callbacks, and publishes:
               (base frame) and the `{arm}_gripper` trigger, at k / fps
   chunk_path  nav_msgs/Path of the targets, for RViz
 With RTC, each chunk continues the last one over the measured inference delay.
+A policy that sees past steps (n_obs_steps > 1, MultiTask DiT) gets them one step apart, as in
+training, from observations sampled every half step, not from its previous inference (~100 ms back).
 When the runtime engages or releases (`engaged`), the policy starts fresh: no chunk carries over.
 A cuff squeeze (`cuff`) is a correction by hand, for any policy: it restarts when one starts and
 ends; plans during it follow the hand (no previous chunk is continued), and on release the newest is
@@ -16,6 +18,7 @@ re-anchored on the corrected pose, as the runtime executes it, so the next one c
 import math
 import threading
 import time
+from collections import deque
 
 import numpy as np
 from builtin_interfaces.msg import Duration
@@ -80,6 +83,9 @@ class PolicyNode:
             node.create_subscription(DigitalIOState, cfg["cuff"], lambda m: setattr(self, "squeezed", bool(m.state)), 10)
         self.chunk_pub = node.create_publisher(RobotTrajectory, cfg["chunk"], 10)
         self.path_pub = node.create_publisher(Path, cfg["chunk"] + "_path", 10)
+        self.samples = deque(maxlen=2 * policy.n_obs_steps + 2)  # (time, observation), every half step
+        if policy.n_obs_steps > 1:
+            node.create_timer(self.dt / 2, self._sample)
         threading.Thread(target=self._run, daemon=True, name="policy").start()
 
     def _now(self):
@@ -109,6 +115,24 @@ class PolicyNode:
         obs = {key: latest[key][0] for key in self.cameras}
         obs["observation.state"] = self.policy.state(*tcp, latest["gripper"][0], latest["joints"][0])
         return now, obs, tcp
+
+    def _sample(self):
+        observed = self._observation()
+        if observed is not None:
+            with self.lock:
+                self.samples.append(observed[:2])
+
+    def _history(self, t):
+        """The observations 1 .. n_obs_steps - 1 steps before t, oldest first: the sample nearest each,
+        if one is within half a step of it (none yet after a pause: the policy repeats the oldest)."""
+        with self.lock:
+            samples = list(self.samples)
+        history = []
+        for j in range(self.policy.n_obs_steps - 1, 0, -1):
+            nearest = min(samples, key=lambda s: abs(s[0] - (t - j * self.dt)), default=None)
+            if nearest is not None and abs(nearest[0] - (t - j * self.dt)) <= self.dt / 2:
+                history.append(nearest[1])
+        return history
 
     def _rtc_args(self, t, tcp):
         """(delay steps, the last chunk's actions from t on, relative to `tcp`) for Real-Time Chunking;
@@ -170,7 +194,8 @@ class PolicyNode:
             t, obs, (tcp_p, tcp_q) = observed
             started = time.perf_counter()
             delay, prev = self._rtc_args(t, (tcp_p, tcp_q)) if self.policy.rtc else (0, None)
-            actions = self.policy(obs, delay, prev, tcp=(tcp_p, tcp_q))
+            history = self._history(t) if self.policy.n_obs_steps > 1 else ()
+            actions = self.policy(obs, delay, prev, tcp=(tcp_p, tcp_q), history=history)
             latency = time.perf_counter() - started
             self.count += 1
             if self.count > WARMUP:

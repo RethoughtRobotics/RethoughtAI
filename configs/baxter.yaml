@@ -137,6 +137,11 @@ inference:
       # chunks of 16 (of a 32-step plan); ~25 ms on the laptop GPU, so every step, merged as ACT
       every: 1
       merge: {type: ensemble, coeff: -0.05}
+    multi_task_dit:
+      # chunks of 24 (of a 32-step plan) from the last 2 steps; ~100 ms on the laptop GPU (10 DDPM
+      # steps), so every 4 steps, ensembled as VITA. Offline on episode 4 it matches VITA's error.
+      every: 4
+      merge: {type: ensemble, coeff: -0.05}
     groot:
       # GR00T N1.7 3B: absolute goals in chunks of 16 (no RTC: it continues TCP-relative chunks).
       # Needs a GPU with ~10 GB (bf16); the laptop's 4 GB can't hold it, and on the CPU (fp32) it
