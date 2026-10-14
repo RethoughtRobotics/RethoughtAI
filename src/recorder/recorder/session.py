@@ -126,6 +126,9 @@ def run_session(session_dir: Path, config: dict, topics: list[str], viz: bool) -
                 bag.discard(); bag = None
                 click.echo(f"[episode {done:03d}] Discarded.\n")
             time.sleep(1.0)  # long enough to see the choice on the screen
+            # Only a record press after the decision starts the next episode: drop one made while
+            # deciding (or a button bounce), which would otherwise start recording at once.
+            trigger.idle(); start_evt.clear()
             episode = _next_episode(session_dir)
             if screen: screen.episode = episode; screen.idle()
             _set_title(episode, "idle")

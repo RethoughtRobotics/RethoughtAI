@@ -26,6 +26,11 @@ class KeyboardTrigger:
             self._recording = not self._recording
             (self._start_evt if self._recording else self._stop_evt).set()
 
+    def idle(self):
+        """Back to not recording once an episode is saved or discarded."""
+        with self._lock:
+            self._recording = False
+
     def start(self):
         """Spawn a daemon thread that dispatches keystrokes to action callbacks."""
         def _loop():
@@ -42,7 +47,14 @@ class RecorderTriggerNode:
     Message types, topic names, state field, and optional LED feedback are
     all driven by the trigger section of the robot YAML -- no robot-specific
     code here.
+
+    Presses are debounced: one counts only after its button was released for RELEASED s (Baxter's
+    navigator buttons bounce on release, and the bounce restarted recording), and none within
+    LOCKOUT s of the last one that counted.
     """
+
+    RELEASED = 0.2  # s
+    LOCKOUT = 0.5  # s
 
     def __init__(self, trig, start_evt, stop_evt, success_evt, discard_evt):
         try:
@@ -69,8 +81,10 @@ class RecorderTriggerNode:
         else:
             self._light = self._light_name = self._OutputCmd = None
 
+        self._last_press = -float("inf")
+
         def sub(topic, fn):
-            self._node.create_subscription(IOState, topic, self._rising_edge(fn, state_field), 10)
+            self._node.create_subscription(IOState, topic, self._press(fn, state_field), 10)
         sub(trig["record"],  self._toggle)
         sub(trig["success"], success_evt.set)
         sub(trig["discard"], discard_evt.set)
@@ -97,13 +111,18 @@ class RecorderTriggerNode:
         """Underlying rclpy Node -- attach additional publishers here (e.g. BaxterScreen)."""
         return self._node
 
-    @staticmethod
-    def _rising_edge(fn, state_field):
-        """Return a callback that fires fn only on 0 -> non-zero state transitions."""
-        prev = [0]
+    def _press(self, fn, state_field):
+        """Return a callback that fires fn on a debounced press: a 0 -> non-zero transition after the
+        button was released for RELEASED s, and LOCKOUT s after the last press of any button."""
+        prev, released = [0], [-float("inf")]  # last state; when it last went 0
         def _cb(msg):
-            val = getattr(msg, state_field)
-            if prev[0] == 0 and val != 0: fn()
+            val, now = getattr(msg, state_field), time.monotonic()
+            if prev[0] != 0 and val == 0:
+                released[0] = now
+            elif prev[0] == 0 and val != 0 and now - released[0] >= self.RELEASED \
+                    and now - self._last_press >= self.LOCKOUT:
+                self._last_press = now
+                fn()
             prev[0] = val
         return _cb
 
@@ -125,6 +144,13 @@ class RecorderTriggerNode:
 
     def _toggle(self):
         self._set_recording(not self._recording)
+
+    def idle(self):
+        """Back to not recording once an episode is saved or discarded: a stray record press while
+        deciding must not start the next episode."""
+        with self._lock:
+            self._recording = False
+            self._set_light(False)
 
     def _on_pad(self, topic, direction):
         if direction != self._pad[topic][0]:
