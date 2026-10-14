@@ -157,3 +157,28 @@ def start_player(node, player, t_ns):
         node.get_logger().info(f"Playing the episode's cameras from {player}")
 
     return go
+
+
+@main.command()
+@click.argument("model")
+@click.option("--config", default="baxter.yaml", show_default=True, help="Its inference.task is the VLA's prompt")
+@click.option("--device", default="cuda", show_default=True)
+@click.option("--depth", type=int, default=None, help="Levels of the tree to print (default: all)")
+@click.option("--json", "out", type=click.Path(dir_okay=False), help="Also write the tree as JSON (for recap)")
+def probe(model, config, device, depth, out):
+    """Print a policy's module tree, traced through one inference: calls and shapes per module.
+
+    \b
+    Examples:
+      inference probe models/smolvla_CupToContainer/step-030000 --depth 4
+      inference probe models/vita_CupToContainer/step-060000 --json vita_tree.json
+    """
+    from inference import probe as probe_mod
+    from inference.policies import LeRobotPolicy
+
+    task = yaml.safe_load(resolve_config(config).read_text())["inference"].get("task", "")
+    root = probe_mod.trace_policy(LeRobotPolicy(model, device, task))
+    click.echo(probe_mod.text(root, depth))
+    if out:
+        Path(out).write_text(probe_mod.to_json(root))
+        click.echo(f"\n{out}")
