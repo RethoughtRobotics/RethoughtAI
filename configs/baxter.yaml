@@ -40,6 +40,14 @@ topics:
     - /robot/limb/right/endpoint_state
     - /robot/limb/left/collision_detection_state
     - /robot/limb/right/collision_detection_state
+    # Kinesthetic: the cuff squeezed (arm guided by hand, zero-g) and its gripper buttons (dash
+    # closes, circle opens: the teleop's cuff control; their commands are on .../gripper/command).
+    - /robot/digital_io/left_lower_cuff/state
+    - /robot/digital_io/right_lower_cuff/state
+    - /robot/digital_io/left_upper_button/state
+    - /robot/digital_io/left_lower_button/state
+    - /robot/digital_io/right_upper_button/state
+    - /robot/digital_io/right_lower_button/state
     # Mode/safety overrides: distinguish cuff presses from whether guidance was allowed.
     # These are command events, not latched proof of the controller's current safety state.
     - /robot/limb/left/suppress_cuff_interaction
