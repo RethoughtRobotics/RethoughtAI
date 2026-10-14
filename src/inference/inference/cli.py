@@ -24,11 +24,13 @@ def policy_settings(cfg, model_cfg):
     return cfg["policies"][kind]
 
 
-def spin(name, setup):
-    """Spin a node set up by setup(node) until Ctrl+C."""
+def spin(name, setup, on_exit=None):
+    """Spin a node set up by setup(node) until Ctrl+C. on_exit(), if given, runs before the node goes,
+    so it can still publish: rclpy's own SIGINT handler would shut the context down first."""
     import rclpy
+    from rclpy.signals import SignalHandlerOptions
 
-    rclpy.init()
+    rclpy.init(signal_handler_options=SignalHandlerOptions.ALL if on_exit is None else SignalHandlerOptions.NO)
     node = rclpy.create_node(name)
     setup(node)
     try:
@@ -36,6 +38,8 @@ def spin(name, setup):
     except KeyboardInterrupt:
         pass
     finally:
+        if on_exit is not None:
+            on_exit()
         node.destroy_node()
         rclpy.try_shutdown()
 
@@ -71,9 +75,16 @@ def serve(config, model, device, revision):
     click.echo(f"Serving {model} ({policy.type}, chunks of {policy.chunk_size}) on {device}: every "
                f"{settings.get('every', 1)} step(s){', RTC' if policy.rtc else ''}, chunks on {cfg['chunk']}")
 
-    from inference.policy_node import PolicyNode
+    from inference.policy_node import PolicyNode, RecordingLight
 
-    spin("policy_server", lambda node: PolicyNode(node, cfg, full["topics"]["images"], policy, settings.get("every", 1)))
+    lights = []
+
+    def setup(node):
+        PolicyNode(node, cfg, full["topics"]["images"], policy, settings.get("every", 1))
+        if full.get("trigger", {}).get("light"):  # lit as in every recorded frame
+            lights.append(RecordingLight(node, full["trigger"]["light"]))
+
+    spin("policy_server", setup, on_exit=lambda: [light.off() for light in lights])
 
 
 @main.command()

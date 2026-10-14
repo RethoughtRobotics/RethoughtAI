@@ -231,3 +231,29 @@ class PolicyNode:
             path.poses.append(pose)
         self.chunk_pub.publish(msg)
         self.path_pub.publish(path)
+
+
+class RecordingLight:
+    """The light the recorder keeps on while it records an episode (config trigger.light, the left
+    navigator's inner light), so every training frame shows it lit: on while the policy serves, as the
+    cameras saw it. Re-sent every second in case anything else switched it off; off() at exit."""
+
+    def __init__(self, node, light):
+        import importlib
+
+        package, name = light["msg_type"].split("/")
+        self.msg_type = getattr(importlib.import_module(f"{package}.msg"), name)
+        self.name = light["name"]
+        self.pub = node.create_publisher(self.msg_type, light["topic"], 10)
+        self._set(True)
+        node.create_timer(1.0, lambda: self._set(True))
+
+    def _set(self, on):
+        msg = self.msg_type()
+        msg.name, msg.value = self.name, on
+        self.pub.publish(msg)
+
+    def off(self):
+        self._set(False)
+        time.sleep(0.3)  # let it go out before the node does
+
