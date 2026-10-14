@@ -16,7 +16,7 @@ dependencies = [
     "scipy",
     "forge-robotics",
     "huggingface-hub",
-    "lerobot[dataset,smolvla]>=0.6.1",
+    "lerobot[dataset,smolvla,multi-task-dit,groot]>=0.6.1",
     "torch",
     "torchvision",
 ]
@@ -42,3 +42,8 @@ torchvision = { index = "pytorch-cu128" }
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
+
+[dependency-groups]
+dev = [
+    "matplotlib>=3.11.2",
+]
