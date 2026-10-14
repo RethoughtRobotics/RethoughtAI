@@ -8,6 +8,8 @@ from pathlib import Path
 
 import click
 
+from recorder.images import compressed_recording, recording_topic
+
 
 def make_session_dir(output: str, config_path: Path, name: str | None = None) -> Path:
     """Create the session directory (output/<name>, or a timestamped one) and copy the config into it.
@@ -28,8 +30,8 @@ class EpisodeBag:
 
     def __init__(self, episode_dir: Path, topics: list[str]) -> None:
         self._dir = episode_dir
-        # zstd_fast: lossless and keeps up live (~30% smaller than raw images); recompress a finished
-        # session with storage preset zstd_small for ~65%.
+        # Lossless MCAP compression for all messages; colour images can already be JPEG
+        # (recording.image_transport). Raw-image compression ratios do not apply to JPEG.
         self._proc = subprocess.Popen(
             ["ros2", "bag", "record", "--storage", "mcap", "--storage-preset-profile", "zstd_fast",
              "--output", str(episode_dir), "--topics", *topics]
@@ -73,6 +75,8 @@ def run_session(session_dir: Path, config: dict, topics: list[str], viz: bool) -
     saved = 0
     images = config["topics"].get("images") or [{}]
     image_topic = images[0].get("topic")  # its message count is the episode's frame count
+    if image_topic:
+        image_topic = recording_topic(config, image_topic)
     start_evt, stop_evt, success_evt, discard_evt = (threading.Event() for _ in range(4))
 
     ros_started, trigger, screen = _setup(trig, config, start_evt, stop_evt, success_evt, discard_evt, viz,
@@ -138,13 +142,20 @@ def _setup(trig, config, start_evt, stop_evt, success_evt, discard_evt, viz, ses
     """Init trigger backend, ROS2 nodes, and optional viz. Returns (ros_started, trigger, screen)."""
     from recorder.trigger import KeyboardTrigger, RecorderTriggerNode, _spin_node
 
-    needs_ros = trig["type"] == "digital_io" or viz
+    compress = compressed_recording(config) and bool(config["topics"].get("images"))
+    needs_ros = trig["type"] == "digital_io" or viz or compress
     if needs_ros:
         try:
             import rclpy
         except ImportError:
             raise RuntimeError("rclpy not found - source your ROS2 workspace first.")
         rclpy.init()
+
+    if compress:
+        from recorder.images import make_compression_node
+        node = make_compression_node(config)
+        threading.Thread(target=_spin_node, args=(node,), daemon=True).start()
+        click.echo("Recording JPEG images on <camera topic>/compressed (raw live topics unchanged).")
 
     def start_viz():
         from recorder.viz import init_rerun, make_viz_node

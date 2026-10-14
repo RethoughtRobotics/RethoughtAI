@@ -5,6 +5,7 @@ import click
 import yaml
 
 from recorder import __version__
+from recorder.images import recording_topic
 from recorder.session import make_session_dir, run_session
 
 
@@ -34,7 +35,7 @@ def exclude_topics(config: dict, patterns: tuple[str, ...]) -> dict:
 def all_topics(config: dict) -> list[str]:
     t = config["topics"]
     return (
-        [i["topic"] for i in t["images"]]
+        [recording_topic(config, i["topic"]) for i in t["images"]]
         + [s["topic"] for s in t["state"]]
         + t.get("extra", [])
         + t.get("operator", [])

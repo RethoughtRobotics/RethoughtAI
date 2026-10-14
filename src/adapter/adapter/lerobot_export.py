@@ -28,6 +28,12 @@ MAX_IMAGE_AGE = 0.15  # s: a frame whose image is older than this is reported (a
 
 
 def image_rgb(msg):
+    if hasattr(msg, "format"):  # sensor_msgs/CompressedImage
+        import cv2
+        image = cv2.imdecode(np.frombuffer(bytes(msg.data), np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            raise ValueError("Cannot decode compressed camera image")
+        return np.ascontiguousarray(image[..., ::-1])
     channels = {"rgb8": 3, "bgr8": 3, "rgba8": 4, "bgra8": 4}[msg.encoding]
     a = np.frombuffer(bytes(msg.data), np.uint8).reshape(msg.height, msg.width, channels)[..., :3]
     return np.ascontiguousarray(a[..., ::-1] if msg.encoding.startswith("bgr") else a)
@@ -64,6 +70,12 @@ def read_frames(path, arm, cameras, t):
     reader = rosbag2_py.SequentialReader()
     reader.open(rosbag2_py.StorageOptions(uri=str(path), storage_id="mcap"), rosbag2_py.ConverterOptions("", ""))
     types = {x.name: x.type for x in reader.get_all_topics_and_types()}
+    # Configured camera names remain raw for live inference/viz. Recorded JPEG copies use
+    # <topic>/compressed; old raw bags and explicitly compressed configs remain supported.
+    cameras = {tp if tp in types else tp + "/compressed": key for tp, key in cameras.items()}
+    missing = set(cameras) - types.keys()
+    if missing:
+        raise ValueError(f"{path}: missing camera topics: {sorted(missing)}")
     reader.set_filter(rosbag2_py.StorageFilter(topics=[*cameras, joint_topic, gripper_topic]))
     names = [f"{arm}_{j}" for j in JOINTS]
     latest = {}  # topic -> (time, value)
