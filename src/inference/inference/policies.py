@@ -8,6 +8,26 @@ import numpy as np
 from adapter.labels import chunk_actions, load_episode
 
 
+def letterbox(image, height, width):
+    """(H, W, 3) uint8 image scaled to fit (height, width), keeping its aspect, centred on black: how
+    BlueCupToContainer's 224 x 224 frames were made from the cameras' (mean error 0.006 against them).
+    An image already at (height, width), the checkpoints trained at camera resolution, is unchanged."""
+    h, w = image.shape[:2]
+    if (h, w) == (height, width):
+        return image
+    import torch
+    import torch.nn.functional as F
+
+    scale = min(height / h, width / w)
+    nh, nw = round(h * scale), round(w * scale)
+    resized = F.interpolate(torch.from_numpy(np.ascontiguousarray(image)).permute(2, 0, 1)[None].float(),
+                            (nh, nw), mode="bilinear", antialias=True)
+    out = np.zeros((height, width, 3), np.uint8)
+    top, left = (height - nh) // 2, (width - nw) // 2
+    out[top:top + nh, left:left + nw] = resized[0].permute(1, 2, 0).round().clamp(0, 255).byte().numpy()
+    return out
+
+
 class ReplayPolicy:
     """A recorded episode played back as a policy: at step t, the chunk labelled at step t of the
     recording, ignoring the observation. Everything around it (anchoring on the live TCP, chunk
@@ -127,6 +147,7 @@ class LeRobotPolicy:
         self.torch, self.device, self.task, self.rtc = torch, torch.device(device), task, rtc
         self.type, self.chunk_size = cfg.type, chunk_length(vars(cfg))
         self.features = list(cfg.input_features)
+        self.image_shapes = {k: tuple(f.shape[1:]) for k, f in cfg.input_features.items() if k.startswith("observation.images.")}
 
     def reset(self):
         self.policy.reset()
@@ -141,7 +162,8 @@ class LeRobotPolicy:
         # RTC guidance needs gradients, which inference_mode forbids
         with torch.no_grad() if self.rtc else torch.inference_mode():
             batch = prepare_observation_for_inference(
-                {k: observation[k] for k in self.features}, self.device, self.task)
+                {k: letterbox(observation[k], *self.image_shapes[k]) if k in self.image_shapes else observation[k]
+                 for k in self.features}, self.device, self.task)
             batch = self.pre(batch)
             kwargs = {}
             if self.rtc:
