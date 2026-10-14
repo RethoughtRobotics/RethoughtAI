@@ -103,23 +103,26 @@ gripper state, /teleop/left/tcp ──▶│ policy node (serve)  │───�
   carries its observation time, inference latency only shifts where execution starts in the chunk.
 - **The two are separate processes,** so inference never blocks the control loop. Putting the GPU
   on another machine is a ROS networking question, not new code.
-- **Per policy type settings** live in the config's `inference.policies` (`act`, `smolvla`).
+- **Per policy type settings** live in the config's `inference.policies` (`act`, `smolvla`, `vita`).
   On a laptop RTX 500 (4 GB) next to the sim: ACT ~30 ms, run every step; SmolVLA with RTC ~450 ms,
   run every 10 steps with `execution_horizon` 25 (it must exceed the delay in steps, ~13).
 
-**Running a checkpoint** from `models/<name>_*/step-<N>/` opens tmux. The top pane runs the policy
+**Running a checkpoint** from `models/<name>_*/step-<N>/` opens tmux. When a prefix like
+`--smolvla` matches several models, give the full name. The top pane runs the policy
 (`launch/policy.launch.py`). The bottom pane has `./start` typed, ready to connect the policy to the
-arm. `./stop` holds the arm where it is.
+arm. `./stop` holds the arm where it is. `./home` sends it to the untuck pose with the gripper open,
+as the controller's B button (with `./start` still on, the policy resumes fresh from there).
 
 ```bash
-# bringbackbaxter: ./run_sim_teleop.sh --left --policy
-./run_inference --act 100000                  # shadow rollout of held-out episode 4
-./run_inference --smolvla 30000 --episode 24
-./run_inference --act 100000 --live           # the robot's own cameras
+# bringbackbaxter: ./run_teleop.sh --left --policy (robot) or ./run_sim_teleop.sh --left --policy
+./run_inference --act 100000                  # real robot: its cameras; sim: shadow of episode 4
+./run_inference --smolvla_CupToContainer 30000 --episode 24   # sim: shadow of episode 24
+./run_inference --smolvla_CupToContainer_wrist  # newest checkpoint, wrist camera only
 ```
 
-A **shadow rollout** drives the arm while the policy watches a recorded episode's cameras, played
-by `ros2 bag play`. The arm first moves to the episode's start pose, then the bag plays from the
+With the robot's cameras up, the policy watches them. With none (the sim), it runs a **shadow
+rollout**: it drives the arm while the policy watches a recorded episode's cameras, played by
+`ros2 bag play`. `--episode` with live cameras is refused: the bag's frames would mix with theirs. The arm first moves to the episode's start pose, then the bag plays from the
 episode's first step.
 
 ---
