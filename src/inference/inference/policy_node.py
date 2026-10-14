@@ -38,6 +38,9 @@ STALE = 0.5  # s: older inputs pause inference (camera stopped, bag paused)
 LOG_EVERY = 10.0  # s
 WARMUP = 2  # inferences left out of the latency (CUDA init)
 LATENCY_WINDOW = 10  # recent inferences the RTC delay is taken from; one spike must not pin it
+# RTC continues the last chunk only while the arm follows it: a plan this far ahead of the TCP (m)
+# starts fresh instead. Bag real_wrist_bugs: up to 203 mm ahead while fine, then 274 .. 591 mm.
+MAX_LEAD = 0.25
 
 
 class PolicyNode:
@@ -108,20 +111,36 @@ class PolicyNode:
         return now, obs, tcp
 
     def _rtc_args(self, t, tcp):
-        """(delay steps, the last chunk's actions from t on, relative to `tcp`) for Real-Time Chunking."""
+        """(delay steps, the last chunk's actions from t on, relative to `tcp`) for Real-Time Chunking;
+        no last chunk (a fresh one from this observation) when RTC can't continue it safely:
+          - the delay reaches execution_horizon: RTC pins the whole horizon to the last chunk and the
+            runtime executes only past the delay, the part nothing anchors. Chunk after chunk the plan
+            ran ahead of the arm (bag real_wrist_bugs: latency 0.5 -> 1.6 s, delay 36 of 25 steps,
+            the plan 591 mm ahead of the TCP and the arm at 0.8 m/s).
+          - the last chunk is more than MAX_LEAD ahead of the TCP: the arm isn't following it."""
         delay = math.ceil(self.latency.percentile(0.9) / self.dt) if len(self.latency) else 0
         horizon = self.policy.policy.config.rtc_config.execution_horizon
-        if delay >= horizon and not self.warned:
-            self.warned = True
-            self.node.get_logger().warning(
-                f"inference delay ({delay} steps) reaches RTC's execution_horizon ({horizon}): chunks will switch "
-                "where RTC did not constrain them. Raise execution_horizon above the delay.")
         if self.last is None or self.last.end < t:
+            return delay, None
+        if delay >= horizon:
+            self._warn_once(f"inference delay ({delay} steps) reaches RTC's execution_horizon ({horizon}): "
+                            "fresh chunks, not continued, until it is below")
             return delay, None
         ts = t + self.dt * np.arange(int((self.last.end - t) * self.fps) + 1)
         samples = [self.last.at(x) for x in ts]
         positions, rotations = np.array([s[0] for s in samples]), Rotation.concatenate([s[1] for s in samples])
+        lead = np.linalg.norm(positions[0] - tcp[0])
+        if lead > MAX_LEAD:
+            self._warn_once(f"the last chunk is {1000 * lead:.0f} mm ahead of the TCP: a fresh chunk, not continued")
+            return delay, None
+        self.warned = False
         return delay, relative_actions(positions, rotations, np.array([s[2] for s in samples]), *tcp)
+
+    def _warn_once(self, text):
+        """Warn when RTC stops continuing chunks, once until it continues one again."""
+        if not self.warned:
+            self.warned = True
+            self.node.get_logger().warning(text)
 
     def _run(self):
         next_start = 0.0

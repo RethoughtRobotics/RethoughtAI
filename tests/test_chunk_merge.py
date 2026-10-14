@@ -191,6 +191,56 @@ def test_horizon_keeps_only_the_first_steps():
         check_merge({"type": "ensemble", "coeff": 0.01, "horizon": 10}, 100, every=10)
 
 
+
+class Latency:
+    def __init__(self, seconds):
+        self.seconds = seconds
+
+    def __len__(self):
+        return 1
+
+    def percentile(self, q):
+        return self.seconds
+
+
+def rtc_node(latency, last):
+    """A PolicyNode with only what _rtc_args reads: RTC execution_horizon 25 at 25 fps."""
+    from types import SimpleNamespace
+
+    from inference.policy_node import PolicyNode
+
+    node = PolicyNode.__new__(PolicyNode)
+    node.fps, node.dt, node.warned, node.last, node.latency = FPS, 1 / FPS, False, last, Latency(latency)
+    node.policy = SimpleNamespace(policy=SimpleNamespace(config=SimpleNamespace(rtc_config=SimpleNamespace(execution_horizon=25))))
+    node.warnings = []
+    node.node = SimpleNamespace(get_logger=lambda: SimpleNamespace(warning=node.warnings.append))
+    return node
+
+
+TCP = (np.zeros(3), np.array([0.0, 0.0, 0.0, 1.0]))
+
+
+def test_rtc_continues_the_last_chunk():
+    delay, prev = rtc_node(0.5, line(0.0, 0.0, 0.0, 0.1, k=50))._rtc_args(0.2, TCP)
+    assert delay == 13 and prev is not None and len(prev) == 45
+
+
+def test_rtc_starts_fresh_when_the_delay_reaches_the_horizon():
+    """Bag real_wrist_bugs: 1.6 s inferences (delay 36 of 25) chained chunks 591 mm ahead of the arm."""
+    node = rtc_node(1.4, line(0.0, 0.0, 0.0, 0.1, k=50))
+    delay, prev = node._rtc_args(0.2, TCP)
+    assert delay == 35 and prev is None
+    node._rtc_args(0.3, TCP)
+    assert len(node.warnings) == 1  # once, until chunks continue again
+
+
+def test_rtc_starts_fresh_when_the_arm_is_not_following():
+    node = rtc_node(0.5, line(0.0, 0.0, 0.3, 0.1, k=50))  # 300 mm ahead of the TCP
+    assert node._rtc_args(0.2, TCP)[1] is None
+    node.last = line(0.0, 0.0, 0.0, 0.1, k=50)
+    assert node._rtc_args(0.2, TCP)[1] is not None and not node.warned
+
+
 def test_reanchored_chunk_keeps_its_plan_relative_to_the_tcp():
     c = line(0.0, 0.0, 0.5, 0.1)  # planned from a TCP at x = 0.5
     R_turn = Rotation.from_euler("z", 30, degrees=True)
