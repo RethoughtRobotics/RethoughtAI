@@ -49,6 +49,35 @@ def model_config(model, revision=None):
     return json.loads(Path(hf_hub_download(model, "config.json", revision=revision)).read_text())
 
 
+def chunk_length(config):
+    """Actions in a chunk the policy returns (config.json as a dict): `chunk_size` (ACT, SmolVLA), or
+    `n_action_steps` for a policy that plans `horizon` steps and returns the first ones (VITA)."""
+    return config.get("chunk_size") or config["n_action_steps"]
+
+
+def load_config(path):
+    """The checkpoint's PreTrainedConfig, without the fields this LeRobot doesn't have (a checkpoint
+    saved by a newer LeRobot, e.g. `dtype`). A dropped field that isn't null is warned about."""
+    import dataclasses
+    import tempfile
+    import warnings
+
+    from lerobot.configs.policies import PreTrainedConfig
+
+    import inference.vita  # noqa: F401  registers the "vita" policy type
+
+    config = json.loads((path / "config.json").read_text())
+    known = {f.name for f in dataclasses.fields(PreTrainedConfig.get_choice_class(config["type"]))} | {"type"}
+    extra = {k: config.pop(k) for k in list(config) if k not in known}
+    if not extra:
+        return PreTrainedConfig.from_pretrained(path)
+    if ignored := {k: v for k, v in extra.items() if v is not None}:
+        warnings.warn(f"{path}: this LeRobot ignores {ignored}")
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "config.json").write_text(json.dumps(config))
+        return PreTrainedConfig.from_pretrained(tmp)
+
+
 class LeRobotPolicy:
     """Any LeRobot policy (ACT, SmolVLA, ...) through LeRobot's own loading and processors.
 
@@ -62,12 +91,11 @@ class LeRobotPolicy:
 
     def __init__(self, model, device, task="", rtc=None, revision=None, overrides=None):
         import torch
-        from lerobot.configs.policies import PreTrainedConfig
         from lerobot.policies import get_policy_class, make_pre_post_processors
         from lerobot.processor import NormalizerProcessorStep
 
         path = model_dir(model, revision)
-        cfg = PreTrainedConfig.from_pretrained(path)
+        cfg = load_config(path)
         cfg.device, cfg.pretrained_path = device, path
         for key, value in (overrides or {}).items():  # e.g. num_steps: fewer flow steps, less latency
             setattr(cfg, key, value)
@@ -97,7 +125,7 @@ class LeRobotPolicy:
             self.pre, self.post = make_pre_post_processors(cfg, dataset_stats=stats)
         self.normalizer = next(s for s in self.pre.steps if isinstance(s, NormalizerProcessorStep))
         self.torch, self.device, self.task, self.rtc = torch, torch.device(device), task, rtc
-        self.type, self.chunk_size = cfg.type, cfg.chunk_size
+        self.type, self.chunk_size = cfg.type, chunk_length(vars(cfg))
         self.features = list(cfg.input_features)
 
     def reset(self):

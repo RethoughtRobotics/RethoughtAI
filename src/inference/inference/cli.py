@@ -116,14 +116,14 @@ def run(config, episode, model, start_at, player, revision):
         spin("policy_runtime", lambda node: Runtime(node, cfg, policy))
         return
 
-    from inference.policies import model_config
+    from inference.policies import chunk_length, model_config
 
     model_cfg = model_config(model, revision)
     settings = policy_settings(cfg, model_cfg)
-    warning = check_merge(settings["merge"], model_cfg["chunk_size"], settings.get("every", 1))
+    warning = check_merge(settings["merge"], chunk_length(model_cfg), settings.get("every", 1))
     if warning:
         click.echo(f"Warning: {warning}")
-    cfg = {**cfg, "chunk_size": model_cfg["chunk_size"]}
+    cfg = {**cfg, "chunk_size": chunk_length(model_cfg)}
     start = None
     if start_at:
         recorded = load_episode(start_at, cfg["arm"], cfg["fps"])
