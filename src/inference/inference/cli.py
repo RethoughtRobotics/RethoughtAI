@@ -193,3 +193,21 @@ def probe(model, config, device, depth, out):
     if out:
         Path(out).write_text(probe_mod.to_json(root))
         click.echo(f"\n{out}")
+
+
+@main.command()
+@click.argument("model")
+@click.option("--config", default="baxter.yaml", show_default=True)
+@click.option("--device", default="cuda", show_default=True)
+def attend(model, config, device):
+    """Serve attention maps for recap: JSON requests on stdin, replies on stdout (inference.attention)."""
+    import sys
+
+    from inference import attention
+    from inference.policies import LeRobotPolicy
+
+    out, sys.stdout = sys.stdout, sys.stderr  # replies only on stdout: library prints go to stderr
+    full = yaml.safe_load(resolve_config(config).read_text())
+    cfg = full["inference"]
+    policy = LeRobotPolicy(model, device, cfg.get("task", ""))
+    attention.serve(policy, cfg, full["topics"]["images"], sys.stdin, out)
