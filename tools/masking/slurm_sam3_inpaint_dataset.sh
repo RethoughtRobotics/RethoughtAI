@@ -16,6 +16,7 @@ INPAINT_RADIUS="${INPAINT_RADIUS:-6}"
 CAMERA="${CAMERA:-observation.images.third_eye}"
 MAX_VIDEOS="${MAX_VIDEOS:-0}"
 MAX_FRAMES="${MAX_FRAMES:-0}"
+WORKERS="${WORKERS:-4}"
 
 if [[ ! -d "$SRC_DATASET" ]]; then
   echo "Source dataset missing: $SRC_DATASET" >&2
@@ -31,7 +32,8 @@ CMD=(python "$ROOT_DIR/tools/masking/sam3_inpaint_dataset.py"
   --prompt "$PROMPT"
   --threshold "$THRESHOLD"
   --dilation "$DILATION"
-  --inpaint-radius "$INPAINT_RADIUS")
+  --inpaint-radius "$INPAINT_RADIUS"
+  --workers "$WORKERS")
 
 if [[ -n "$CAMERA" ]]; then
   CMD+=(--camera "$CAMERA")

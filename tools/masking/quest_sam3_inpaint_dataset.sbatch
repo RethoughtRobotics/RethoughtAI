@@ -7,8 +7,8 @@
 #SBATCH -p gengpu
 #SBATCH --gres=gpu:a100:1
 #SBATCH --exclude=qgpu2014
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=96G
 #SBATCH -t 12:00:00
 #SBATCH -o /projects/e52938/kmy2091/logs/%x_%j.out
 
@@ -39,6 +39,7 @@ export PYTHONUNBUFFERED=1
 # export CAMERA=observation.images.third_eye
 # export MAX_VIDEOS=0
 # export MAX_FRAMES=0
+# export WORKERS=4   # video files in parallel on one GPU
 
 nvidia-smi -L
 cd "$ROOT_DIR"
