@@ -17,4 +17,4 @@ nvidia-smi -L
 $V/venv-effecterase/bin/python $WS/RethoughtAI-adapter/tools/masking/video_remove.py --method effecterase --steps 20 \
   --source $WS/datasets/SweepTrash_Kin-Full --masks $V/masks/SweepTrash_Kin-Full --out $WS/datasets/SweepTrash_Kin-Full_inpainted_effecterase \
   --camera observation.images.third_eye --segment-frames 1500 --shard "$SHARD" --parts-dir $V/parts/SweepTrash_Kin-Full_effecterase \
-  --workers 2 2>&1 | grep --line-buffered -v -i -E "warn|it/s\]|fg_emb|noise shape"
+  --workers "${WORKERS:-2}" 2>&1 | grep --line-buffered -v -i -E "warn|it/s\]|fg_emb|noise shape"

@@ -37,6 +37,7 @@ PY
 )
 SHA=$(echo "$SHA" | tail -1)
 echo "Pushed $REPO at $SHA"
+[[ -n "${SHA_FILE:-}" ]] && echo "$SHA" > "$SHA_FILE"  # pre-allocated training jobs wait on this
 
 "$PY" -I - "$REPO" "$SHA" <<'PY'
 import sys
@@ -55,6 +56,7 @@ for i in range(len(eps)):
 print("checked first/last frame of all", len(eps), "episodes on", len(ds.meta.video_keys), "cameras")
 PY
 
+[[ "${TRAIN:-1}" == 1 ]] || { echo "TRAIN=0: training is submitted separately"; exit 0; }
 cd "$WS"
 export STATE_DIM=28 ACTION_DIM=14 CAMERAS=observation.images.left,observation.images.right,observation.images.third_eye
 DIT_VARIANT=aug sbatch --export=ALL --gres=gpu:h100:1 --exclude=qgpu2014 --time=03:00:00 --output=logs/%x_%j.out \
