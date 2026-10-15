@@ -5,6 +5,7 @@
 #  1) standard LeRobot image augmentation,
 #  2) random spatial masking (RandomErasing),
 #  3) training-time camera dropout with top camera dropped 30% (wrist never dropped).
+# DIT_VARIANT=aug runs only 1) (LeRobot's six default transforms, up to 3 per frame): no mask, no dropout.
 #SBATCH --job-name=dit-combo-30k
 #SBATCH --account=e52938
 #SBATCH --partition=gengpu
@@ -94,20 +95,29 @@ PY
 echo "Using video backend: $VIDEO_BACKEND"
 
 # LeRobot defaults + guaranteed spatial mask (selected via high weight, applied with p=0.5).
+DIT_VARIANT="${DIT_VARIANT:-combo}"
+[[ "$DIT_VARIANT" =~ ^(combo|aug)$ ]] || { echo 'DIT_VARIANT must be combo or aug' >&2; exit 2; }
 TFS='{"brightness":{"weight":1.0,"type":"ColorJitter","kwargs":{"brightness":[0.8,1.2]}},"contrast":{"weight":1.0,"type":"ColorJitter","kwargs":{"contrast":[0.8,1.2]}},"saturation":{"weight":1.0,"type":"ColorJitter","kwargs":{"saturation":[0.5,1.5]}},"hue":{"weight":1.0,"type":"ColorJitter","kwargs":{"hue":[-0.05,0.05]}},"sharpness":{"weight":1.0,"type":"SharpnessJitter","kwargs":{"sharpness":[0.5,1.5]}},"affine":{"weight":1.0,"type":"RandomAffine","kwargs":{"degrees":[-5.0,5.0],"translate":[0.05,0.05]}},"mask":{"weight":1000.0,"type":"RandomErasing","kwargs":{"p":0.5,"scale":[0.02,0.08],"ratio":[0.3,3.3],"value":127}}}'
+
+TF_ARGS=(--dataset.image_transforms.max_num_transforms=4 --dataset.image_transforms.tfs="$TFS")
+DROPOUT='{"observation.images.third_eye": 0.3}'
+if [[ "$DIT_VARIANT" == aug ]]; then
+    TF_ARGS=()
+    DROPOUT='{}'
+fi
+echo "DiT variant: $DIT_VARIANT"
 
 exec .venv/bin/lerobot-train \
     --dataset.repo_id="$DS" --dataset.revision="$REV" \
     --dataset.video_backend="$VIDEO_BACKEND" --dataset.eval_split=0.1 \
     --dataset.image_transforms.enable=true \
     --dataset.image_transforms.resize_shape="[240,320]" --dataset.image_transforms.resize_antialias=true \
-    --dataset.image_transforms.max_num_transforms=4 \
-    --dataset.image_transforms.tfs="$TFS" \
+    "${TF_ARGS[@]}" \
     --policy.type=multi_task_dit \
     --policy.image_resize_shape='[240,320]' \
     --policy.image_crop_shape='[224,224]' \
     --policy.image_crop_is_random=true \
-    --policy.camera_dropout='{"observation.images.third_eye": 0.3}' \
+    --policy.camera_dropout="$DROPOUT" \
     --policy.device=cuda \
     --accelerator.mixed_precision="${MIXED_PRECISION:-bf16}" \
     --policy.push_to_hub=true --policy.private=true \
