@@ -56,7 +56,11 @@ print("checked first/last frame of all", len(eps), "episodes on", len(ds.meta.vi
 PY
 
 cd "$WS"
-STATE_DIM=28 ACTION_DIM=14 DIT_VARIANT=aug \
-CAMERAS=observation.images.left,observation.images.right,observation.images.third_eye \
-sbatch --export=ALL --gres=gpu:h100:1 --exclude=qgpu2014 --time=03:00:00 --output=logs/%x_%j.out \
+export STATE_DIM=28 ACTION_DIM=14 CAMERAS=observation.images.left,observation.images.right,observation.images.third_eye
+DIT_VARIANT=aug sbatch --export=ALL --gres=gpu:h100:1 --exclude=qgpu2014 --time=03:00:00 --output=logs/%x_%j.out \
     RethoughtAI/training/quest/multitask_dit_combo_30k.sbatch "$REPO" "$SHA" "$RUN"
+# VITA too (TRAIN_VITA=0 to skip), on its own GPU.
+if [[ "${TRAIN_VITA:-1}" == 1 ]]; then
+    sbatch --export=ALL --gres=gpu:h100:1 --exclude=qgpu2014 --time=03:00:00 --output=logs/%x_%j.out \
+        RethoughtAI/training/quest/vita_pose_30k.sbatch "$REPO" "$SHA" aug "${RUN/multi_task_dit_/vita_}"
+fi
