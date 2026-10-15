@@ -1,0 +1,49 @@
+# Pose-only SweepTrash deployment. Start teleop with --both --policy --no-gripper.
+robot: baxter
+topics:
+  images:
+    - {topic: /cameras/left_hand_camera/image, key: observation.images.left}
+    - {topic: /cameras/right_hand_camera/image, key: observation.images.right}
+    - {topic: /cameras/third_eye/color/image_raw, key: observation.images.third_eye}
+trigger:
+  light:
+    topic: /robot/digital_io/command
+    msg_type: baxter_core_msgs/DigitalOutputCommand
+    name: left_inner_light
+inference:
+  arm: both
+  fps: 25
+  publish_rate: 100
+  max_tcp_skew: 0.1
+  joint_states: /robot/joint_states
+  chunk: /policy/both/chunk
+  engage: /policy/both/engage
+  engaged: /policy/both/engaged
+  home: /vive/right/b_button
+  entry_ramp: 1.0
+  chunk_size: 32
+  task: Sweep the trash
+  arms:
+    left:
+      tcp: /teleop/left/tcp
+      target: /policy/left/target
+      trigger: /policy/left/trigger  # interface only: no gripper commands published
+      home: /vive/right/b_button
+      cuff: /robot/digital_io/left_lower_cuff/state
+    right:
+      tcp: /teleop/right/tcp
+      target: /policy/right/target
+      trigger: /policy/right/trigger
+      home: /vive/left/b_button
+      cuff: /robot/digital_io/right_lower_cuff/state
+  deadman:
+    topic: /libsurvive/joy
+    frame_id: LHR-12D31191
+    button: 17
+    alive: /vive/right/target
+  policies:
+    vita_bimanual:
+      every: 16
+      merge: {type: latest}
+      overrides: {n_action_steps: 32}
+      # Already trained with lead_steps=1: no extra offset or relative RTC.
