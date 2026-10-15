@@ -12,10 +12,12 @@ set -euo pipefail
 WS=/projects/e52938/kmy2091
 NAME=${NAME:-SweepTrash_Kin-Full}
 LEAD=${LEAD:-16}
+# TAG names the inpainting method in the outputs, e.g. TAG=effecterase -> NAME_inpainted_effecterase_lead640ms
+TAG=${TAG:+_$TAG}
 SRC=${SRC:-$WS/datasets/h100/${NAME}_inpainted}
-OUT=$WS/datasets/${NAME}_inpainted_lead640ms
-REPO=andnetdeboer/${NAME}_inpainted_lead640ms
-RUN=${RUN:-multi_task_dit_${NAME}_inpainted_lead640ms_aug_30k_r1}
+OUT=$WS/datasets/${NAME}_inpainted${TAG}_lead640ms
+REPO=andnetdeboer/${NAME}_inpainted${TAG}_lead640ms
+RUN=${RUN:-multi_task_dit_${NAME}_inpainted${TAG}_lead640ms_aug_30k_r1}
 export HF_HOME=$WS/cache/huggingface HF_LEROBOT_HOME=$WS/cache/lerobot HF_TOKEN_PATH=$HOME/.cache/huggingface/token
 export LD_LIBRARY_PATH="$WS/cache/ffmpeg7/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" PYTHONUNBUFFERED=1
 PY=$WS/rethought-lerobot/.venv/bin/python

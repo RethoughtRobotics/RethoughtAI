@@ -26,7 +26,7 @@ nvidia-smi -L
 
 "$V/venv-$METHOD/bin/python" RethoughtAI-adapter/tools/masking/video_remove.py --method "$METHOD" \
     --source "$SRC" --masks "$MASKS" --out "$OUT" --camera "$CAMERA" --workers "$WORKERS" ${STEPS:+--steps "$STEPS"} \
-    2>&1 | grep -v -i -E "warn|it/s\]"
+    2>&1 | grep --line-buffered -v -i -E "warn|it/s\]"
 
 SHA=$("$WS/rethought-lerobot/.venv/bin/python" -I - "$OUT" "$REPO" <<'PY' | tail -1
 import sys
