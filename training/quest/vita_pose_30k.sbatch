@@ -1,7 +1,8 @@
 #!/bin/bash
 # Submit from /projects/e52938/kmy2091 after completing README.md.
-# sbatch RethoughtAI/training/quest/vita_pose_30k.sbatch DATASET_ID REVISION raw|drop|mask RUN_NAME
+# sbatch RethoughtAI/training/quest/vita_pose_30k.sbatch DATASET_ID REVISION raw|aug|drop|mask RUN_NAME
 #   raw  = no extra dataset augmentation
+#   aug  = standard LeRobot augmentation only (no dropout, no mask)
 #   drop = standard LeRobot augmentation + top (third_eye) camera dropped 30%; wrist never dropped
 #   mask = standard LeRobot augmentation + random spatial masking (RandomErasing); no camera dropout
 # Override GPU type with sbatch --gres=gpu:a100:1 ... if desired.
@@ -21,7 +22,7 @@ DS="${1:?Exact private zero-lead dataset ID required}"
 REV="${2:?Pinned dataset commit SHA required}"
 VARIANT="${3:?Choose raw, drop or mask}"
 NAME="${4:?Unique run name required}"
-[[ "$VARIANT" =~ ^(raw|drop|mask)$ ]] || { echo 'Variant must be raw, drop or mask' >&2; exit 2; }
+[[ "$VARIANT" =~ ^(raw|aug|drop|mask)$ ]] || { echo 'Variant must be raw, aug, drop or mask' >&2; exit 2; }
 [[ "$NAME" =~ ^[A-Za-z0-9_-]+$ ]] || { echo 'Unsafe run name' >&2; exit 2; }
 ROOT="${VITA_WORKSPACE:-/projects/e52938/kmy2091}"
 BACKEND="$ROOT/rethought-lerobot"
@@ -48,8 +49,13 @@ nvidia-smi
 FFMPEG_PREFIX="${FFMPEG_PREFIX:-$ROOT/cache/ffmpeg7}"
 [[ -e "$FFMPEG_PREFIX/lib/libdav1d.so" ]] || { echo "Missing $FFMPEG_PREFIX; install it (see above)." >&2; exit 2; }
 export LD_LIBRARY_PATH="$FFMPEG_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# Expected layout; override for other robots, e.g. bimanual: STATE_DIM=28 ACTION_DIM=14
+# CAMERAS=observation.images.left,observation.images.right,observation.images.third_eye
+export STATE_DIM="${STATE_DIM:-15}" ACTION_DIM="${ACTION_DIM:-8}"
+export CAMERAS="${CAMERAS:-observation.images.left,observation.images.third_eye}"
 .venv/bin/python - "$DS" "$REV" <<'PY'
 import json
+import os
 import sys
 import torch
 from huggingface_hub import HfApi, hf_hub_download
@@ -59,11 +65,11 @@ api = HfApi()
 assert api.whoami()['name'] == 'andnetdeboer', 'Authenticate as andnetdeboer first'
 info = json.load(open(hf_hub_download(sys.argv[1], 'meta/info.json', repo_type='dataset', revision=sys.argv[2])))
 features = info['features']
-assert features['observation.state']['shape'] == [15], 'Expected raw 15-D kinesthetic state'
-assert features['action']['shape'] == [8], 'Expected raw 8-D absolute pose/gripper actions'
+assert features['observation.state']['shape'] == [int(os.environ['STATE_DIM'])], features['observation.state']['shape']
+assert features['action']['shape'] == [int(os.environ['ACTION_DIM'])], features['action']['shape']
 assert info['fps'] == 25, 'Review horizon timing for non-25-Hz data'
 cameras = {k for k, v in features.items() if v['dtype'] in ('image', 'video')}
-assert cameras == {'observation.images.left', 'observation.images.third_eye'}, cameras
+assert cameras == set(os.environ['CAMERAS'].split(',')), cameras
 print('Verified dimensions/cameras at revision', sys.argv[2])
 print('NOTE: metadata dimensions cannot prove zero lead; verify the export configuration separately.')
 PY
@@ -98,7 +104,10 @@ echo "Using video backend: $VIDEO_BACKEND"
 AUG=false
 DROPOUT='{}'
 TF_ARGS=()
-if [[ "$VARIANT" == drop ]]; then
+if [[ "$VARIANT" == aug ]]; then
+    # LeRobot's six default transforms (up to 3 per frame); no camera dropout, no mask.
+    AUG=true
+elif [[ "$VARIANT" == drop ]]; then
     # Backend recipe tasks/vita_kin/pipelines/vita_pose_aug.json (da89d19f).
     AUG=true
     DROPOUT='{"observation.images.third_eye": 0.3}'
