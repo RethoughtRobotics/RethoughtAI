@@ -95,7 +95,12 @@ LOADERS = {"minimax": load_minimax, "effecterase": load_effecterase}
 
 
 def _init(method: str, root: str, gpu_ids):
-    torch.cuda.set_device(gpu_ids.get())
+    # Expose only this worker's GPU (as cuda:0) before CUDA starts in this process: MiniMax-Remover's pipeline
+    # hard-codes "cuda:0", so torch.cuda.set_device(k) alone breaks a worker on any other GPU.
+    import os
+    k = gpu_ids.get()
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    os.environ["CUDA_VISIBLE_DEVICES"] = visible.split(",")[k] if visible else str(k)
     _w["run"] = LOADERS[method](Path(root))
 
 
