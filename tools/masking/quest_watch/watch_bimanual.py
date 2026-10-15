@@ -17,7 +17,7 @@ WS = Path("/projects/e52938/kmy2091")
 STATE = Path(__file__).with_name("seen.json")
 SBATCH = WS / "RethoughtAI-adapter/tools/masking/quest_sam3_inpaint_dataset.sbatch"
 AUTHOR = "andnetdeboer"
-SKIP_SUFFIXES = ("_inpainted", "_inpaint_v1")
+SKIP_NAME_PARTS = ("_inpaint",)  # our own outputs: X_inpainted, X_sam3_inpaint_v1, X_inpainted_lead640ms, ...
 POLL_S = int(os.environ.get("POLL_S", "120"))
 
 api = HfApi()
@@ -52,6 +52,18 @@ def bimanual(repo: str, sha: str) -> tuple[bool, str]:
     return is_bi, f"arms={arms} cameras={cams}"
 
 
+def derived_from_ours(repo: str, sha: str) -> str | None:
+    """Datasets this pipeline produced (inpainted or relabelled) must never be re-inpainted."""
+    files = {f.rfilename for f in api.dataset_info(repo, revision=sha, files_metadata=False).siblings}
+    if "meta/sam3_inpaint_report.json" in files:
+        return "has meta/sam3_inpaint_report.json"
+    if "meta/rethoughtai_sources.json" in files:
+        src = json.load(open(hf_hub_download(repo, "meta/rethoughtai_sources.json", repo_type="dataset", revision=sha)))
+        if "relabelled_from" in src:
+            return "relabelled by tools/relabel_lead.py"
+    return None
+
+
 def launch(repo: str, sha: str) -> str:
     name = repo.split("/")[1]
     src = WS / "datasets" / name
@@ -74,7 +86,7 @@ def main() -> None:
         try:
             for d in api.list_datasets(author=AUTHOR):
                 repo = d.id
-                if repo in state["baseline"] or repo in state["handled"] or repo.endswith(SKIP_SUFFIXES):
+                if repo in state["baseline"] or repo in state["handled"] or any(p in repo for p in SKIP_NAME_PARTS):
                     continue
                 refs = api.list_repo_refs(repo, repo_type="dataset")
                 if "v3.0" not in [t.name for t in refs.tags]:
@@ -83,6 +95,12 @@ def main() -> None:
                         say(f"WAITING {repo}: no v3.0 tag yet (upload may be in progress)")
                     continue
                 sha = api.dataset_info(repo).sha
+                derived = derived_from_ours(repo, sha)
+                if derived:
+                    state["handled"][repo] = {"sha": sha, "action": f"skipped: {derived}"}
+                    STATE.write_text(json.dumps(state, indent=2))
+                    say(f"SKIP_DERIVED {repo}@{sha[:8]}: {derived}")
+                    continue
                 is_bi, desc = bimanual(repo, sha)
                 if not is_bi:
                     state["handled"][repo] = {"sha": sha, "action": "skipped: not bimanual", "desc": desc}
