@@ -48,8 +48,13 @@ FFMPEG_PREFIX="${FFMPEG_PREFIX:-$ROOT/cache/ffmpeg7}"
 [[ -e "$FFMPEG_PREFIX/lib/libdav1d.so" ]] || { echo "Missing $FFMPEG_PREFIX; install it (see above)." >&2; exit 2; }
 export LD_LIBRARY_PATH="$FFMPEG_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
+# Expected layout; override for other robots, e.g. bimanual: STATE_DIM=28 ACTION_DIM=14
+# CAMERAS=observation.images.left,observation.images.right,observation.images.third_eye
+export STATE_DIM="${STATE_DIM:-15}" ACTION_DIM="${ACTION_DIM:-8}"
+export CAMERAS="${CAMERAS:-observation.images.left,observation.images.third_eye}"
 .venv/bin/python - "$DS" "$REV" <<'PY'
 import json
+import os
 import sys
 import torch
 from huggingface_hub import HfApi, hf_hub_download
@@ -59,11 +64,11 @@ api = HfApi()
 assert api.whoami()['name'] == 'andnetdeboer', 'Authenticate as andnetdeboer first'
 info = json.load(open(hf_hub_download(sys.argv[1], 'meta/info.json', repo_type='dataset', revision=sys.argv[2])))
 features = info['features']
-assert features['observation.state']['shape'] == [15], 'Expected 15-D state'
-assert features['action']['shape'] == [8], 'Expected 8-D action'
+assert features['observation.state']['shape'] == [int(os.environ['STATE_DIM'])], features['observation.state']['shape']
+assert features['action']['shape'] == [int(os.environ['ACTION_DIM'])], features['action']['shape']
 assert info['fps'] == 25, 'Review horizon timing for non-25-Hz data'
 cameras = {k for k, v in features.items() if v['dtype'] in ('image', 'video')}
-assert cameras == {'observation.images.left', 'observation.images.third_eye'}, cameras
+assert cameras == set(os.environ['CAMERAS'].split(',')), cameras
 print('Verified dimensions/cameras at revision', sys.argv[2])
 PY
 
