@@ -67,7 +67,9 @@ def adapt(config, sessions, output, hub_repo):
 @click.option("--lead", default=1, show_default=True, help="measured labels: the TCP this many steps later")
 @click.option("--gripper/--no-gripper", default=True, show_default=True,
               help="Gripper in state and action (--no-gripper when the hands hold tools)")
-def lerobot(session, config, repo_id, task, output, arms, labels, lead, gripper):
+@click.option("--workers", default=6, show_default=True,
+              help="Episodes exported in parallel processes, then joined in order")
+def lerobot(session, config, repo_id, task, output, arms, labels, lead, gripper, workers):
     """Convert a teleop session (every episode_*) to a LeRobot v3 dataset on labels.py's actions.
 
     \b
@@ -89,7 +91,7 @@ def lerobot(session, config, repo_id, task, output, arms, labels, lead, gripper)
     if output.exists():
         raise click.UsageError(f"{output} exists; remove it to rebuild the dataset")
     export(session, repo_id, output, task, cameras, arm=arms[0], fps=fps, log=click.echo, arms=arms, labels=labels,
-           lead=lead, gripper=gripper)
+           lead=lead, gripper=gripper, workers=workers)
     click.echo(f"Dataset written to {output}")
 
 
@@ -113,9 +115,13 @@ def push(dataset, repo_id, private, collection):
     from huggingface_hub import HfApi
     from lerobot.datasets.dataset_metadata import CODEBASE_VERSION
 
+    import os
+
     hf = shutil.which("hf") or str(Path(sys.executable).with_name("hf"))
+    # Xet's high-performance mode: more parallel transfers and memory, for a machine with both
+    env = {"HF_XET_HIGH_PERFORMANCE": "1", **os.environ}
     subprocess.run([hf, "upload-large-folder", repo_id, str(dataset), "--repo-type", "dataset",
-                    "--private" if private else "--no-private"], check=True)
+                    "--private" if private else "--no-private"], check=True, env=env)
     api = HfApi()
     # LeRobotDataset loads the revision tagged with its format version; upload-large-folder does not tag.
     api.create_tag(repo_id, tag=CODEBASE_VERSION, repo_type="dataset", exist_ok=True)
