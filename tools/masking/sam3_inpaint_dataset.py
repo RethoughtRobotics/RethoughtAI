@@ -8,7 +8,10 @@ import argparse
 import json
 import shutil
 import subprocess
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+import multiprocessing as mp
 
 import cv2
 import numpy as np
@@ -121,6 +124,7 @@ def rewrite_video(path: Path, source_root: Path, output_root: Path, processor, m
     ], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
     frame_bytes = width * height * 3
+    started = time.time()
     frames = 0
     total_mask_fraction = 0.0
     total_instances = 0
@@ -178,7 +182,21 @@ def rewrite_video(path: Path, source_root: Path, output_root: Path, processor, m
         "fps": fps,
         "mean_mask_fraction": (total_mask_fraction / frames) if frames else 0.0,
         "mean_instances_per_frame": (total_instances / frames) if frames else 0.0,
+        "seconds": round(time.time() - started, 1),
     }
+
+
+_worker = {}
+
+
+def _init_worker(device: str, gpu_ids):
+    if device == "cuda":  # spread workers over the visible GPUs; "cuda" then means this worker's GPU
+        torch.cuda.set_device(gpu_ids.get())
+    _worker["processor"], _worker["model"] = load_sam3(device)
+
+
+def _rewrite_in_worker(video: Path, source: Path, output: Path, args):
+    return rewrite_video(video, source, output, _worker["processor"], _worker["model"], args)
 
 
 def main():
@@ -195,13 +213,15 @@ def main():
     parser.add_argument("--max-frames", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=8, help="frames per SAM3 forward pass")
     parser.add_argument("--no-bf16", dest="bf16", action="store_false", help="run SAM3 in fp32 (~7x slower)")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="video files processed in parallel, each with its own SAM3 copy on the same GPU; the "
+                             "per-frame inpaint/encode is single-threaded CPU work, so this scales with files and CPUs")
     args = parser.parse_args()
 
     source = args.source.resolve()
     output = args.out.resolve()
     copy_tree_without_videos(source, output)
 
-    processor, model = load_sam3(args.device)
     files = video_paths(source, args.cameras)
     # Cameras that are not masked are copied unchanged; otherwise the output would lack their videos.
     for video in sorted(set(video_paths(source, None)) - set(files)):
@@ -214,11 +234,37 @@ def main():
     if not files:
         raise ValueError("No source videos found")
 
-    stats = []
-    for i, video in enumerate(files, start=1):
-        record = rewrite_video(video, source, output, processor, model, args)
-        stats.append(record)
-        print(f"[{i}/{len(files)}] {record['source']} mask={record['mean_mask_fraction']:.2%}", flush=True)
+    def report_line(i, record):
+        fps = record["frames"] / max(record["seconds"], 1e-6)
+        print(f"[{i}/{len(files)}] {record['source']} mask={record['mean_mask_fraction']:.2%} "
+              f"{record['frames']} frames in {record['seconds']:.0f}s ({fps:.1f} fps)", flush=True)
+
+    workers = max(1, min(args.workers, len(files)))
+    started = time.time()
+    if workers == 1:
+        processor, model = load_sam3(args.device)
+        stats = []
+        for i, video in enumerate(files, start=1):
+            stats.append(rewrite_video(video, source, output, processor, model, args))
+            report_line(i, stats[-1])
+    else:
+        by_file = {}
+        ctx = mp.get_context("spawn")  # CUDA in child processes
+        gpu_ids = ctx.Queue()
+        n_gpus = max(torch.cuda.device_count(), 1) if args.device == "cuda" else 1
+        for w in range(workers):
+            gpu_ids.put(w % n_gpus)
+        print(f"{workers} workers over {n_gpus} GPU(s)", flush=True)
+        with ProcessPoolExecutor(workers, mp_context=ctx, initializer=_init_worker,
+                                 initargs=(args.device, gpu_ids)) as pool:
+            futures = {pool.submit(_rewrite_in_worker, v, source, output, args): v for v in files}
+            for i, fut in enumerate(as_completed(futures), start=1):
+                by_file[futures[fut]] = fut.result()
+                report_line(i, by_file[futures[fut]])
+        stats = [by_file[v] for v in files]
+    total = sum(r["frames"] for r in stats)
+    print(f"All {len(files)} videos: {total} frames in {time.time() - started:.0f}s "
+          f"({total / max(time.time() - started, 1e-6):.1f} fps, {workers} workers)", flush=True)
 
     report = {
         "source": str(source),
@@ -231,6 +277,7 @@ def main():
         "inpaint_radius": args.inpaint_radius,
         "batch_size": args.batch_size,
         "bf16": args.bf16,
+        "workers": workers,
         "videos": stats,
     }
     (output / "meta" / "sam3_inpaint_report.json").write_text(json.dumps(report, indent=2) + "\n")
