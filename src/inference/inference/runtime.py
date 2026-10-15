@@ -24,6 +24,15 @@ replay) or the `chunk` topic (policy_node). Each policy step merges the chunks c
   latest    the newest chunk (RTC chunks already continue the last)
   ramp      each new chunk crossfades in over `ramp` steps, finishing within the overlap
 `horizon` keeps only a chunk's first steps: the merge reacts sooner, without retraining.
+`lead` (s) sends each step the pose its chunks plan `lead` later (at most a chunk's last), the gripper
+on time: a checkpoint trained on zero-lead labels (where the arm already is) chases a target the
+servo's lag leaves it behind; a lead brings the arm there on time, and the gripper closes then too.
+`gripper_lead` (s) sends the gripper the opening its chunks plan that much later. Kinesthetic labels
+are the gripper's measured opening at the same step: a policy that commands where the gripper already
+is never starts a close, and each new chunk starts again from the open gripper.
+`gripper_latch` [open below, close above]: the gripper fully closes when the merged trigger rises past
+the second and opens only when it falls below the first. Plans that disagree near a grasp otherwise
+flicker the trigger across one threshold, and the gripper starts closing and reopens.
 After a hold, chunks crossfade in over `entry_ramp` s: a policy's first targets lead the TCP.
 With a `start` pose, the arm moves there first, then `on_start` runs.
 """
@@ -108,7 +117,7 @@ def blend(x, y, w):
     return (1 - w) * x[0] + w * y[0], R, trigger
 
 
-def check_merge(merge, chunk_size, every=1):
+def check_merge(merge, chunk_size, every=1, fps=25.0):
     """Reject merge settings that leave gaps or jumps; return a warning, if any."""
     kind = merge.get("type", "ensemble")
     if kind not in MERGES:
@@ -116,6 +125,17 @@ def check_merge(merge, chunk_size, every=1):
     chunk_size = min(chunk_size, int(merge.get("horizon") or chunk_size))
     if every >= chunk_size:
         raise ValueError(f"every ({every}) must be below the chunk size ({chunk_size}), or the chunks leave gaps")
+    latch = merge.get("gripper_latch")
+    if latch is not None and not (len(latch) == 2 and 0.0 <= latch[0] < latch[1] <= 1.0):
+        raise ValueError(f"gripper_latch {latch}: [open below, close above], 0 <= open < close <= 1")
+    lead = float(merge.get("lead") or 0.0)
+    if lead < 0 or float(merge.get("gripper_lead") or 0.0) < 0:
+        raise ValueError(f"lead ({lead}) and gripper_lead must be >= 0")
+    # A chunk reaches the runtime ~0.2 s after its observation and is newest for `every` steps: past
+    # that, the pose `lead` ahead is beyond it, and the arm holds its last pose until the next.
+    if lead and (lead + 0.2) * fps + every > chunk_size:
+        return (f"lead {lead} s + ~0.2 s latency + every {every} steps exceeds a chunk ({chunk_size} steps): "
+                "the arm waits at each chunk's end; predict more often or lower the lead")
     if kind == "ramp":
         ramp = int(merge["ramp"])
         if not 0 < ramp < chunk_size:
@@ -148,6 +168,7 @@ class Runtime:
         self.fresh = False  # TCP fresh last tick
         self.ref = None  # (TCP p, TCP Rotation, target p, target Rotation) at engage: goal -> target
         self.trigger = None
+        self.gripper_closed = False  # gripper_latch state
         self.engaged = False
         self.done = False
         self.step = 0
@@ -207,6 +228,7 @@ class Runtime:
         resets, and re-engaging (./start still on, or the clutch held) starts from fresh chunks."""
         self.chunks, self.segment, self.entry, self.approach = [], None, None, None
         self.trigger = 0.0  # open: the teleop opens it to home, and follows this trigger after
+        self.gripper_closed = False
         self.trigger_pub.publish(Float32(data=self.trigger))
         self.settled = self._now()  # re-engage only after homing
         if self.engaged:
@@ -372,21 +394,35 @@ class Runtime:
         self.chunks.append(Chunk(t + self.dt * np.arange(n), positions[:n], rotations[:n], actions[:n, 6], t))
 
     def _combine(self, t):
-        """(position, Rotation, trigger) at t from the chunks covering it, or None."""
+        """(position, Rotation, trigger) at t from the chunks covering it, or None. With a `lead`, the
+        pose is the one planned `lead` later, the trigger the one planned for t."""
         covering = [c for c in self.chunks if c.t[0] <= t <= c.end and c.arrival <= t + 1e-9]
         if not covering:
             return None
+        lead = float(self.merge.get("lead") or 0.0)
+        gripper_lead = float(self.merge.get("gripper_lead") or 0.0)
+
+        def sample(c):  # (position, quaternion, trigger)
+            if not lead and not gripper_lead:
+                return c.sample(t)
+            p, q, _ = c.sample(min(t + lead, c.end))
+            return p, q, c.sample(min(t + gripper_lead, c.end))[2]
+
+        def at(c):
+            p, q, trigger = sample(c)
+            return p, Rotation.from_quat(q), trigger
+
         kind = self.merge["type"]
         if kind == "latest":
-            return covering[-1].at(t)
+            return at(covering[-1])
         if kind == "ensemble":
-            samples = [c.sample(t) for c in covering]
+            samples = [sample(c) for c in covering]
             w = np.exp(-float(self.merge["coeff"]) * np.arange(len(samples)))
             w /= w.sum()
             trigger = None if samples[0][2] is None else float(w @ [s[2] for s in samples])
             return (w @ np.array([s[0] for s in samples]),
                     Rotation.from_quat([s[1] for s in samples]).mean(weights=w), trigger)
-        samples = [c.at(t) for c in covering]
+        samples = [at(c) for c in covering]
         ramp = int(self.merge["ramp"])
         merged = samples[0]
         for older, chunk, sample in zip(covering, covering[1:], samples[1:]):
@@ -418,5 +454,16 @@ class Runtime:
         o.x, o.y, o.z, o.w = (float(x) for x in quaternion)
         self.target_pub.publish(msg)
         if trigger is not None:
-            self.trigger = float(trigger)
+            self.trigger = self._latched(float(trigger)) if engaged else float(trigger)
             self.trigger_pub.publish(Float32(data=self.trigger))
+
+    def _latched(self, trigger):
+        """The policy's trigger through `gripper_latch` (open, close) hysteresis: fully closed or open."""
+        latch = self.merge.get("gripper_latch")
+        if not latch:
+            return trigger
+        if trigger >= latch[1]:
+            self.gripper_closed = True
+        elif trigger <= latch[0]:
+            self.gripper_closed = False
+        return 1.0 if self.gripper_closed else 0.0

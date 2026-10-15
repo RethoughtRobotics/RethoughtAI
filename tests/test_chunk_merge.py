@@ -281,3 +281,45 @@ def test_cuff_correction_follows_the_arm_then_resumes_at_once_from_the_corrected
         rt.tcp = (b, q, clock[0])
         rt._tick()
         assert np.dot(sent[-1] - b, b - a) > -1e-4
+
+
+def test_lead_sends_the_pose_planned_ahead_and_the_trigger_on_time():
+    k = 30
+    t = np.arange(k) / FPS
+    c = Chunk(t, np.column_stack([0.1 * t, np.zeros(k), np.zeros(k)]), Rotation.identity(k),
+              (t >= 0.4).astype(float), 0.0)  # the gripper closes at 0.4 s
+    for kind in ({"type": "latest"}, {"type": "ensemble", "coeff": 0.01}, {"type": "ramp", "ramp": 5}):
+        rt = runtime({**kind, "lead": 0.4})
+        rt.chunks = [c]
+        p, _, trigger = rt._combine(0.2)
+        assert p[0] == pytest.approx(0.06) and trigger == 0.0  # pose at 0.6 s, gripper still open
+        assert rt._combine(0.4)[2] == 1.0
+        assert rt._combine(1.0)[0][0] == pytest.approx(0.1 * c.end)  # past the chunk's end: its last pose
+
+
+def test_lead_that_outruns_each_chunk_is_reported():
+    assert check_merge({"type": "latest", "lead": 0.4}, 32, 8) is None
+    assert "lead" in check_merge({"type": "latest", "lead": 0.4}, 32, 24)
+    with pytest.raises(ValueError):
+        check_merge({"type": "latest", "lead": -0.1}, 32, 8)
+
+
+def test_gripper_latch_closes_fully_and_ignores_flicker():
+    rt = runtime({"type": "latest", "gripper_latch": [0.3, 0.6]})
+    out = [rt._latched(v) for v in (0.0, 0.5, 0.65, 0.45, 0.55, 0.35, 0.2, 0.5)]
+    assert out == [0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0]
+    assert runtime({"type": "latest"})._latched(0.45) == 0.45  # no latch: the trigger as planned
+    with pytest.raises(ValueError):
+        check_merge({"type": "latest", "gripper_latch": [0.6, 0.3]}, 32, 8)
+
+
+def test_gripper_lead_sends_the_planned_close_early_and_leaves_the_pose():
+    k = 30
+    t = np.arange(k) / FPS
+    c = Chunk(t, np.column_stack([0.1 * t, np.zeros(k), np.zeros(k)]), Rotation.identity(k),
+              (t >= 0.6).astype(float), 0.0)  # the plan closes the gripper at 0.6 s
+    rt = runtime({"type": "ramp", "ramp": 5, "gripper_lead": 0.4})
+    rt.chunks = [c]
+    p, _, trigger = rt._combine(0.2)
+    assert p[0] == pytest.approx(0.02) and trigger == 1.0  # pose on time, close sent 0.4 s early
+    assert rt._combine(0.1)[2] == 0.0
