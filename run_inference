@@ -12,6 +12,7 @@
 #   ./run_inference --vita_BlueCupRedContainer_kin_pose 70000
 #   ./run_inference --vita_BlueCupRedContainer_kin_lead640ms 80000
 #   ./run_inference --vita_SweepTrash_Kin 50000      automatically uses baxter_bimanual.yaml
+#   ./run_inference --multi_task_dit_SweepTrash_Kin-Full_inpainted_minimax 30000   any *SweepTrash*: bimanual; full name if ambiguous
 #   ./run_inference --multi_task_dit_kin_pose_combo_30k_r5h100 30000   kinesthetic cup MultiTask DiT
 # Bring teleop up first: --left --policy for cups; --both --policy --no-gripper for SweepTrash.
 set -eo pipefail
@@ -76,7 +77,7 @@ if [[ -n "$STEP" ]] && (( ${#matches[@]} > 1 )); then
 fi
 MODEL="${matches[${#matches[@]}-1]}"
 [[ -n "$RESOLVE" ]] && { echo "$MODEL"; exit 0; }
-if [[ "$NAME" == vita_SweepTrash_Kin && -z "$CONFIG_GIVEN" ]]; then
+if [[ "$NAME" == *SweepTrash* && -z "$CONFIG_GIVEN" ]]; then
     CONFIG=configs/baxter_bimanual.yaml
 fi
 export CONFIG
@@ -109,7 +110,7 @@ if (( ${#live[@]} )); then
     [[ -z "$EPISODE" ]] || { echo "--episode $EPISODE: the robot's cameras are up (${live[*]}), and a shadow rollout would mix their frames with the bag's" >&2; exit 2; }
     echo "Live: the robot's cameras (${live[*]})"
 else
-    if [[ "$NAME" == vita_BlueCupRedContainer_kin_* || "$NAME" == vita_SweepTrash_Kin || "$NAME" == vita_kin_* || "$NAME" == multi_task_dit_kin_* ]]; then
+    if [[ "$NAME" == vita_BlueCupRedContainer_kin_* || "$NAME" == *SweepTrash* || "$NAME" == vita_kin_* || "$NAME" == multi_task_dit_kin_* ]]; then
         echo "No live cameras: kinesthetic models must not silently shadow the old CupToContainer episode. Use live cameras; kinesthetic shadow playback needs measured start poses and matching image transport." >&2
         exit 2
     fi

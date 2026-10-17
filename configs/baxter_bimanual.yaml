@@ -47,3 +47,14 @@ inference:
       merge: {type: latest}
       overrides: {n_action_steps: 32}
       # Already trained with lead_steps=1: no extra offset or relative RTC.
+    smolvla_bimanual:
+      # SweepTrash SmolVLA: plans of 50 from one observation, replanned as VITA. Absolute poses: no RTC.
+      every: 16
+      merge: {type: latest}
+      overrides: {num_steps: 10}
+    multi_task_dit_bimanual:
+      # SweepTrash DiTs: as the cup DiT's multi_task_dit_absolute, without a gripper. A _lead<N>ms
+      # dataset already leads its labels, so no run-time lead is added.
+      every: 16
+      merge: {type: ramp, ramp: 10}
+      overrides: {num_inference_steps: 10, n_action_steps: 31}  # 31: its plan starts at the older of its 2 observations
