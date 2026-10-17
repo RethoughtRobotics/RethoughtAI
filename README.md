@@ -147,6 +147,16 @@ checkpoint were checked against the Hub file sizes. These folders remain ignored
 | `vita_kin_pose_mask_spatial_30k_r5` | `step-030000` | `f904216f5b648c0ea2a7f2a6dffeed06f2c9f437` | Left arm VITA, `kin_pose` |
 | `vita_kin_pose_mask_spatial_30k_r5-ema` | `step-030000` | `0affdfa3da41764b5931ea69d301722c26a8a46e` | Left arm VITA, `kin_pose`, EMA weights |
 | `vita_kin_pose_drop_top30_30k_r5-ema` | `step-030000` | `71ad0cb4aa30cbc18c0987cc38436b0d02590566` | Left arm VITA, `kin_pose`, EMA weights |
+| `multi_task_dit_SweepTrash_Kin-Full_inpainted_effecterase_lead640ms_aug_30k_r1` | `step-030000` | `697dcb9bfa6759027f70d77c1f023ada576fc441` | Two-arm SweepTrash DiT, `lead640ms` (no run-time lead); `multi_task_dit_bimanual` settings |
+| `multi_task_dit_BlueCupRedContainer_kin_pose_inpainted_minimax_lead640ms_aug_30k_r1` | `step-030000` | `e5f62fc9b794fb7aa359e97b2b634b6ba7d81d01` | Left arm DiT, `kin_pose` minimax inpainting, `lead640ms` (no run-time lead); `multi_task_dit_absolute` settings |
+| `multi_task_dit_SweepTrash_Kin-Full_inpainted_minimax_lead640ms_aug_30k_r1` | `step-030000` | `3f1ca67b0e6920283aa89b87be34403e7c8fa77c` | As above, `minimax` inpainting dataset |
+| `multi_task_dit_SweepTrash_Kin-Full_inpainted_lead640ms_aug_30k_r1` | `step-030000` | `7c7cff626a0c6596b2b6f8504853a1da2bb7dcfa` | As above, plain `inpainted` dataset |
+| `vita_SweepTrash_Kin-Full_inpainted_effecterase_lead640ms_aug_30k_r1` | `step-030000` | `439b6c56e53d14933867762e1a08d19cb13ae551` | Two-arm SweepTrash VITA, `lead640ms`; `vita_bimanual` settings |
+| `vita_SweepTrash_Kin-Full_inpainted_effecterase_lead640ms_aug_30k_r1-ema` | `step-030000` | `439b6c56e53d14933867762e1a08d19cb13ae551` | As above, EMA weights (`pretrained_model_ema`) |
+| `vita_SweepTrash_Kin-Full_inpainted_minimax_lead640ms_aug_30k_r1` | `step-030000` | `f96e6314e1a8bcc20fe388c82407be902af2011b` | Two-arm SweepTrash VITA, `minimax` inpainting, `lead640ms`; `vita_bimanual` settings |
+| `vita_SweepTrash_Kin-Full_inpainted_minimax_lead640ms_aug_30k_r1-ema` | `step-030000` | `467cd3d9fcd8d23b4b7e4445c618efba5f61bc6d` | As above, EMA weights (own repo) |
+| `smolvla_SweepTrash_Kin-Full_inpainted_lead640ms_30k_r1` | `step-030000` | `e6460cce7ef63c9d825578548a116c49ce6a705c` | Two-arm SweepTrash SmolVLA, `lead640ms`; `smolvla_bimanual` settings |
+| `smolvla_SweepTrash_Kin-Full_inpainted_30k_r1` | `step-030000` | `d2e8c604105e6fd18311945556260585a8afdec3` | As above, without the 640 ms label lead (`SweepTrash_Kin-Full_inpainted`) |
 
 **Cup models use the existing pipeline, including `./start`, `./stop`, cuff correction and homing.**
 Bring up the left-arm policy teleop first, as above, with the live cameras and the same calibrated

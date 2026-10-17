@@ -190,7 +190,7 @@ class BimanualPolicyNode:
             tcp_q = {arm: self.latest[f"{arm}_tcp"][0][1].copy() for arm in ARMS}
             joints = {arm: self.latest["joints"][0][arm].copy() for arm in ARMS}
             obs = {key: self.latest[key][0].copy() for key in self.cameras}
-        state = np.asarray(self.policy.state(tcp_p, tcp_q, None, joints), dtype=float)
+        state = np.asarray(self.policy.state(tcp_p, tcp_q, None, joints), dtype=np.float32)
         if state.shape != (28,) or not np.isfinite(state).all():
             return None
         obs["observation.state"] = state
