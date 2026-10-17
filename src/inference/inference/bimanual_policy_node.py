@@ -6,6 +6,7 @@ input, independently for each arm, starting with the first incoming sign.
 Only the worker calls/reset the model; callbacks never wait for inference.
 """
 
+import os
 import threading
 import time
 
@@ -25,6 +26,14 @@ from adapter.lerobot_export import JOINTS, image_rgb
 STALE = 0.5
 MAX_TCP_SKEW = 0.1
 ARMS = ("left", "right")
+
+
+
+def device_lost(exc):
+    """True for errors after which the GPU context is unusable (unlike a bad frame or shape):
+    CUDA launch failures, illegal memory accesses, ECC errors and the like."""
+    text = str(exc)
+    return "CUDA error" in text or "cudaError" in text or type(exc).__name__ == "AcceleratorError"
 
 
 class BimanualPolicyNode:
@@ -228,6 +237,12 @@ class BimanualPolicyNode:
             try:
                 self._step()
             except Exception as exc:
+                if device_lost(exc):
+                    # The CUDA context is gone (e.g. "unspecified launch failure", NVIDIA Xid 45): every
+                    # later call fails too. Exit so policy.launch.py respawns a fresh server; the
+                    # runtime holds the arm meanwhile and resumes on the new server's chunks.
+                    self.node.get_logger().fatal(f"GPU lost, exiting for a respawn: {exc}")
+                    os._exit(75)
                 # A failed model must not kill the worker or preserve its history.
                 self._reset_generation = -1
                 self.node.get_logger().warning(f"bimanual inference rejected: {exc}")
