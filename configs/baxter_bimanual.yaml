@@ -22,7 +22,7 @@ inference:
   home: /vive/right/b_button
   entry_ramp: 1.0
   chunk_size: 32
-  task: Sweep the trash
+  task: Sweep the trash into the dustpan and empty it into the bin  # only if a checkpoint's dataset tasks are unreadable
   arms:
     left:
       tcp: /teleop/left/tcp

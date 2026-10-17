@@ -12,8 +12,8 @@ from click.testing import CliRunner
 from scipy.spatial.transform import Rotation
 
 from adapter.labels import apply_actions
-from inference.cli import main, policy_settings
-from inference.policies import LeRobotPolicy, action_layout, chunk_length, raw_state
+from inference.cli import deploy_task, main, policy_settings
+from inference.policies import LeRobotPolicy, action_layout, chunk_length, raw_state, trained_tasks
 from inference.runtime import check_merge
 
 
@@ -44,6 +44,17 @@ def test_checkpoints_trained_on_lead_labels_get_no_run_time_lead():
     s = policy_settings(cfg, config(), "andnetdeboer/BlueCupRedContainer_kin_lead640ms")
     assert s["merge"] == {"type": "latest"}
     assert policy_settings(cfg, config())["merge"]["lead"] == 0.4  # the config is not changed
+
+
+def test_prompt_is_the_task_the_checkpoint_was_trained_on(tmp_path):
+    trained = ("Sweep the trash into the dustpan and empty it into the bin",)
+    assert deploy_task("Sweep the trash", trained) == trained[0]  # a stale config can't override it
+    assert deploy_task(trained[0], trained) == trained[0]
+    assert deploy_task("Pick up the cup", ()) == "Pick up the cup"  # unknown dataset tasks: the config's
+    assert deploy_task("b", ("a", "b")) == "b"
+    with pytest.raises(ValueError, match="configure one of"):
+        deploy_task("c", ("a", "b"))
+    assert trained_tasks(tmp_path) == ()  # a checkpoint without train_config.json
 
 
 def test_old_relative_vita_schedule_is_unchanged():

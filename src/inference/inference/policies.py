@@ -89,11 +89,8 @@ def model_config(model, revision=None):
     return json.loads(Path(hf_hub_download(model, "config.json", revision=revision)).read_text())
 
 
-def trained_lead(model, revision=None):
-    """The training dataset's name if its labels already lead the TCP (an export's `_lead<N>ms`
-    variant, e.g. BlueCupRedContainer_kin_lead640ms), else None: a run-time lead would add to it."""
-    import re
-
+def train_config(model, revision=None):
+    """The checkpoint's train_config.json, or None if it has none."""
     if Path(model).is_dir():
         path = Path(model) / "train_config.json"
     else:
@@ -103,10 +100,35 @@ def trained_lead(model, revision=None):
             path = Path(hf_hub_download(model, "train_config.json", revision=revision))
         except Exception:
             return None
-    if not path.exists():
-        return None
-    name = json.loads(path.read_text())["dataset"]["repo_id"]
-    return name if re.search(r"_lead\d+ms", name) else None
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def trained_lead(model, revision=None):
+    """The training dataset's name if its labels already lead the TCP (an export's `_lead<N>ms`
+    variant, e.g. BlueCupRedContainer_kin_lead640ms), else None: a run-time lead would add to it."""
+    import re
+
+    train = train_config(model, revision)
+    name = train and train["dataset"]["repo_id"]
+    return name if name and re.search(r"_lead\d+ms", name) else None
+
+
+def trained_tasks(model, revision=None):
+    """The task prompts of the dataset (at the revision) the checkpoint was trained on, or () if
+    unknown. Language-conditioned policies (SmolVLA, MultiTask DiT) only know these exact strings."""
+    train = train_config(model, revision)
+    if not train:
+        return ()
+    from huggingface_hub import hf_hub_download
+    import pandas as pd
+
+    dataset = train["dataset"]
+    try:
+        path = hf_hub_download(dataset["repo_id"], "meta/tasks.parquet", repo_type="dataset",
+                               revision=dataset.get("revision"))
+    except Exception:  # offline and not cached, or an older dataset format
+        return ()
+    return tuple(pd.read_parquet(path).index)
 
 
 def chunk_length(config):
