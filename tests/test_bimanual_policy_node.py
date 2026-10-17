@@ -465,3 +465,11 @@ def test_worker_cadence_without_running_a_thread(make, monkeypatch):
     monkeypatch.setattr(server, "_step", step)
     server._run()
     assert waits == pytest.approx([0, 3 / 25])
+
+def test_device_lost_recognises_dead_gpu_errors_only():
+    from inference.bimanual_policy_node import device_lost
+
+    assert device_lost(RuntimeError("CUDA error: unspecified launch failure"))
+    assert device_lost(RuntimeError("CUDA error: an illegal memory access was encountered"))
+    assert not device_lost(ValueError("expected 2 observations, got 1"))
+    assert not device_lost(RuntimeError("mat1 and mat2 shapes cannot be multiplied"))

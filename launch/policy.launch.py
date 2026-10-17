@@ -22,8 +22,10 @@ def processes(context):
     rev = ["--revision", revision] if revision else []
     shadow = ["--start-at", episode, "--player", "/rosbag2_player"] if episode else []
     actions = [
+        # Respawned if it dies (e.g. it exits on a lost GPU context, bimanual_policy_node.device_lost):
+        # the runtime holds the arm and resumes on the new server's chunks.
         ExecuteProcess(cmd=["uv", "run", "inference", "serve", config, "--model", model, "--device", device, *rev],
-                       name="serve", output="screen"),
+                       name="serve", output="screen", respawn=True, respawn_delay=1.0),
         ExecuteProcess(cmd=["uv", "run", "inference", "run", config, "--model", model, *shadow, *rev],
                        name="run", output="screen"),
     ]
