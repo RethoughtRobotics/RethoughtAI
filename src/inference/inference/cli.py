@@ -51,6 +51,16 @@ def policy_settings(cfg, model_cfg, label_lead=None):
     return settings
 
 
+def deploy_task(configured, tasks):
+    """The prompt to condition on: the dataset's task the checkpoint was trained on (`tasks`), or the
+    configured one if the dataset's tasks are unknown or include it. Several need one configured."""
+    if not tasks or configured in tasks:
+        return configured or ""
+    if len(tasks) == 1:
+        return tasks[0]
+    raise ValueError(f"task {configured!r} is not one the checkpoint was trained on: configure one of {list(tasks)}")
+
+
 def spin(name, setup, on_exit=None):
     """Spin a node set up by setup(node) until Ctrl+C. on_exit(), if given, runs before the node goes,
     so it can still publish: rclpy's own SIGINT handler would shut the context down first."""
@@ -84,15 +94,17 @@ def main():
 @click.option("--revision", default=None, help="Pinned Hub branch, tag or commit")
 def check(model, config, revision):
     """Check deployment compatibility without loading weights, starting ROS or moving a robot."""
-    from inference.policies import action_layout, chunk_length, model_config, trained_lead
+    from inference.policies import action_layout, chunk_length, model_config, trained_lead, trained_tasks
     from inference.runtime import check_merge
 
     full = yaml.safe_load(resolve_config(config).read_text())
     model_cfg = model_config(model, revision)
     label_lead = trained_lead(model, revision)
+    tasks = trained_tasks(model, revision)
     try:
         settings = policy_settings(full["inference"], model_cfg, label_lead)
         layout = action_layout(model_cfg)
+        task = deploy_task(full["inference"].get("task"), tasks)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     effective = {**model_cfg, **settings.get("overrides", {})}
@@ -112,7 +124,8 @@ def check(model, config, revision):
                f"{length} targets, predict every {every} frames, merge {settings['merge']}; "
                + (f"no run-time lead: {label_lead}'s labels already lead" if label_lead
                   else f"pose lead {settings['merge'].get('lead') or 0} s")
-               + f", gripper lead {settings['merge'].get('gripper_lead') or 0} s")
+               + f", gripper lead {settings['merge'].get('gripper_lead') or 0} s; task {task!r}"
+               + ("" if tasks else " (configured: the training dataset's tasks are unreadable)"))
     warning = check_merge(settings["merge"], length, every, full["inference"]["fps"])
     if warning:
         click.echo(f"Warning: {warning}")
@@ -133,14 +146,15 @@ def serve(config, model, device, revision):
     full = yaml.safe_load(resolve_config(config).read_text())
     cfg = full["inference"]
 
-    from inference.policies import LeRobotPolicy, model_config, trained_lead
+    from inference.policies import LeRobotPolicy, model_config, trained_lead, trained_tasks
     from inference.runtime import check_merge
 
     settings = policy_settings(cfg, model_config(model, revision), trained_lead(model, revision))
-    policy = LeRobotPolicy(model, device, cfg.get("task", ""), settings.get("rtc"), revision, settings.get("overrides"))
+    task = deploy_task(cfg.get("task"), trained_tasks(model, revision))
+    policy = LeRobotPolicy(model, device, task, settings.get("rtc"), revision, settings.get("overrides"))
     check_merge(settings["merge"], policy.chunk_size, settings.get("every", 1))
     click.echo(f"Serving {model} ({policy.type}, chunks of {policy.chunk_size}) on {device}: every "
-               f"{settings.get('every', 1)} step(s){', RTC' if policy.rtc else ''}, chunks on {cfg['chunk']}")
+               f"{settings.get('every', 1)} step(s){', RTC' if policy.rtc else ''}, task {task!r}, chunks on {cfg['chunk']}")
 
     from inference.policy_node import PolicyNode, RecordingLight
 

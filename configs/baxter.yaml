@@ -178,7 +178,7 @@ inference:
   chunk: /policy/left/chunk     # serve -> run
   joint_states: /robot/joint_states
   gripper: /robot/end_effector/left_gripper/state
-  task: Pick up the blue cup and place it in the red container   # for VLAs
+  task: Pick up the blue cup and place it in the red container   # only if a checkpoint's dataset tasks are unreadable
   deadman:                 # held = run: the trackpad touch of the controller driving this arm
     topic: /libsurvive/joy
     frame_id: LHR-12D31191 # right_serial in libsurvive_ros2 vive_devices.yaml; swap_hands gives it the left arm
