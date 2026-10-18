@@ -117,15 +117,15 @@ gripper state, /teleop/left/tcp ──▶│ policy node (serve)  │───�
 
 **Running a checkpoint** from `models/<name>_*/step-<N>/` opens tmux. When a prefix like
 `--smolvla` matches several models, give the full name. The top pane runs the policy
-(`launch/policy.launch.py`). The bottom pane has `./start` typed, ready to connect the policy to the
-arm. `./stop` holds the arm where it is. `./home` sends it to the untuck pose with the gripper open,
-as the controller's B button (with `./start` still on, the policy resumes fresh from there).
+(`launch/policy.launch.py`). The bottom pane has `scripts/start` typed, ready to connect the policy to the
+arm. `scripts/stop` holds the arm where it is. `scripts/home` sends it to the untuck pose with the gripper open,
+as the controller's B button (with `scripts/start` still on, the policy resumes fresh from there).
 
 ```bash
 # bringbackbaxter: ./run_teleop.sh --left --policy (robot) or ./run_sim_teleop.sh --left --policy
-./run_inference --act 100000                  # real robot: its cameras; sim: shadow of episode 4
-./run_inference --smolvla_CupToContainer 30000 --episode 24   # sim: shadow of episode 24
-./run_inference --smolvla_CupToContainer_wrist  # newest checkpoint, wrist camera only
+scripts/run_inference --act 100000                  # real robot: its cameras; sim: shadow of episode 4
+scripts/run_inference --smolvla_CupToContainer 30000 --episode 24   # sim: shadow of episode 24
+scripts/run_inference --smolvla_CupToContainer_wrist  # newest checkpoint, wrist camera only
 ```
 
 With the robot's cameras up, the policy watches them. With none (the sim), it runs a **shadow
@@ -160,7 +160,7 @@ checkpoint were checked against the Hub file sizes. These folders remain ignored
 | `smolvla_SweepTrash_Kin-Full_inpainted_lead640ms_30k_r1` | `step-030000` | `e6460cce7ef63c9d825578548a116c49ce6a705c` | Two-arm SweepTrash SmolVLA, `lead640ms`; `smolvla_bimanual` settings |
 | `smolvla_SweepTrash_Kin-Full_inpainted_30k_r1` | `step-030000` | `d2e8c604105e6fd18311945556260585a8afdec3` | As above, without the 640 ms label lead (`SweepTrash_Kin-Full_inpainted`) |
 
-**Cup models use the existing pipeline, including `./start`, `./stop`, cuff correction and homing.**
+**Cup models use the existing pipeline, including `scripts/start`, `scripts/stop`, cuff correction and homing.**
 Bring up the left-arm policy teleop first, as above, with the live cameras and the same calibrated
 TCP/tool offset as the demonstrations. From this directory:
 
@@ -171,10 +171,10 @@ source launch/env.sh
 .venv/bin/inference check models/vita_BlueCupRedContainer_kin_pose/step-070000
 .venv/bin/inference check models/vita_BlueCupRedContainer_kin_lead640ms/step-080000
 
-# Opens the existing tmux pipeline; ./start is typed but NOT executed.
-./run_inference --vita_BlueCupRedContainer_kin_pose 70000
+# Opens the existing tmux pipeline; scripts/start is typed but NOT executed.
+scripts/run_inference --vita_BlueCupRedContainer_kin_pose 70000
 # Alternative run (replaces the previous pipeline):
-./run_inference --vita_BlueCupRedContainer_kin_lead640ms 80000
+scripts/run_inference --vita_BlueCupRedContainer_kin_lead640ms 80000
 ```
 
 - Feature shapes select `inference.policies.vita_absolute` in `configs/baxter.yaml`; old relative
@@ -195,7 +195,7 @@ source launch/env.sh
 - Automatic shadow playback of the old `CupToContainer` episode is refused for these kinesthetic
   cup model names. A proper kinesthetic shadow mode still needs measured start-pose loading and
   raw/JPEG camera playback compatibility. Test live initially with engagement off, then a supervised
-  short rollout with clear workspace and `./stop`/physical emergency stop available.
+  short rollout with clear workspace and `scripts/stop`/physical emergency stop available.
 
 **SweepTrash is not an 8-D single-arm checkpoint.** Its train config references
 `andnetdeboer/SweepTrash_Kin`; local dataset feature names and source metadata confirm:
@@ -218,8 +218,8 @@ source launch/env.sh
 
 # When ready for a supervised test, from ../bringbackbaxter:
 ./run_teleop.sh --both --policy --no-gripper
-# Then from RethoughtAI (opens tmux; DOES NOT execute ./start):
-./run_inference --vita_SweepTrash_Kin 50000
+# Then from RethoughtAI (opens tmux; DOES NOT execute scripts/start):
+scripts/run_inference --vita_SweepTrash_Kin 50000
 ```
 
 - One model server observes both TCPs, all 14 joints and all three cameras. State ordering matches
@@ -236,15 +236,15 @@ source launch/env.sh
   re-engagement. In-flight predictions from before a control transition are discarded.
 - No gripper subscription or command is used by this model. **Use `--no-gripper` on the teleop**
   so VR triggers and homing do not open the tool grippers; cuff gripper buttons remain manual.
-- In the opened control pane, `CONFIG` already selects the shared service for `./start`/`./stop`.
-  Outside that pane, use `CONFIG=configs/baxter_bimanual.yaml ./start` (or `./stop`, `./home`).
-  Two-arm `./home` requests stop first and sends both home topics. Release the VR deadman while
+- In the opened control pane, `CONFIG` already selects the shared service for `scripts/start`/`scripts/stop`.
+  Outside that pane, use `CONFIG=configs/baxter_bimanual.yaml scripts/start` (or `scripts/stop`, `scripts/home`).
+  Two-arm `scripts/home` requests stop first and sends both home topics. Release the VR deadman while
   homing so it cannot request re-engagement. Automatic shadowing of old cup recordings is refused;
   bimanual replay/start-pose playback is not implemented.
 
 These checks validate software coordination, **not collision-free execution or task success**.
 Check TCP calibration, tool clearance and both servo instances in simulation before a short,
-supervised hardware rollout. Keep `./stop` and the physical emergency stop available.
+supervised hardware rollout. Keep `scripts/stop` and the physical emergency stop available.
 
 **Validation performed (no robot commands):** 29 focused regression tests passed
 (`test_kinesthetic_inference.py`, `test_chunk_merge.py`, `test_kinesthetic_export.py`). Actual GPU

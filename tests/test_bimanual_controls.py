@@ -50,7 +50,7 @@ def sandbox(tmp_path):
 
 def run_script(root, env, name, *args):
     return subprocess.run(
-        ["/bin/bash", str(root / name), *args],
+        ["/bin/bash", str(root / "scripts" / name), *args],
         cwd=root,
         env=env,
         capture_output=True,
@@ -76,7 +76,8 @@ def test_launcher_config_selected_before_env_and_preflight(
     sandbox, model, args, expected_config
 ):
     root, env, log = sandbox
-    shutil.copyfile(ROOT / "run_inference", root / "run_inference")
+    (root / "scripts").mkdir()
+    shutil.copyfile(ROOT / "scripts" / "run_inference", root / "scripts" / "run_inference")
     checkpoint = root / "models" / model / "step-050000"
     checkpoint.mkdir(parents=True)
     (checkpoint / "config.json").write_text("{}")
@@ -156,8 +157,9 @@ def test_actual_env_config_extraction_without_ros_setup(sandbox, config, expecte
 
 def control_sandbox(sandbox, *, both=True, stop_fails=False):
     root, env, log = sandbox
+    (root / "scripts").mkdir()
     for name in ("home", "start", "stop"):
-        shutil.copyfile(ROOT / name, root / name)
+        shutil.copyfile(ROOT / "scripts" / name, root / "scripts" / name)
     launch = root / "launch"
     launch.mkdir()
     (launch / "env.sh").write_text(

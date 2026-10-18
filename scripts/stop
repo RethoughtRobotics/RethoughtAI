@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Disconnect the policy: the arm holds where it is.
-cd "$(dirname "$0")" && source launch/env.sh
+cd "$(dirname "$0")/.." && source launch/env.sh
 timeout 10 ros2 service call "$ENGAGE" std_srvs/srv/SetBool "{data: false}" >/dev/null \
-    && echo "Holding. ./start to continue." \
+    && echo "Holding. scripts/start to continue." \
     || echo "No runtime on $ENGAGE (ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0})" >&2

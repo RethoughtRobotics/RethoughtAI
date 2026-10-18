@@ -170,7 +170,7 @@ inference:
   tcp: /teleop/left/tcp
   target: /policy/left/target
   trigger: /policy/left/trigger
-  engage: /policy/left/engage   # std_srvs/SetBool: engage without the deadman (./start, ./stop)
+  engage: /policy/left/engage   # std_srvs/SetBool: engage without the deadman (scripts/start, scripts/stop)
   engaged: /policy/left/engaged # runtime -> policy server: start fresh on every change
   home: /vive/right/b_button    # B: clear the policy, resume fresh (swap_hands: right controller drives left arm)
   cuff: /robot/digital_io/left_lower_cuff/state  # squeezed = correcting by hand (zero-g), any policy

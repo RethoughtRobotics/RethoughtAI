@@ -1,4 +1,4 @@
-"""A policy on the arm: the policy server and the runtime, which waits for `./start`.
+"""A policy on the arm: the policy server and the runtime, which waits for `scripts/start`.
 
   ros2 launch launch/policy.launch.py model:=models/act_CupToContainer/step-100000
   ros2 launch launch/policy.launch.py model:=... episode:=recorder/data/CupToContainer/episode_004

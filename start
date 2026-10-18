@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-# Connect the policy to the arm (./stop holds it where it is).
-cd "$(dirname "$0")" && source launch/env.sh
-timeout 10 ros2 service call "$ENGAGE" std_srvs/srv/SetBool "{data: true}" >/dev/null \
-    && echo "Policy requested on $ENGAGE. ./stop to hold; both-arm mode waits for both TCP streams." \
-    || echo "No runtime on $ENGAGE (ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}): is ./run_inference up?" >&2
