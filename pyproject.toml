@@ -1,2 +1,32 @@
-[tool.uv.workspace]
-members = ["recorder", "adapter", "inference"]
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rai"
+version = "0.1.0"
+description = "RethoughtAI — record demonstrations, convert to LeRobot v3, deploy policies"
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml",
+    "click",
+    "rerun-sdk",
+    "opencv-python-headless",
+    "pillow",
+    "scipy",
+    "forge-robotics",
+    "huggingface-hub",
+    "lerobot[dataset]>=0.6.1",
+]
+
+[project.scripts]
+record    = "recorder.cli:main"
+adapt     = "adapter.cli:main"
+inference = "inference.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "src/recorder/recorder",
+    "src/adapter/adapter",
+    "src/inference/inference",
+]

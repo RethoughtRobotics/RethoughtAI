@@ -6,20 +6,70 @@ topics:
       key: observation.images.left
     - topic: /cameras/right_hand_camera/image
       key: observation.images.right
+    - topic: /cameras/third_eye/color/image_raw
+      key: observation.images.third_eye
   state:
     - topic: /robot/joint_states
       key: observation.state
   extra:
-    - /robot/end_effector/left/state
-    - /robot/end_effector/right/state
+    # Teleop (bringbackbaxter): measured TCP (state, delta anchor), the goal its servo chases
+    # (action labels; only while clutched), and its settings incl. the measured tcp_offset.
+    - /teleop/left/tcp
+    - /teleop/left/goal
+    - /teleop/left/config
+    - /teleop/right/tcp
+    - /teleop/right/goal
+    - /teleop/right/config
+    - /robot/end_effector/left_gripper/state
+    - /robot/end_effector/left_gripper/command
+    - /robot/end_effector/right_gripper/state
+    - /robot/end_effector/right_gripper/command
+    # inference run (policy runtime): what it sent the teleop
+    - /policy/left/target
+    - /policy/left/trigger
+    - /policy/right/target
+    - /policy/right/trigger
 
 trigger:
   type: digital_io
-  start:   /robot/digital_io/left_itb_button0/state
-  success: /robot/digital_io/right_itb_button0/state
-  discard: /robot/digital_io/left_itb_button1/state
+  msg_type: baxter_core_msgs/DigitalIOState
+  state_field: state
+  record:  /robot/digital_io/left_button_show/state
+  success: /robot/digital_io/left_button_ok/state
+  discard: /robot/digital_io/left_button_back/state
+  screen: session  # drawn session screens; true for the image screens in assets/
+  light:
+    topic: /robot/digital_io/command
+    msg_type: baxter_core_msgs/DigitalOutputCommand
+    name: left_inner_light
+  # Both VR thumbsticks (libsurvive_ros2) pushed the same way for `hold` s.
+  thumbstick:
+    topics: [/vive/left/thumbstick, /vive/right/thumbstick]
+    hold: 2.0
+    start:   north
+    stop:    south
+    success: east
+    discard: west
 
 recording:
   fps: 30
-  snapshot_mode: true
-  max_cache_duration: 60
+
+# inference run: drives the arm's teleop the way its VR controller does
+# (bringbackbaxter: run_teleop.sh --left --policy).
+inference:
+  arm: left
+  fps: 25                  # policy steps per second, the dataset rate
+  publish_rate: 100        # target stream, Hz
+  tcp: /teleop/left/tcp
+  target: /policy/left/target
+  trigger: /policy/left/trigger
+  deadman:                 # held = run: the trackpad touch of the controller driving this arm
+    topic: /libsurvive/joy
+    frame_id: LHR-12D31191 # right_serial in libsurvive_ros2 vive_devices.yaml; swap_hands gives it the left arm
+    button: 17             # touch bit: SURVIVE_BUTTON_MAX (16) + SURVIVE_BUTTON_TRACKPAD (1)
+    alive: /vive/right/target  # released when that controller is no longer tracked
+  # ACT (Zhao et al. 2023): 100-step chunks predicted every step, temporal ensembling exp(-0.01 i).
+  # SmolVLA: chunk_size 50, n_action_steps 50, temporal_ensemble_coeff null.
+  chunk_size: 100
+  n_action_steps: 1
+  temporal_ensemble_coeff: 0.01
