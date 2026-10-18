@@ -30,6 +30,8 @@ RAI is a 3-step pipeline for learning from demonstrations with ROS2: record, ada
 
 **[adapter](adapter/)** — Convert MCAP recordings to LeRobot v3 datasets, quality-filter episodes, and push to HuggingFace Hub.
 
+**[training](training/)** — Train ACT, SmolVLA, VITA, Multi-Task DiT, GR00T or pi0.5 on those datasets, from composable YAML configs, with an unattended queue and watchdog.
+
 **[inference](inference/)** — Deploy a trained policy from HuggingFace back to your ROS2 robot.
 
 ---
@@ -75,8 +77,8 @@ uv run adapter convert --config configs/baxter.yaml \
   --input ./recordings \
   --push-to-hub yourname/your-dataset
 
-# 3. Train with LeRobot (standard LeRobot workflow)
-# https://github.com/huggingface/lerobot
+# 3. Train a policy (see training/README.md)
+training/act/train.sh --mode tmux --gpu 0
 
 # 4. Deploy a policy (ACT, SmolVLA, any LeRobot checkpoint): two ROS 2 nodes
 uv run inference serve baxter.yaml --model yourname/your-model   # policy node (GPU)

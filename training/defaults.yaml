@@ -1,0 +1,40 @@
+# Shared defaults for every training run. A dataset config (datasets/*.yaml), then the policy's
+# config.yaml, then `train.py --set key=value` override these, in that order.
+
+# rethought-lerobot checkout whose .venv runs the training (lerobot-train and tasks/*/train.py).
+lerobot_dir: ~/rethought-lerobot
+# Runs go to <output_root>/<run_name>/, logs to <output_root>/logs/<run_name>.log,
+# queued pipelines to <output_root>/pipeline_<date>_<policies>/.
+output_root: ~/rethought-lerobot-outputs
+
+dataset: blue_cup_to_container          # datasets/<name>.yaml, unless the policy config picks one
+
+# Hugging Face: checkpoints go to <hub_owner>/<hub_name or name>_<dataset short_name><hub_suffix>.
+hub_owner: andnetdeboer
+hub_collection: andnetdeboer/rethoughtai-6ac6adec399ec52e90e21556
+private: true
+
+# W&B: one project per policy, <project_prefix><wandb_name or name>.
+wandb:
+  entity: null                          # null: the logged-in W&B default entity
+  project_prefix: rethoughtai-
+watchdog_wandb_project: rethoughtai-watchdog    # pipeline alerts (crash, OOM, stall, NaN) go here
+
+# Validation loss on held-out episodes, logged to W&B. Keep it on for every run.
+val:
+  split: 0.1        # fraction of episodes held out per task (lerobot backend)
+  every: 2000       # steps between validation passes
+
+seed: 42
+log_freq: 100
+num_workers: 8
+video_backend: torchcodec
+image_augmentation: true                 # lerobot backend: dataset.image_transforms.enable
+
+env:
+  PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+
+queue:
+  stall_minutes: 30                      # kill and retry a run whose log stops moving
+  precheck_poll_minutes: 5
+  precheck_timeout_hours: 72
