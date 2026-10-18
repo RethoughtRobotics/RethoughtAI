@@ -1,0 +1,16 @@
+---
+# Guard: no HPC infrastructure in this public repository. Job scripts and cluster details belong
+# in the private hpc/ checkout. The patterns are written so this file does not match itself.
+repos:
+  - repo: local
+    hooks:
+      - id: no-hpc-job-files
+        name: No HPC job files
+        language: fail
+        entry: HPC job scripts belong in the private hpc/ checkout, not in this repository
+        files: '\.(sbatch|slurm)$|(^|/)hpc/'
+      - id: no-hpc-infrastructure
+        name: No HPC infrastructure details
+        language: pygrep
+        entry: '[#]SBATCH|(^|[^\w])(sbatch|srun|salloc|squeue)\s|/projects/[a-z]\d{5}'
+        types: [text]
