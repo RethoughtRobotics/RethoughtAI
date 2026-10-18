@@ -309,7 +309,7 @@ def main():
     p.add_argument("--masks", type=Path, required=True, help="sam3_masks.py output directory")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--camera", action="append", dest="cameras", required=True)
-    p.add_argument("--root", type=Path, default=Path("~/.cache/vor"), help="repos + weights")
+    p.add_argument("--root", type=Path, default=Path.home() / ".cache" / "vor", help="repos + weights")
     p.add_argument("--steps", type=int, default=None, help="default: minimax 12, effecterase 50")
     p.add_argument("--clip-len", type=int, default=81)
     p.add_argument("--overlap", type=int, default=16)
