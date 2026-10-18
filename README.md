@@ -78,6 +78,43 @@ uv run adapter convert --config configs/baxter.yaml \
 # 3. Train with LeRobot (standard LeRobot workflow)
 # https://github.com/huggingface/lerobot
 
-# 4. Deploy policy
+# 4. Deploy a policy (ACT, SmolVLA, any LeRobot checkpoint): two ROS 2 nodes
+uv run inference serve baxter.yaml --model yourname/your-model   # policy node (GPU)
+uv run inference run baxter.yaml --model yourname/your-model     # runtime: drives the teleop
+```
+
+### Inference on ROS 2
+
+```
+cameras, /robot/joint_states,      ┌──────────────────────┐  /policy/left/chunk        ┌──────────────┐  /policy/left/target  ┌────────┐
+gripper state, /teleop/left/tcp ──▶│ policy node (serve)  │──────────────────────────▶│ runtime (run) │──────────────────────▶│ teleop │──▶ arm
+                                   │ LeRobot policy + RTC │  moveit_msgs/             │ merge chunks  │  /policy/left/trigger │ servo  │
+                                   └──────────────────────┘  RobotTrajectory           └──────────────┘                       └────────┘
+                                                             stamped at observation time
+```
+
+- **The policy node** runs any LeRobot checkpoint on the robot's topics in a worker thread and publishes
+  each action chunk as a `moveit_msgs/RobotTrajectory`, plus `nav_msgs/Path` for RViz. The chunk's
+  header stamp is the time of the observation it was computed from. Loading, normalization and
+  tokenization are LeRobot's own (`make_pre_post_processors`). For flow policies (SmolVLA) the node
+  uses LeRobot's Real-Time Chunking.
+- **The runtime** merges the chunks by time and streams a target to the teleop at 100 Hz. Merge
+  modes: ACT temporal ensembling, `latest` (for RTC), or a linear crossfade. Because each chunk
+  carries its observation time, inference latency only shifts where execution starts in the chunk.
+- **The two are separate processes,** so inference never blocks the control loop. Putting the GPU
+  on another machine is a ROS networking question, not new code.
+- **Per policy type settings** live in the config's `inference.policies` (`act`, `smolvla`).
+  On a laptop RTX 500 (4 GB) next to the sim: ACT ~30 ms, run every step; SmolVLA with RTC ~450 ms,
+  run every 10 steps with `execution_horizon` 25 (it must exceed the delay in steps, ~13).
+
+**Shadow rollout** (`launch/shadow.launch.py`): the policy drives a simulated arm (BaxFlow-T)
+while it watches a held-out episode's recorded cameras, played by `ros2 bag play`. The runtime moves
+the arm to the episode's start pose, then seeks the bag player to the episode's first step and
+resumes it.
+
+```bash
+# bringbackbaxter: ./run_sim_teleop.sh --left --policy --objects
+ros2 launch launch/shadow.launch.py model:=yourname/your-model episode:=recorder/data/CupToContainer/episode_004
+ros2 service call /policy/left/engage std_srvs/srv/SetBool "{data: true}"
 ```
 

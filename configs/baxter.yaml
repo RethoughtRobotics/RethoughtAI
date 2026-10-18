@@ -54,8 +54,8 @@ trigger:
 recording:
   fps: 30
 
-# inference run: drives the arm's teleop the way its VR controller does
-# (bringbackbaxter: run_teleop.sh --left --policy).
+# inference: `serve` publishes a policy's chunks; `run` executes them (or a replay) through the
+# arm's teleop like its VR controller (bringbackbaxter: run_teleop.sh --left --policy).
 inference:
   arm: left
   fps: 25                  # policy steps per second, the dataset rate
@@ -63,13 +63,27 @@ inference:
   tcp: /teleop/left/tcp
   target: /policy/left/target
   trigger: /policy/left/trigger
+  engage: /policy/left/engage   # std_srvs/SetBool: engage without the deadman (sim)
+  chunk: /policy/left/chunk     # serve -> run
+  joint_states: /robot/joint_states
+  gripper: /robot/end_effector/left_gripper/state
+  task: Pick up the blue cup and place it in the red container   # for VLAs
   deadman:                 # held = run: the trackpad touch of the controller driving this arm
     topic: /libsurvive/joy
     frame_id: LHR-12D31191 # right_serial in libsurvive_ros2 vive_devices.yaml; swap_hands gives it the left arm
     button: 17             # touch bit: SURVIVE_BUTTON_MAX (16) + SURVIVE_BUTTON_TRACKPAD (1)
     alive: /vive/right/target  # released when that controller is no longer tracked
-  # ACT (Zhao et al. 2023): 100-step chunks predicted every step, temporal ensembling exp(-0.01 i).
-  # SmolVLA: chunk_size 50, n_action_steps 50, temporal_ensemble_coeff null.
+  # Per checkpoint type: inference every `every` steps, chunk merge (runtime.py), optional RTC.
+  policies:
+    act:
+      every: 1
+      merge: {type: ensemble, coeff: 0.01}
+    smolvla:
+      every: 10
+      merge: {type: latest}
+      # execution_horizon > inference delay in steps (~13 next to the sim), or chunks seam
+      rtc: {execution_horizon: 25, max_guidance_weight: 10.0}
+  # --replay
   chunk_size: 100
   n_action_steps: 1
   temporal_ensemble_coeff: 0.01
