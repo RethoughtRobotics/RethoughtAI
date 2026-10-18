@@ -61,25 +61,35 @@ def adapt(config, sessions, output, hub_repo):
 @click.option("--task", required=True, help="Language instruction stored with every frame")
 @click.option("--output", default=None, type=click.Path(path_type=Path),
               help="Dataset folder (default: datasets/<session name>)")
-def lerobot(session, config, repo_id, task, output):
+@click.option("--arms", default=None, help="Comma-separated arms, e.g. left,right (default: the config's inference arm)")
+@click.option("--labels", type=click.Choice(["goal", "measured"]), default="goal", show_default=True,
+              help="goal: what the teleop servo chased; measured: the measured TCP (kinesthetic demos)")
+@click.option("--lead", default=1, show_default=True, help="measured labels: the TCP this many steps later")
+@click.option("--gripper/--no-gripper", default=True, show_default=True,
+              help="Gripper in state and action (--no-gripper when the hands hold tools)")
+def lerobot(session, config, repo_id, task, output, arms, labels, lead, gripper):
     """Convert a teleop session (every episode_*) to a LeRobot v3 dataset on labels.py's actions.
 
     \b
-    Example:
+    Examples:
       adapt lerobot recorder/data/CupToContainer --repo-id andnetdeboer/CupToContainer \\
           --task "Pick up the blue cup and place it in the red container"
+      adapt lerobot recorder/data/SweepTrash_Kin --repo-id andnetdeboer/SweepTrash_Kin \\
+          --arms left,right --labels measured --no-gripper --task "Sweep the trash into the dustpan and empty it into the bin"
     """
     from adapter.lerobot_export import export
 
     cfg = yaml.safe_load(Path(config).read_text())
     cameras = {i["topic"]: i["key"].removeprefix("observation.images.") for i in cfg["topics"]["images"]}
     arm, fps = cfg["inference"]["arm"], cfg["inference"]["fps"]
-    other = "right" if arm == "left" else "left"
-    cameras = {topic: key for topic, key in cameras.items() if other not in topic}  # the other arm's camera
+    arms = arms.split(",") if arms else [arm]
+    others = {"left", "right"} - set(arms)
+    cameras = {topic: key for topic, key in cameras.items() if not any(o in topic for o in others)}  # unused arms' cameras
     output = output or Path("datasets") / session.name
     if output.exists():
         raise click.UsageError(f"{output} exists; remove it to rebuild the dataset")
-    export(session, repo_id, output, task, cameras, arm=arm, fps=fps, log=click.echo)
+    export(session, repo_id, output, task, cameras, arm=arms[0], fps=fps, log=click.echo, arms=arms, labels=labels,
+           lead=lead, gripper=gripper)
     click.echo(f"Dataset written to {output}")
 
 
