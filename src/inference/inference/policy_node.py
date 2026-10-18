@@ -7,30 +7,43 @@ inference never blocks ROS callbacks, and publishes:
               (base frame) and the `{arm}_gripper` trigger, at k / fps
   chunk_path  nav_msgs/Path of the targets, for RViz
 With RTC, each chunk continues the last one over the measured inference delay.
+A policy that sees past steps (n_obs_steps > 1, MultiTask DiT) gets them one step apart, as in
+training, from observations sampled every half step, not from its previous inference (~100 ms back).
+When the runtime engages or releases (`engaged`), the policy starts fresh: no chunk carries over.
+A cuff squeeze (`cuff`) is a correction by hand, for any policy: it restarts when one starts and
+ends; plans during it follow the hand (no previous chunk is continued), and on release the newest is
+re-anchored on the corrected pose, as the runtime executes it, so the next one continues from there.
 """
 
 import math
 import threading
 import time
+from collections import deque
 
 import numpy as np
 from builtin_interfaces.msg import Duration
-from baxter_core_msgs.msg import EndEffectorState
+from baxter_core_msgs.msg import DigitalIOState, EndEffectorState
 from geometry_msgs.msg import PoseStamped, Transform
 from moveit_msgs.msg import RobotTrajectory
 from nav_msgs.msg import Path
 from rclpy.time import Time
 from scipy.spatial.transform import Rotation
+from rclpy.qos import DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import Image, JointState
+from std_msgs.msg import Bool
 from trajectory_msgs.msg import JointTrajectoryPoint, MultiDOFJointTrajectoryPoint
 
-from adapter.labels import apply_actions, model_state, relative_actions
+from adapter.labels import apply_actions, relative_actions
 from adapter.lerobot_export import JOINTS, image_rgb
 from inference.runtime import Chunk
 
 STALE = 0.5  # s: older inputs pause inference (camera stopped, bag paused)
 LOG_EVERY = 10.0  # s
 WARMUP = 2  # inferences left out of the latency (CUDA init)
+LATENCY_WINDOW = 10  # recent inferences the RTC delay is taken from; one spike must not pin it
+# RTC continues the last chunk only while the arm follows it: a plan this far ahead of the TCP (m)
+# starts fresh instead. Bag real_wrist_bugs: up to 203 mm ahead while fine, then 274 .. 591 mm.
+MAX_LEAD = 0.25
 
 
 class PolicyNode:
@@ -46,9 +59,12 @@ class PolicyNode:
         self.last = None  # last chunk published, for RTC
         from lerobot.policies.rtc import LatencyTracker
 
-        self.latency = LatencyTracker()
+        self.latency = LatencyTracker(maxlen=LATENCY_WINDOW)
         self.count = 0
         self.warned = False
+        self.fresh = threading.Event()  # set: drop the last chunk and the policy's state
+        self.anchor = None  # TCP (p, R) the last chunk was planned from
+        self.squeezed = self.correcting = False  # the cuff now; a correction as the worker sees it
 
         self.cameras = {c["key"]: c["topic"] for c in images if c["key"] in policy.features}
         missing = [k for k in policy.features if k.startswith("observation.images.") and k not in self.cameras]
@@ -60,8 +76,16 @@ class PolicyNode:
         node.create_subscription(JointState, cfg["joint_states"], self._on_joints, 10)
         node.create_subscription(EndEffectorState, cfg["gripper"],
                                  lambda m: self._store("gripper", 1.0 - float(m.position) / 100.0), 10)
+        if cfg.get("engaged"):
+            latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+            node.create_subscription(Bool, cfg["engaged"], lambda m: self.fresh.set(), latched)
+        if cfg.get("cuff"):
+            node.create_subscription(DigitalIOState, cfg["cuff"], lambda m: setattr(self, "squeezed", bool(m.state)), 10)
         self.chunk_pub = node.create_publisher(RobotTrajectory, cfg["chunk"], 10)
         self.path_pub = node.create_publisher(Path, cfg["chunk"] + "_path", 10)
+        self.samples = deque(maxlen=2 * policy.n_obs_steps + 2)  # (time, observation), every half step
+        if policy.n_obs_steps > 1:
+            node.create_timer(self.dt / 2, self._sample)
         threading.Thread(target=self._run, daemon=True, name="policy").start()
 
     def _now(self):
@@ -89,24 +113,58 @@ class PolicyNode:
             return None
         tcp = latest["tcp"][0]
         obs = {key: latest[key][0] for key in self.cameras}
-        obs["observation.state"] = model_state(*tcp, latest["gripper"][0], latest["joints"][0])
+        obs["observation.state"] = self.policy.state(*tcp, latest["gripper"][0], latest["joints"][0])
         return now, obs, tcp
 
+    def _sample(self):
+        observed = self._observation()
+        if observed is not None:
+            with self.lock:
+                self.samples.append(observed[:2])
+
+    def _history(self, t):
+        """The observations 1 .. n_obs_steps - 1 steps before t, oldest first: the sample nearest each,
+        if one is within half a step of it (none yet after a pause: the policy repeats the oldest)."""
+        with self.lock:
+            samples = list(self.samples)
+        history = []
+        for j in range(self.policy.n_obs_steps - 1, 0, -1):
+            nearest = min(samples, key=lambda s: abs(s[0] - (t - j * self.dt)), default=None)
+            if nearest is not None and abs(nearest[0] - (t - j * self.dt)) <= self.dt / 2:
+                history.append(nearest[1])
+        return history
+
     def _rtc_args(self, t, tcp):
-        """(delay steps, the last chunk's actions from t on, relative to `tcp`) for Real-Time Chunking."""
-        delay = math.ceil(self.latency.max() / self.dt) if len(self.latency) else 0
+        """(delay steps, the last chunk's actions from t on, relative to `tcp`) for Real-Time Chunking;
+        no last chunk (a fresh one from this observation) when RTC can't continue it safely:
+          - the delay reaches execution_horizon: RTC pins the whole horizon to the last chunk and the
+            runtime executes only past the delay, the part nothing anchors. Chunk after chunk the plan
+            ran ahead of the arm (bag real_wrist_bugs: latency 0.5 -> 1.6 s, delay 36 of 25 steps,
+            the plan 591 mm ahead of the TCP and the arm at 0.8 m/s).
+          - the last chunk is more than MAX_LEAD ahead of the TCP: the arm isn't following it."""
+        delay = math.ceil(self.latency.percentile(0.9) / self.dt) if len(self.latency) else 0
         horizon = self.policy.policy.config.rtc_config.execution_horizon
-        if delay >= horizon and not self.warned:
-            self.warned = True
-            self.node.get_logger().warning(
-                f"inference delay ({delay} steps) reaches RTC's execution_horizon ({horizon}): chunks will switch "
-                "where RTC did not constrain them. Raise execution_horizon above the delay.")
         if self.last is None or self.last.end < t:
+            return delay, None
+        if delay >= horizon:
+            self._warn_once(f"inference delay ({delay} steps) reaches RTC's execution_horizon ({horizon}): "
+                            "fresh chunks, not continued, until it is below")
             return delay, None
         ts = t + self.dt * np.arange(int((self.last.end - t) * self.fps) + 1)
         samples = [self.last.at(x) for x in ts]
         positions, rotations = np.array([s[0] for s in samples]), Rotation.concatenate([s[1] for s in samples])
+        lead = np.linalg.norm(positions[0] - tcp[0])
+        if lead > MAX_LEAD:
+            self._warn_once(f"the last chunk is {1000 * lead:.0f} mm ahead of the TCP: a fresh chunk, not continued")
+            return delay, None
+        self.warned = False
         return delay, relative_actions(positions, rotations, np.array([s[2] for s in samples]), *tcp)
+
+    def _warn_once(self, text):
+        """Warn when RTC stops continuing chunks, once until it continues one again."""
+        if not self.warned:
+            self.warned = True
+            self.node.get_logger().warning(text)
 
     def _run(self):
         next_start = 0.0
@@ -114,6 +172,19 @@ class PolicyNode:
             wait = next_start - time.monotonic()
             if wait > 0:
                 time.sleep(wait)
+            if self.fresh.is_set():
+                self.fresh.clear()
+                self.last = None
+                self.policy.reset()
+            if self.squeezed != self.correcting:  # a correction starts or ends
+                self.correcting = self.squeezed
+                self.policy.reset()
+                with self.lock:
+                    tcp = self.latest.get("tcp")
+                if not self.correcting and self.last is not None and tcp is not None:
+                    self.last = self.last.reanchored(*self.anchor, tcp[0][0], Rotation.from_quat(tcp[0][1]))
+            if self.correcting:
+                self.last = None  # plan from what the hand did, not the plan it overrode
             observed = self._observation()
             if observed is None:
                 self.last = None
@@ -123,18 +194,20 @@ class PolicyNode:
             t, obs, (tcp_p, tcp_q) = observed
             started = time.perf_counter()
             delay, prev = self._rtc_args(t, (tcp_p, tcp_q)) if self.policy.rtc else (0, None)
-            actions = self.policy(obs, delay, prev)
+            history = self._history(t) if self.policy.n_obs_steps > 1 else ()
+            actions = self.policy(obs, delay, prev, tcp=(tcp_p, tcp_q), history=history)
             latency = time.perf_counter() - started
             self.count += 1
             if self.count > WARMUP:
                 self.latency.add(latency)
             positions, rotations = apply_actions(actions, tcp_p, tcp_q)
             self.last = Chunk(t + self.dt * np.arange(len(actions)), positions, rotations, actions[:, 6], t)
+            self.anchor = (tcp_p, Rotation.from_quat(tcp_q))
             self._publish(t, positions, rotations, actions[:, 6])
             if self.count % max(1, round(LOG_EVERY * self.fps / self.every)) == 0:
                 self.node.get_logger().info(
                     f"{self.count} chunks; inference p50 {1000 * self.latency.percentile(0.5):.0f} ms, "
-                    f"max {1000 * self.latency.max():.0f} ms ({self.dt * 1000:.0f} ms per step)")
+                    f"recent max {1000 * self.latency.percentile(0.99):.0f} ms ({self.dt * 1000:.0f} ms per step)")
 
     def _publish(self, t, positions, rotations, triggers):
         stamp = Time(nanoseconds=round(t * 1e9)).to_msg()
@@ -158,3 +231,29 @@ class PolicyNode:
             path.poses.append(pose)
         self.chunk_pub.publish(msg)
         self.path_pub.publish(path)
+
+
+class RecordingLight:
+    """The light the recorder keeps on while it records an episode (config trigger.light, the left
+    navigator's inner light), so every training frame shows it lit: on while the policy serves, as the
+    cameras saw it. Re-sent every second in case anything else switched it off; off() at exit."""
+
+    def __init__(self, node, light):
+        import importlib
+
+        package, name = light["msg_type"].split("/")
+        self.msg_type = getattr(importlib.import_module(f"{package}.msg"), name)
+        self.name = light["name"]
+        self.pub = node.create_publisher(self.msg_type, light["topic"], 10)
+        self._set(True)
+        node.create_timer(1.0, lambda: self._set(True))
+
+    def _set(self, on):
+        msg = self.msg_type()
+        msg.name, msg.value = self.name, on
+        self.pub.publish(msg)
+
+    def off(self):
+        self._set(False)
+        time.sleep(0.3)  # let it go out before the node does
+

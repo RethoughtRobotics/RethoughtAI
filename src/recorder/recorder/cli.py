@@ -19,7 +19,8 @@ def resolve_config(path: str) -> Path:
 
 
 def exclude_topics(config: dict, patterns: tuple[str, ...]) -> dict:
-    """Drop every configured topic matching any regex in patterns (e.g. 'right' for a left-arm task)."""
+    """Drop configured topics matching any regex in patterns (e.g. 'right' for a left-arm task).
+    `operator` topics are kept: VR controllers can drive the other side's arm."""
     def keep(topic):
         return not any(re.search(p, topic) for p in patterns)
 
@@ -36,6 +37,7 @@ def all_topics(config: dict) -> list[str]:
         [i["topic"] for i in t["images"]]
         + [s["topic"] for s in t["state"]]
         + t.get("extra", [])
+        + t.get("operator", [])
     )
 
 

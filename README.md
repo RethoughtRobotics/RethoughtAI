@@ -103,18 +103,31 @@ gripper state, /teleop/left/tcp ──▶│ policy node (serve)  │───�
   carries its observation time, inference latency only shifts where execution starts in the chunk.
 - **The two are separate processes,** so inference never blocks the control loop. Putting the GPU
   on another machine is a ROS networking question, not new code.
-- **Per policy type settings** live in the config's `inference.policies` (`act`, `smolvla`).
-  On a laptop RTX 500 (4 GB) next to the sim: ACT ~30 ms, run every step; SmolVLA with RTC ~450 ms,
-  run every 10 steps with `execution_horizon` 25 (it must exceed the delay in steps, ~13).
+- **Per policy type settings** live in the config's `inference.policies` (`act`, `smolvla`, `vita`,
+  `multi_task_dit`, `groot`). On a laptop RTX 500 (4 GB) next to the sim: ACT ~30 ms, run every step;
+  SmolVLA with RTC ~450 ms, run every 10 steps with `execution_horizon` 25 (it must exceed the delay
+  in steps, ~13); MultiTask DiT ~100 ms, every 4 steps.
+- **Two checkpoint layouts** are told apart by their feature shapes. A 17-D state and 7-D actions
+  relative to the TCP (TRAINING.md's transform: ACT, SmolVLA, VITA, MultiTask DiT), or the dataset as
+  exported, a 15-D state and 8-D absolute goals (GR00T), which the policy node makes relative to the
+  TCP it observed. Images are letterboxed to a checkpoint's image size when it differs from the
+  camera's, as `BlueCupToContainer`'s 224 x 224 frames were.
 
-**Shadow rollout** (`launch/shadow.launch.py`): the policy drives a simulated arm (BaxFlow-T)
-while it watches a held-out episode's recorded cameras, played by `ros2 bag play`. The runtime moves
-the arm to the episode's start pose, then seeks the bag player to the episode's first step and
-resumes it.
+**Running a checkpoint** from `models/<name>_*/step-<N>/` opens tmux. When a prefix like
+`--smolvla` matches several models, give the full name. The top pane runs the policy
+(`launch/policy.launch.py`). The bottom pane has `./start` typed, ready to connect the policy to the
+arm. `./stop` holds the arm where it is. `./home` sends it to the untuck pose with the gripper open,
+as the controller's B button (with `./start` still on, the policy resumes fresh from there).
 
 ```bash
-# bringbackbaxter: ./run_sim_teleop.sh --left --policy --objects
-ros2 launch launch/shadow.launch.py model:=yourname/your-model episode:=recorder/data/CupToContainer/episode_004
-ros2 service call /policy/left/engage std_srvs/srv/SetBool "{data: true}"
+# bringbackbaxter: ./run_teleop.sh --left --policy (robot) or ./run_sim_teleop.sh --left --policy
+./run_inference --act 100000                  # real robot: its cameras; sim: shadow of episode 4
+./run_inference --smolvla_CupToContainer 30000 --episode 24   # sim: shadow of episode 24
+./run_inference --smolvla_CupToContainer_wrist  # newest checkpoint, wrist camera only
 ```
+
+With the robot's cameras up, the policy watches them. With none (the sim), it runs a **shadow
+rollout**: it drives the arm while the policy watches a recorded episode's cameras, played by
+`ros2 bag play`. `--episode` with live cameras is refused: the bag's frames would mix with theirs. The arm first moves to the episode's start pose, then the bag plays from the
+episode's first step.
 

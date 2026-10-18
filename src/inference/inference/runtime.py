@@ -3,41 +3,58 @@
 The teleop is pointed at this node instead of the controller (bringbackbaxter: run_teleop.sh
 --policy), so policy actions go through the same servo, IK, gripper filter and home button as a
 human's. It publishes what libsurvive_ros2 publishes for a hand:
-  target   PoseStamped, desired TCP pose in the base frame; frozen while released, which the
-           teleop reads as a released clutch
+  target   PoseStamped in the base frame; unchanged while released, which the teleop reads as a
+           released clutch
   trigger  Float32, 0 open .. 1 closed
-Engaged: the deadman held (or the `engage` service) and a fresh TCP.
+The teleop turns a target change into a goal relative to where it clutched (goal = TCP at clutch +
+target change, vr_axes_policy.yaml's identity map). So the released target never moves, not even
+to follow a sagging or homed arm (that would be a stroke), and engaged goals are mapped through
+that rule from the TCP and target at engage.
+Engaged: the deadman held (or the `engage` service) and a fresh TCP. Published on `engaged`.
+B (`home`, the teleop's home button) clears the run and opens the gripper; while still engaged it
+resumes fresh after homing.
+A cuff squeeze (`cuff`, zero-g) is a physical correction, and the run stays engaged through it:
+the target follows the arm (zero-g overrides the teleop, and on release its goal is already where
+the hand left the arm, so nothing springs back), and only the newest chunk is kept. On release that
+chunk, re-anchored on the corrected pose, runs at once, crossfaded in over `resume_ramp` s.
 
 A chunk is a trajectory of TCP targets timed from its observation: from a policy called here (a
 replay) or the `chunk` topic (policy_node). Each policy step merges the chunks covering it:
   ensemble  ACT temporal ensembling, exp(-coeff * i), i = 0 the oldest
   latest    the newest chunk (RTC chunks already continue the last)
   ramp      each new chunk crossfades in over `ramp` steps, finishing within the overlap
+`horizon` keeps only a chunk's first steps: the merge reacts sooner, without retraining.
 After a hold, chunks crossfade in over `entry_ramp` s: a policy's first targets lead the TCP.
 With a `start` pose, the arm moves there first, then `on_start` runs.
 """
 
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, replace
 
 import numpy as np
 from geometry_msgs.msg import PoseStamped
 from moveit_msgs.msg import RobotTrajectory
 from scipy.spatial.transform import Rotation, Slerp
+from rclpy.qos import DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import Joy
-from std_msgs.msg import Float32
+from std_msgs.msg import Bool, Empty, Float32
 from std_srvs.srv import SetBool
+from baxter_core_msgs.msg import DigitalIOState
 
 from adapter.labels import apply_actions
 
 TCP_STALE = 0.2  # s, as the teleop's stale target
-REFREEZE = (0.002, np.radians(1.0))  # re-freeze on the TCP when it moved this far while released (m, rad)
 APPROACH_SPEED = (0.05, np.radians(15.0))  # m/s, rad/s toward a policy's start pose
 START_TOLERANCE = (0.005, np.radians(2.0))  # m, rad
 # The teleop reads an unchanged pose as a released clutch. A human holding still while clutched never
 # repeats one (tracker noise), so an engaged target that would repeat alternates by this much (m).
 ENGAGED_JITTER = 1e-6
+# Engage only once the target and a fresh TCP have held this long, longer than the teleop's
+# release_after (0.2 s), so the teleop has re-referenced at the current TCP.
+SETTLE = 0.3  # s
 MERGES = ("ensemble", "latest", "ramp")
 ENTRY_RAMP = 1.0  # s
+RESUME_RAMP = 0.3  # s, after a cuff correction: the chunk is already re-anchored on the arm
 
 
 def continuous(q):
@@ -77,6 +94,12 @@ class Chunk:
         p, q, trigger = self.sample(t)
         return p, Rotation.from_quat(q), trigger
 
+    def reanchored(self, p_from, R_from, p_to, R_to, arrival=None):
+        """The same plan relative to the TCP, moved from anchor (p_from, R_from) to (p_to, R_to):
+        targets keep their offset in base axes and their rotation relative to the anchor."""
+        return replace(self, positions=p_to + (self.positions - p_from), rotations=self.rotations * R_from.inv() * R_to,
+                       arrival=self.arrival if arrival is None else arrival)
+
 
 def blend(x, y, w):
     """(position, Rotation, trigger) w of the way from x to y."""
@@ -90,6 +113,7 @@ def check_merge(merge, chunk_size, every=1):
     kind = merge.get("type", "ensemble")
     if kind not in MERGES:
         raise ValueError(f"merge type {kind!r}: one of {', '.join(MERGES)}")
+    chunk_size = min(chunk_size, int(merge.get("horizon") or chunk_size))
     if every >= chunk_size:
         raise ValueError(f"every ({every}) must be below the chunk size ({chunk_size}), or the chunks leave gaps")
     if kind == "ramp":
@@ -112,13 +136,17 @@ class Runtime:
         self.n_action_steps = int(cfg.get("n_action_steps") or self.chunk_size)
         self.merge = merge or {"type": "ensemble" if cfg.get("temporal_ensemble_coeff") is not None else "latest",
                                "coeff": cfg.get("temporal_ensemble_coeff")}
+        self.horizon = int(self.merge["horizon"]) if self.merge.get("horizon") else None
         deadman = cfg["deadman"]
         self.deadman_id, self.deadman_button = deadman["frame_id"], int(deadman["button"])
         self.held = False
         self.requested = False  # engage service
         self.alive = -np.inf if deadman.get("alive") else np.inf  # last pose of the deadman's controller
         self.tcp = None  # (position, quaternion, receive time)
-        self.frozen = None  # (position, quaternion) published while released
+        self.frozen = None  # (position, quaternion) target published while released
+        self.settled = -np.inf  # since when the teleop can have re-referenced (release, B, TCP back)
+        self.fresh = False  # TCP fresh last tick
+        self.ref = None  # (TCP p, TCP Rotation, target p, target Rotation) at engage: goal -> target
         self.trigger = None
         self.engaged = False
         self.done = False
@@ -129,10 +157,14 @@ class Runtime:
         self.hold = None  # (p, R) when no chunk covers a step
         self.entry = None  # (time, (p, R, trigger)) chunks resumed from a hold
         self.entry_ramp = float(cfg.get("entry_ramp", ENTRY_RAMP))
+        self.resume_ramp = float(cfg.get("resume_ramp", RESUME_RAMP))
+        self.squeezed = False  # the cuff, now
+        self.correcting = False  # a correction under way, as the ticks see it
+        self.history = deque(maxlen=500)  # (time, p, R) of the TCP, to re-anchor chunks observed earlier
         self.start = start if start is not None else getattr(policy, "start", None)  # pose to reach before step 0
         self.on_start = on_start
         self.approach = None  # (time, position, Rotation) the approach target was last at
-        self.published = None  # last position sent
+        self.published = None  # last (position, quaternion) sent
         self.jitter = ENGAGED_JITTER
 
         node.create_subscription(PoseStamped, cfg["tcp"], self._on_tcp, 10)
@@ -142,9 +174,16 @@ class Runtime:
         if policy is None:
             node.create_subscription(RobotTrajectory, cfg["chunk"], self._on_chunk, 10)
         node.create_service(SetBool, cfg["engage"], self._on_engage)
+        if cfg.get("home"):
+            node.create_subscription(Empty, cfg["home"], self._on_home, 10)
+        if cfg.get("cuff"):
+            node.create_subscription(DigitalIOState, cfg["cuff"], lambda m: setattr(self, "squeezed", bool(m.state)), 10)
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.engaged_pub = node.create_publisher(Bool, cfg["engaged"], latched) if cfg.get("engaged") else None
         self.target_pub = node.create_publisher(PoseStamped, cfg["target"], 10)
         self.trigger_pub = node.create_publisher(Float32, cfg["trigger"], 10)
         node.create_timer(1.0 / float(cfg["publish_rate"]), self._tick)
+        self._announce()
 
     def _now(self):
         return self.node.get_clock().now().nanoseconds * 1e-9
@@ -152,6 +191,7 @@ class Runtime:
     def _on_tcp(self, msg):
         p, o = msg.pose.position, msg.pose.orientation
         self.tcp = (np.array([p.x, p.y, p.z]), np.array([o.x, o.y, o.z, o.w]), self._now())
+        self.history.append((self.tcp[2], self.tcp[0], Rotation.from_quat(self.tcp[1])))
 
     def _on_joy(self, msg):
         if msg.header.frame_id == self.deadman_id and len(msg.buttons) > self.deadman_button:
@@ -161,6 +201,19 @@ class Runtime:
         self.requested = bool(request.data)
         response.success, response.message = True, "engage requested" if self.requested else "released"
         return response
+
+    def _on_home(self, msg):
+        """B: the teleop homes the arm. Release once, so nothing carries over: the policy server
+        resets, and re-engaging (./start still on, or the clutch held) starts from fresh chunks."""
+        self.chunks, self.segment, self.entry, self.approach = [], None, None, None
+        self.trigger = 0.0  # open: the teleop opens it to home, and follows this trigger after
+        self.trigger_pub.publish(Float32(data=self.trigger))
+        self.settled = self._now()  # re-engage only after homing
+        if self.engaged:
+            self._released(self.tcp is not None)
+        if self.settled - getattr(self, "_home_logged", -np.inf) > 1.0:  # B repeats while held
+            self._home_logged = self.settled
+            self._log("B: cleared, gripper open; resumes fresh after homing while ./start is on or the clutch is held")
 
     def _on_chunk(self, msg):
         t0 = msg.joint_trajectory.header.stamp
@@ -174,7 +227,9 @@ class Runtime:
         rotations = Rotation.from_quat([[x.rotation.x, x.rotation.y, x.rotation.z, x.rotation.w] for x in tf])
         joints = msg.joint_trajectory.points
         triggers = np.array([p.positions[0] for p in joints]) if len(joints) == len(points) else None
-        self.chunks.append(Chunk(t, positions, rotations, triggers, self._now()))
+        n = self.horizon or len(t)
+        chunk = Chunk(t[:n], positions[:n], rotations[:n], None if triggers is None else triggers[:n], self._now())
+        self.chunks = [chunk] if self.correcting else [*self.chunks, chunk]  # correcting: the newest only
 
     def _log(self, text):
         self.node.get_logger().info(text)
@@ -183,17 +238,28 @@ class Runtime:
         now = self._now()
         tcp_fresh = self.tcp is not None and now - self.tcp[2] < TCP_STALE
         deadman = self.held and now - self.alive < TCP_STALE
+        if tcp_fresh and not self.fresh:  # teleop back (started, or done homing)
+            self.settled = max(self.settled, now)
+        self.fresh = tcp_fresh
         engage = (deadman or self.requested) and tcp_fresh and not self.done
+        if engage and not self.engaged and (self.frozen is None or now - self.settled < SETTLE):
+            engage = False
         if not engage:
             self._released(tcp_fresh)
             return
         if not self.engaged:
             self._log(f"Engaged at step {self.step}")
             self.engaged, self.chunks, self.segment, self.approach = True, [], None, None
-            self.hold, self.accept_after = (self.tcp[0], Rotation.from_quat(self.tcp[1])), now
+            self._announce()
+            p, R = self.tcp[0], Rotation.from_quat(self.tcp[1])
+            self.ref = (p, R, self.frozen[0], Rotation.from_quat(self.frozen[1]))
+            self.hold, self.accept_after = (p, R), now
         if self.start is not None:
             self._approach(now)
             return
+        if self.squeezed or self.correcting:
+            if self._correction(now):
+                return
         if self.segment is None or now - self.segment[0] >= self.dt:
             if not self._policy_step(now):
                 return
@@ -201,6 +267,35 @@ class Runtime:
         a = min((now - start) * self.fps, 1.0)
         rotation = Slerp([0.0, 1.0], Rotation.concatenate([R0, R1]))(a)
         self._publish(p0 + a * (p1 - p0), rotation.as_quat(), trigger, engaged=True)
+
+    def _correction(self, now):
+        """A cuff squeeze: follow the arm; on release, resume from the freshest chunk re-anchored on
+        the corrected pose. True while the correction holds the tick."""
+        p, q, _ = self.tcp
+        R = Rotation.from_quat(q)
+        if self.squeezed:
+            if not self.correcting:
+                self._log("Cuff: correcting by hand")
+                self.correcting, self.chunks = True, self.chunks[-1:]
+            self.segment, self.entry, self.hold = None, None, (p, R)
+            self._publish(p, q, None, engaged=True)  # the goal stays on the arm
+            return True
+        self.correcting, self.accept_after = False, now  # in-flight chunks were anchored mid-correction
+        if self.chunks:
+            t_obs, p_obs, R_obs = self._tcp_at(self.chunks[-1].t[0])
+            self.chunks = [self.chunks[-1].reanchored(p_obs, R_obs, p, R, arrival=now)]
+        self.entry = (now, (p, R, self.trigger), self.resume_ramp)
+        self._log(f"Cuff released: resuming{'' if self.chunks else ' (waiting for a chunk)'}")
+        return False
+
+    def _tcp_at(self, t):
+        """(time, p, R) of the TCP at or before t (the oldest kept, if older)."""
+        best = self.history[0]
+        for h in self.history:
+            if h[0] > t:
+                break
+            best = h
+        return best
 
     def _approach(self, now):
         """Move the target from the TCP toward the start pose; clear `start` once the TCP is there."""
@@ -225,17 +320,13 @@ class Runtime:
                 self.on_start()
 
     def _released(self, tcp_fresh):
-        """Hold: freeze the target at the TCP (again only if the arm moved, e.g. homed)."""
+        """Hold: keep publishing the last target unchanged (at first, the TCP)."""
         if self.engaged:
             self._log(f"Released at step {self.step}" + (": episode finished, B sends the arm home" if self.done else ""))
-            self.engaged, self.frozen = False, None
-        if tcp_fresh:
-            p, q, _ = self.tcp
-            if self.frozen is None or (
-                np.linalg.norm(p - self.frozen[0]) > REFREEZE[0]
-                or (Rotation.from_quat(q).inv() * Rotation.from_quat(self.frozen[1])).magnitude() > REFREEZE[1]
-            ):
-                self.frozen = (p, q)
+            self.engaged, self.frozen, self.settled = False, self.published, self._now()
+            self._announce()
+        if self.frozen is None and tcp_fresh:
+            self.frozen, self.settled = (self.tcp[0], self.tcp[1]), self._now()
         if self.frozen is not None:
             self._publish(*self.frozen, self.trigger)
 
@@ -259,7 +350,7 @@ class Runtime:
             self.entry, current = None, (*self.hold, self.trigger)
         else:
             if self.entry is None:
-                self.entry = (t, (*self.hold, self.trigger))
+                self.entry = (t, (*self.hold, self.trigger), self.entry_ramp)
             current = self._entered(t, merged)
         following = current if merged is None or merged_next is None else self._entered(t + self.dt, merged_next)
         self.hold = current[:2]
@@ -269,14 +360,16 @@ class Runtime:
 
     def _entered(self, t, merged):
         """`merged`, crossfaded in from the hold."""
-        w = (t - self.entry[0]) / self.entry_ramp if self.entry_ramp > 0 else 1.0
-        return merged if w >= 1.0 else blend(self.entry[1], merged, max(w, 0.0))
+        start, hold, ramp = self.entry
+        w = (t - start) / ramp if ramp > 0 else 1.0
+        return merged if w >= 1.0 else blend(hold, merged, max(w, 0.0))
 
     def _call_policy(self, t):
         p_obs, q_obs, _ = self.tcp
         actions = self.policy({"step": self.step, "tcp_position": p_obs, "tcp_orientation": q_obs})
         positions, rotations = apply_actions(actions, p_obs, q_obs)
-        self.chunks.append(Chunk(t + self.dt * np.arange(len(actions)), positions, rotations, actions[:, 6], t))
+        n = self.horizon or len(actions)
+        self.chunks.append(Chunk(t + self.dt * np.arange(n), positions[:n], rotations[:n], actions[:n, 6], t))
 
     def _combine(self, t):
         """(position, Rotation, trigger) at t from the chunks covering it, or None."""
@@ -302,12 +395,22 @@ class Runtime:
             merged = blend(merged, sample, min(1.0, ((t - chunk.arrival) * self.fps + 1.0) / span))
         return merged
 
+    def _announce(self):
+        if self.engaged_pub is not None:
+            self.engaged_pub.publish(Bool(data=self.engaged))
+
     def _publish(self, position, quaternion, trigger, engaged=False):
+        """Publish a target: engaged, `position, quaternion` is the TCP goal, mapped to the target
+        that makes the teleop servo there; released, the target itself."""
         position = np.asarray(position, dtype=float)
-        if engaged and self.published is not None and np.array_equal(position, self.published):
-            self.jitter = -self.jitter
-            position = position + [self.jitter, 0.0, 0.0]
-        self.published = position
+        if engaged:
+            p0, R0, fp, fR = self.ref
+            position = position - p0 + fp
+            quaternion = (Rotation.from_quat(quaternion) * R0.inv() * fR).as_quat()
+            if self.published is not None and np.array_equal(position, self.published[0]):
+                self.jitter = -self.jitter
+                position = position + [self.jitter, 0.0, 0.0]
+        self.published = (position, np.asarray(quaternion, dtype=float))
         msg = PoseStamped()
         msg.header.stamp, msg.header.frame_id = self.node.get_clock().now().to_msg(), "base"
         p, o = msg.pose.position, msg.pose.orientation

@@ -5,7 +5,39 @@ from pathlib import Path
 
 import numpy as np
 
-from adapter.labels import chunk_actions, load_episode
+from adapter.labels import chunk_actions, load_episode, model_state, relative_actions
+
+# Policies whose predict_action_chunk reads the last n_obs_steps observations from queues that only
+# select_action fills: LeRobotPolicy fills them itself from the observations it is given.
+OBS_HISTORY = {"multi_task_dit"}
+
+
+def raw_state(tcp_p, tcp_q, gripper, joints):
+    """The dataset's 15-D state as exported (lerobot_export): TCP position, quaternion [x y z w],
+    gripper, 7 joints. The quaternion takes the sign with qy >= 0, as every recorded frame has it (the
+    gripper points down: qy 0.87 .. 1 in BlueCupToContainer)."""
+    q = np.asarray(tcp_q, dtype=np.float64)
+    return np.concatenate([tcp_p, -q if q[1] < 0 else q, [gripper], joints]).astype(np.float32)
+
+
+def letterbox(image, height, width):
+    """(H, W, 3) uint8 image scaled to fit (height, width), keeping its aspect, centred on black: how
+    BlueCupToContainer's 224 x 224 frames were made from the cameras' (mean error 0.006 against them).
+    An image already at (height, width), the checkpoints trained at camera resolution, is unchanged."""
+    h, w = image.shape[:2]
+    if (h, w) == (height, width):
+        return image
+    import torch
+    import torch.nn.functional as F
+
+    scale = min(height / h, width / w)
+    nh, nw = round(h * scale), round(w * scale)
+    resized = F.interpolate(torch.from_numpy(np.ascontiguousarray(image)).permute(2, 0, 1)[None].float(),
+                            (nh, nw), mode="bilinear", antialias=True)
+    out = np.zeros((height, width, 3), np.uint8)
+    top, left = (height - nh) // 2, (width - nw) // 2
+    out[top:top + nh, left:left + nw] = resized[0].permute(1, 2, 0).round().clamp(0, 255).byte().numpy()
+    return out
 
 
 class ReplayPolicy:
@@ -49,26 +81,70 @@ def model_config(model, revision=None):
     return json.loads(Path(hf_hub_download(model, "config.json", revision=revision)).read_text())
 
 
+def chunk_length(config):
+    """Actions in a chunk the policy returns (config.json as a dict): `chunk_size` (ACT, SmolVLA), or
+    `n_action_steps` for a policy that plans `horizon` steps and returns the first ones (VITA)."""
+    return config.get("chunk_size") or config["n_action_steps"]
+
+
+def load_config(path):
+    """The checkpoint's PreTrainedConfig, without the fields this LeRobot doesn't have (a checkpoint
+    saved by a newer LeRobot, e.g. `dtype`). A dropped field that isn't null is warned about."""
+    import dataclasses
+    import tempfile
+    import warnings
+
+    from lerobot.configs.policies import PreTrainedConfig
+
+    import inference.vita  # noqa: F401  registers the "vita" policy type
+
+    config = json.loads((path / "config.json").read_text())
+    known = {f.name for f in dataclasses.fields(PreTrainedConfig.get_choice_class(config["type"]))} | {"type"}
+    extra = {k: config.pop(k) for k in list(config) if k not in known}
+    if not extra:
+        return PreTrainedConfig.from_pretrained(path)
+    if ignored := {k: v for k, v in extra.items() if v is not None}:
+        warnings.warn(f"{path}: this LeRobot ignores {ignored}")
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "config.json").write_text(json.dumps(config))
+        return PreTrainedConfig.from_pretrained(tmp)
+
+
 class LeRobotPolicy:
     """Any LeRobot policy (ACT, SmolVLA, ...) through LeRobot's own loading and processors.
 
-    Observation: `observation.images.<key>` (H, W, 3) uint8 RGB and `observation.state`
-    (labels.model_state). Returns the unnormalized (chunk_size, 7) chunk. Without LeRobot processor
-    files, normalizes with the checkpoint's normalization_stats.json.
+    Observation: `observation.images.<key>` (H, W, 3) uint8 RGB and `observation.state` (`state()`).
+    Returns the unnormalized (chunk_size, 7) chunk, relative to the TCP (labels.chunk_actions). Without
+    LeRobot processor files, normalizes with the checkpoint's normalization_stats.json.
+
+    Two layouts, told apart by the checkpoint's feature shapes:
+      17-D state, 7-D actions   trained with TRAINING.md's transform (ACT, SmolVLA, VITA, MultiTask DiT)
+      15-D state, 8-D actions   trained on the dataset as exported (GR00T): raw_state in, absolute goals
+                                [x y z qx qy qz qw trigger] out, made relative to the TCP observed
 
     With `rtc` (RTCConfig fields): `prev`, the unexecuted actions of the current chunk, is inpainted
     over the first `delay` steps (Real-Time Chunking).
     """
 
-    def __init__(self, model, device, task="", rtc=None, revision=None):
+    def __init__(self, model, device, task="", rtc=None, revision=None, overrides=None):
         import torch
-        from lerobot.configs.policies import PreTrainedConfig
         from lerobot.policies import get_policy_class, make_pre_post_processors
         from lerobot.processor import NormalizerProcessorStep
 
         path = model_dir(model, revision)
-        cfg = PreTrainedConfig.from_pretrained(path)
+        cfg = load_config(path)
+        layout = (cfg.input_features["observation.state"].shape[0], cfg.output_features["action"].shape[0])
+        if layout not in ((17, 7), (15, 8)):
+            raise ValueError(f"{path}: state/action dims {layout}, expected (17, 7) or (15, 8)")
+        self.absolute = layout == (15, 8)
+        if self.absolute and rtc:
+            raise ValueError(f"{cfg.type} predicts absolute goals; RTC continues TCP-relative chunks: "
+                             "leave `rtc` out of its inference settings")
         cfg.device, cfg.pretrained_path = device, path
+        if cfg.type == "groot" and device == "cpu":  # its bf16 autocast mixes dtypes on the CPU
+            cfg.use_bf16, cfg.model_params_fp32 = False, True
+        for key, value in (overrides or {}).items():  # e.g. num_steps: fewer flow steps, less latency
+            setattr(cfg, key, value)
         self.policy = get_policy_class(cfg.type).from_pretrained(path, config=cfg)
         if rtc:
             from lerobot.policies.rtc.configuration_rtc import RTCConfig
@@ -93,21 +169,49 @@ class LeRobotPolicy:
             stats = {k: {s: np.asarray(v, dtype=np.float32) for s, v in st.items() if v is not None}
                      for k, st in stats.items()}
             self.pre, self.post = make_pre_post_processors(cfg, dataset_stats=stats)
-        self.normalizer = next(s for s in self.pre.steps if isinstance(s, NormalizerProcessorStep))
+        # for RTC; GR00T normalizes inside its own packing step
+        self.normalizer = next((s for s in self.pre.steps if isinstance(s, NormalizerProcessorStep)), None)
         self.torch, self.device, self.task, self.rtc = torch, torch.device(device), task, rtc
-        self.type, self.chunk_size = cfg.type, cfg.chunk_size
+        self.type, self.chunk_size = cfg.type, chunk_length(vars(cfg))
+        self.n_obs_steps = cfg.n_obs_steps if cfg.type in OBS_HISTORY else 1
         self.features = list(cfg.input_features)
+        self.image_shapes = {k: tuple(f.shape[1:]) for k, f in cfg.input_features.items() if k.startswith("observation.images.")}
 
-    def __call__(self, observation, delay=0, prev=None):
-        from lerobot.policies.utils import prepare_observation_for_inference
+    def reset(self):
+        self.policy.reset()
+        self.pre.reset()
+        self.post.reset()
+
+    def state(self, tcp_p, tcp_q, gripper, joints):
+        """observation.state for this checkpoint's layout."""
+        return (raw_state if self.absolute else model_state)(tcp_p, tcp_q, gripper, joints)
+
+    def __call__(self, observation, delay=0, prev=None, tcp=None, history=()):
+        """`tcp` (position, quaternion), the TCP observed: absolute goals are made relative to it.
+        `history`: for a policy that sees past steps (n_obs_steps), the observations one step apart
+        before this one, oldest first; fewer repeat the oldest given, as LeRobot starts an episode."""
+        from lerobot.policies.utils import populate_queues, prepare_observation_for_inference
         from lerobot.processor import TransitionKey, create_transition
 
+        if self.absolute and tcp is None:
+            raise ValueError(f"{self.type} predicts absolute goals: pass the TCP observed")
         torch = self.torch
+
+        def preprocess(obs):
+            return self.pre(prepare_observation_for_inference(
+                {k: letterbox(obs[k], *self.image_shapes[k]) if k in self.image_shapes else obs[k]
+                 for k in self.features}, self.device, self.task))
+
         # RTC guidance needs gradients, which inference_mode forbids
         with torch.no_grad() if self.rtc else torch.inference_mode():
-            batch = prepare_observation_for_inference(
-                {k: observation[k] for k in self.features}, self.device, self.task)
-            batch = self.pre(batch)
+            if self.type in OBS_HISTORY:  # its queues hold exactly these observations
+                self.policy.reset()
+                for obs in [*history[-(self.n_obs_steps - 1):], observation]:
+                    # cameras stacked, as the queue holds them; no `action` (None here), as select_action
+                    batch = self.policy._prepare_batch({k: v for k, v in preprocess(obs).items() if k != "action"})
+                    self.policy._queues = populate_queues(self.policy._queues, batch)
+            else:
+                batch = preprocess(observation)
             kwargs = {}
             if self.rtc:
                 if prev is not None:  # normalized, padded to the horizon, as LeRobot's RTC engine does
@@ -119,4 +223,9 @@ class LeRobotPolicy:
                     prev = pad
                 kwargs = {"inference_delay": delay, "prev_chunk_left_over": prev}
             actions = self.policy.predict_action_chunk(batch, **kwargs)
-            return self.post(actions)[0].cpu().numpy().astype(np.float64)
+            actions = self.post(actions)[0].float().cpu().numpy().astype(np.float64)
+        if self.absolute:
+            from scipy.spatial.transform import Rotation
+
+            actions = relative_actions(actions[:, :3], Rotation.from_quat(actions[:, 3:7]), actions[:, 7], *tcp)
+        return actions

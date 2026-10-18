@@ -24,11 +24,13 @@ def policy_settings(cfg, model_cfg):
     return cfg["policies"][kind]
 
 
-def spin(name, setup):
-    """Spin a node set up by setup(node) until Ctrl+C."""
+def spin(name, setup, on_exit=None):
+    """Spin a node set up by setup(node) until Ctrl+C. on_exit(), if given, runs before the node goes,
+    so it can still publish: rclpy's own SIGINT handler would shut the context down first."""
     import rclpy
+    from rclpy.signals import SignalHandlerOptions
 
-    rclpy.init()
+    rclpy.init(signal_handler_options=SignalHandlerOptions.ALL if on_exit is None else SignalHandlerOptions.NO)
     node = rclpy.create_node(name)
     setup(node)
     try:
@@ -36,6 +38,8 @@ def spin(name, setup):
     except KeyboardInterrupt:
         pass
     finally:
+        if on_exit is not None:
+            on_exit()
         node.destroy_node()
         rclpy.try_shutdown()
 
@@ -66,14 +70,21 @@ def serve(config, model, device, revision):
     from inference.runtime import check_merge
 
     settings = policy_settings(cfg, model_config(model, revision))
-    policy = LeRobotPolicy(model, device, cfg.get("task", ""), settings.get("rtc"), revision)
+    policy = LeRobotPolicy(model, device, cfg.get("task", ""), settings.get("rtc"), revision, settings.get("overrides"))
     check_merge(settings["merge"], policy.chunk_size, settings.get("every", 1))
     click.echo(f"Serving {model} ({policy.type}, chunks of {policy.chunk_size}) on {device}: every "
                f"{settings.get('every', 1)} step(s){', RTC' if policy.rtc else ''}, chunks on {cfg['chunk']}")
 
-    from inference.policy_node import PolicyNode
+    from inference.policy_node import PolicyNode, RecordingLight
 
-    spin("policy_server", lambda node: PolicyNode(node, cfg, full["topics"]["images"], policy, settings.get("every", 1)))
+    lights = []
+
+    def setup(node):
+        PolicyNode(node, cfg, full["topics"]["images"], policy, settings.get("every", 1))
+        if full.get("trigger", {}).get("light"):  # lit as in every recorded frame
+            lights.append(RecordingLight(node, full["trigger"]["light"]))
+
+    spin("policy_server", setup, on_exit=lambda: [light.off() for light in lights])
 
 
 @main.command()
@@ -116,14 +127,14 @@ def run(config, episode, model, start_at, player, revision):
         spin("policy_runtime", lambda node: Runtime(node, cfg, policy))
         return
 
-    from inference.policies import model_config
+    from inference.policies import chunk_length, model_config
 
     model_cfg = model_config(model, revision)
     settings = policy_settings(cfg, model_cfg)
-    warning = check_merge(settings["merge"], model_cfg["chunk_size"], settings.get("every", 1))
+    warning = check_merge(settings["merge"], chunk_length(model_cfg), settings.get("every", 1))
     if warning:
         click.echo(f"Warning: {warning}")
-    cfg = {**cfg, "chunk_size": model_cfg["chunk_size"]}
+    cfg = {**cfg, "chunk_size": chunk_length(model_cfg)}
     start = None
     if start_at:
         recorded = load_episode(start_at, cfg["arm"], cfg["fps"])
@@ -157,3 +168,46 @@ def start_player(node, player, t_ns):
         node.get_logger().info(f"Playing the episode's cameras from {player}")
 
     return go
+
+
+@main.command()
+@click.argument("model")
+@click.option("--config", default="baxter.yaml", show_default=True, help="Its inference.task is the VLA's prompt")
+@click.option("--device", default="cuda", show_default=True)
+@click.option("--depth", type=int, default=None, help="Levels of the tree to print (default: all)")
+@click.option("--json", "out", type=click.Path(dir_okay=False), help="Also write the tree as JSON (for recap)")
+def probe(model, config, device, depth, out):
+    """Print a policy's module tree, traced through one inference: calls and shapes per module.
+
+    \b
+    Examples:
+      inference probe models/smolvla_CupToContainer/step-030000 --depth 4
+      inference probe models/vita_CupToContainer/step-060000 --json vita_tree.json
+    """
+    from inference import probe as probe_mod
+    from inference.policies import LeRobotPolicy
+
+    task = yaml.safe_load(resolve_config(config).read_text())["inference"].get("task", "")
+    root = probe_mod.trace_policy(LeRobotPolicy(model, device, task))
+    click.echo(probe_mod.text(root, depth))
+    if out:
+        Path(out).write_text(probe_mod.to_json(root))
+        click.echo(f"\n{out}")
+
+
+@main.command()
+@click.argument("model")
+@click.option("--config", default="baxter.yaml", show_default=True)
+@click.option("--device", default="cuda", show_default=True)
+def attend(model, config, device):
+    """Serve attention maps for recap: JSON requests on stdin, replies on stdout (inference.attention)."""
+    import sys
+
+    from inference import attention
+    from inference.policies import LeRobotPolicy
+
+    out, sys.stdout = sys.stdout, sys.stderr  # replies only on stdout: library prints go to stderr
+    full = yaml.safe_load(resolve_config(config).read_text())
+    cfg = full["inference"]
+    policy = LeRobotPolicy(model, device, cfg.get("task", ""))
+    attention.serve(policy, cfg, full["topics"]["images"], sys.stdin, out)

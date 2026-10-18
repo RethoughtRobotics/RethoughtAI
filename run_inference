@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# Run a downloaded checkpoint (models/<name>_*/step-<N>/) in tmux: the policy above, a shell below
+# with ./start typed. ./start connects the policy to the arm, ./stop holds the arm where it is,
+# ./home sends it to the untuck pose (as the controller's B button).
+# On the real robot the policy watches its cameras; with no cameras up (the sim), a shadow rollout
+# of a recorded episode (4 unless --episode).
+#   ./run_inference --act 100000
+#   ./run_inference --smolvla_CupToContainer 30000 --episode 24
+#   ./run_inference --smolvla_CupToContainer_wrist   newest checkpoint (wrist camera only)
+#   ./run_inference --multitaskdit                   MultiTask DiT (BlueCupToContainer)
+#   ./run_inference --groot                          GR00T N1.7 3B: needs a GPU with ~10 GB (--device: torch device)
+# Bring the arm and teleop up first (bringbackbaxter: run_teleop.sh or run_sim_teleop.sh, --left --policy).
+set -eo pipefail
+cd "$(dirname "$0")"
+
+NAME="" STEP="" EPISODE="" CONFIG=configs/baxter.yaml DEVICE=cuda
+while (( $# )); do
+    case "$1" in
+        --episode) EPISODE="$2"; shift ;;
+        --config) CONFIG="$2"; shift ;;
+        --device) DEVICE="$2"; shift ;;
+        -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
+        --*) NAME="${1#--}"; [[ "${2:-}" =~ ^(step-)?[0-9]+$ ]] && { STEP="$2"; shift; } ;;
+        *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+    shift
+done
+[[ -n "$NAME" ]] || { echo "Name a model: ./run_inference --act 100000 (models: $(ls models | tr '\n' ' '))" >&2; exit 2; }
+
+# models/<name> exactly, else models/<name>_* (those with step-<N>, if given); then its step-<N>
+# (newest without a step)
+shopt -s nullglob
+[[ -n "$STEP" ]] && STEP_DIR="step-$(printf %06d "$((10#${STEP#step-}))")"
+dirs=()
+if [[ -d models/"$NAME" ]]; then
+    dirs=(models/"$NAME")
+else
+    for d in models/"$NAME"_*; do [[ -d "$d" && ( -z "$STEP" || -d "$d/$STEP_DIR" ) ]] && dirs+=("$d"); done
+fi
+(( ${#dirs[@]} == 1 )) || { echo "--$NAME matches ${#dirs[@]} of: $( (( ${#dirs[@]} )) && echo "${dirs[*]#models/}" || ls models | tr '\n' ' ')" >&2; exit 2; }
+if [[ -z "$STEP" ]]; then
+    MODEL=$(ls -d "${dirs[0]}"/step-* | sort | tail -1)
+else
+    MODEL="${dirs[0]}/$STEP_DIR"
+fi
+[[ -f "$MODEL/config.json" ]] || { echo "No checkpoint $MODEL (have: $(ls "${dirs[0]}" | tr '\n' ' '))" >&2; exit 2; }
+EPISODE_DIR="recorder/data/CupToContainer/episode_$(printf %03d "$((10#${EPISODE:-4}))")"
+
+source launch/env.sh
+SESSION=rai_inference
+
+# One run at a time: two runtimes would fight over the arm.
+old_runs() {  # pids of a previous run, never this script or the shells that started it
+    local mine=" " p=$$
+    while (( p > 1 )); do mine+="$p "; p=$(awk '/^PPid/ {print $2}' /proc/$p/status); done
+    for p in $(pgrep -f "policy.launch.py|inference serve|inference run|ros2 bag play"); do
+        [[ "$mine" == *" $p "* ]] || echo "$p"
+    done
+}
+if [[ -n "$(old_runs)" ]]; then
+    echo "Stopping the previous run..."
+    timeout 5 ros2 service call "$ENGAGE" std_srvs/srv/SetBool "{data: false}" >/dev/null 2>&1 || true
+    kill -INT $(old_runs) 2>/dev/null || true
+    for _ in $(seq 20); do [[ -z "$(old_runs)" ]] && break; sleep 0.5; done
+    kill -TERM $(old_runs) 2>/dev/null || true
+fi
+tmux kill-session -t "$SESSION" 2>/dev/null || true
+timeout 10 ros2 topic echo --once /robot/joint_states >/dev/null 2>&1 \
+    || echo "Warning: no /robot/joint_states on ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}: is the sim (or robot) up?" >&2
+
+# Live cameras (the real robot) or none (the sim): a bag played over live cameras would mix its
+# frames with theirs.
+live=()
+for topic in $(python3 -c "import yaml,sys; print(*(c['topic'] for c in yaml.safe_load(open(sys.argv[1]))['topics']['images']))" "$CONFIG"); do
+    [[ "$(timeout 5 ros2 topic info "$topic" 2>/dev/null)" =~ Publisher\ count:\ [1-9] ]] && live+=("$topic")
+done
+LAUNCH="ros2 launch launch/policy.launch.py model:=$MODEL config:=$CONFIG device:=$DEVICE"
+if (( ${#live[@]} )); then
+    [[ -z "$EPISODE" ]] || { echo "--episode $EPISODE: the robot's cameras are up (${live[*]}), and a shadow rollout would mix their frames with the bag's" >&2; exit 2; }
+    echo "Live: the robot's cameras (${live[*]})"
+else
+    [[ -d "$EPISODE_DIR" ]] || { echo "No cameras up and no episode $EPISODE_DIR to shadow" >&2; exit 2; }
+    echo "No cameras up: shadow rollout of $EPISODE_DIR"
+    LAUNCH+=" episode:=$EPISODE_DIR"
+fi
+tmux new-session -d -s "$SESSION" -c "$PWD" -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" -e CONFIG="$CONFIG" \
+    "source launch/env.sh; echo 'Model: $MODEL'; $LAUNCH; read -rp 'Policy stopped. Enter to close.'"
+tmux split-window -v -l 8 -t "$SESSION" -c "$PWD" -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" -e CONFIG="$CONFIG"
+for _ in $(seq 50); do [[ -n "$(tmux capture-pane -p -t "$SESSION":0.1 | tr -d "[:space:]")" ]] && break; sleep 0.1; done
+# typed at the prompt, not entered; a non-default domain spelled out (shell rc files may unset it)
+tmux send-keys -t "$SESSION":0.1 "${ROS_DOMAIN_ID:+ROS_DOMAIN_ID=$ROS_DOMAIN_ID }./start"
+if [[ -t 1 ]]; then
+    [[ -n "$TMUX" ]] && tmux switch-client -t "$SESSION" || tmux attach -t "$SESSION"
+else
+    echo "tmux session $SESSION started: tmux attach -t $SESSION"
+fi

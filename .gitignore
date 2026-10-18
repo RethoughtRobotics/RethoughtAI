@@ -54,3 +54,6 @@ CATKIN_IGNORE
 recorder/data/
 datasets/
 __pycache__/
+
+# Downloaded checkpoints (models/<repo>/<step>/)
+models/
