@@ -181,7 +181,7 @@ class LeRobotPolicy:
     LeRobot processor files, normalizes with the checkpoint's normalization_stats.json.
 
     Layouts, told apart by the checkpoint's feature shapes:
-      17-D state, 7-D actions   trained with TRAINING.md's transform (ACT, SmolVLA, VITA, MultiTask DiT)
+      17-D state, 7-D actions   trained with training/TRAINING.md's transform (ACT, SmolVLA, VITA, MultiTask DiT)
             15-D state, 8-D actions   trained on the dataset as exported (GR00T, kinesthetic VITA): absolute goals
                                 [x y z qx qy qz qw trigger] out, made relative to the TCP observed
                 28-D state, 14-D actions  raw bimanual pose-only export: absolute left/right poses stay
