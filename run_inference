@@ -9,44 +9,83 @@
 #   ./run_inference --smolvla_CupToContainer_wrist   newest checkpoint (wrist camera only)
 #   ./run_inference --multitaskdit                   MultiTask DiT (BlueCupToContainer)
 #   ./run_inference --groot                          GR00T N1.7 3B: needs a GPU with ~10 GB (--device: torch device)
-# Bring the arm and teleop up first (bringbackbaxter: run_teleop.sh or run_sim_teleop.sh, --left --policy).
+#   ./run_inference --vita_BlueCupRedContainer_kin_pose 70000
+#   ./run_inference --vita_BlueCupRedContainer_kin_lead640ms 80000
+#   ./run_inference --vita_SweepTrash_Kin 50000      automatically uses baxter_bimanual.yaml
+#   ./run_inference --multi_task_dit_SweepTrash_Kin-Full_inpainted_minimax 30000   any *SweepTrash*: bimanual; full name if ambiguous
+#   ./run_inference --multi_task_dit_kin_pose_combo_30k_r5h100 30000   kinesthetic cup MultiTask DiT
+# Bring teleop up first: --left --policy for cups; --both --policy --no-gripper for SweepTrash.
 set -eo pipefail
 cd "$(dirname "$0")"
 
-NAME="" STEP="" EPISODE="" CONFIG=configs/baxter.yaml DEVICE=cuda
+NAME="" STEP="" EPISODE="" CONFIG=configs/baxter.yaml DEVICE=cuda RESOLVE="" LIST="" CONFIG_GIVEN=""
 while (( $# )); do
     case "$1" in
+        --resolve) RESOLVE=1 ;;
+        --list) LIST=1 ;;
         --episode) EPISODE="$2"; shift ;;
-        --config) CONFIG="$2"; shift ;;
+        --config) CONFIG="$2"; CONFIG_GIVEN=1; shift ;;
         --device) DEVICE="$2"; shift ;;
-        -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
         --*) NAME="${1#--}"; [[ "${2:-}" =~ ^(step-)?[0-9]+$ ]] && { STEP="$2"; shift; } ;;
         *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
     shift
 done
+if [[ -n "$LIST" ]]; then
+    find models -mindepth 3 -maxdepth 3 -name config.json -printf '%h\n' | sort -V
+    exit 0
+fi
 [[ -n "$NAME" ]] || { echo "Name a model: ./run_inference --act 100000 (models: $(ls models | tr '\n' ' '))" >&2; exit 2; }
 
 # models/<name> exactly, else models/<name>_* (those with step-<N>, if given); then its step-<N>
 # (newest without a step)
 shopt -s nullglob
-[[ -n "$STEP" ]] && STEP_DIR="step-$(printf %06d "$((10#${STEP#step-}))")"
+step_dirs() {
+    local d digits
+    for d in "$1"/step-*; do
+        digits="${d##*/step-}"
+        [[ -d "$d" && "$digits" =~ ^[0-9]+$ && -f "$d/config.json" ]] || continue
+        if [[ -z "$STEP" ]] || (( 10#$digits == 10#${STEP#step-} )); then
+            printf '%s\n' "$d"
+        fi
+    done
+}
 dirs=()
 if [[ -d models/"$NAME" ]]; then
     dirs=(models/"$NAME")
 else
-    for d in models/"$NAME"_*; do [[ -d "$d" && ( -z "$STEP" || -d "$d/$STEP_DIR" ) ]] && dirs+=("$d"); done
+    for d in models/"$NAME"_*; do [[ -d "$d" && -n "$(step_dirs "$d")" ]] && dirs+=("$d"); done
 fi
-(( ${#dirs[@]} == 1 )) || { echo "--$NAME matches ${#dirs[@]} of: $( (( ${#dirs[@]} )) && echo "${dirs[*]#models/}" || ls models | tr '\n' ' ')" >&2; exit 2; }
-if [[ -z "$STEP" ]]; then
-    MODEL=$(ls -d "${dirs[0]}"/step-* | sort | tail -1)
-else
-    MODEL="${dirs[0]}/$STEP_DIR"
+if (( ${#dirs[@]} != 1 )); then
+    echo "--$NAME${STEP:+ $STEP}: ${#dirs[@]} matching downloaded models. Steps are exact: 3000 is not 30000." >&2
+    echo "Available matching checkpoints (use the full model name if ambiguous):" >&2
+    for d in models/"$NAME" models/"$NAME"_*; do
+        [[ -d "$d" ]] || continue
+        printf '  %s:' "${d#models/}" >&2
+        for checkpoint in "$d"/step-*; do [[ -f "$checkpoint/config.json" ]] && printf ' %s' "${checkpoint##*/}" >&2; done
+        printf '\n' >&2
+    done
+    exit 2
 fi
-[[ -f "$MODEL/config.json" ]] || { echo "No checkpoint $MODEL (have: $(ls "${dirs[0]}" | tr '\n' ' '))" >&2; exit 2; }
+matches=()
+while IFS= read -r checkpoint; do [[ -n "$checkpoint" ]] && matches+=("$checkpoint"); done < <(step_dirs "${dirs[0]}" | sort -V)
+(( ${#matches[@]} )) || { echo "No downloaded step ${STEP:-latest} for ${dirs[0]}; use --list to see available checkpoints." >&2; exit 2; }
+if [[ -n "$STEP" ]] && (( ${#matches[@]} > 1 )); then
+    echo "Duplicate numeric checkpoint step: ${matches[*]}; remove ambiguity before launching." >&2
+    exit 2
+fi
+MODEL="${matches[${#matches[@]}-1]}"
+[[ -n "$RESOLVE" ]] && { echo "$MODEL"; exit 0; }
+if [[ "$NAME" == *SweepTrash* && -z "$CONFIG_GIVEN" ]]; then
+    CONFIG=configs/baxter_bimanual.yaml
+fi
+export CONFIG
 EPISODE_DIR="recorder/data/CupToContainer/episode_$(printf %03d "$((10#${EPISODE:-4}))")"
 
 source launch/env.sh
+# Reject unsupported layouts before stopping an existing run or touching ROS services.
+.venv/bin/inference check "$MODEL" --config "$CONFIG"
 SESSION=rai_inference
 
 # One run at a time: two runtimes would fight over the arm.
@@ -57,14 +96,6 @@ old_runs() {  # pids of a previous run, never this script or the shells that sta
         [[ "$mine" == *" $p "* ]] || echo "$p"
     done
 }
-if [[ -n "$(old_runs)" ]]; then
-    echo "Stopping the previous run..."
-    timeout 5 ros2 service call "$ENGAGE" std_srvs/srv/SetBool "{data: false}" >/dev/null 2>&1 || true
-    kill -INT $(old_runs) 2>/dev/null || true
-    for _ in $(seq 20); do [[ -z "$(old_runs)" ]] && break; sleep 0.5; done
-    kill -TERM $(old_runs) 2>/dev/null || true
-fi
-tmux kill-session -t "$SESSION" 2>/dev/null || true
 timeout 10 ros2 topic echo --once /robot/joint_states >/dev/null 2>&1 \
     || echo "Warning: no /robot/joint_states on ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}: is the sim (or robot) up?" >&2
 
@@ -79,10 +110,23 @@ if (( ${#live[@]} )); then
     [[ -z "$EPISODE" ]] || { echo "--episode $EPISODE: the robot's cameras are up (${live[*]}), and a shadow rollout would mix their frames with the bag's" >&2; exit 2; }
     echo "Live: the robot's cameras (${live[*]})"
 else
+    if [[ "$NAME" == vita_BlueCupRedContainer_kin_* || "$NAME" == *SweepTrash* || "$NAME" == vita_kin_* || "$NAME" == multi_task_dit_kin_* ]]; then
+        echo "No live cameras: kinesthetic models must not silently shadow the old CupToContainer episode. Use live cameras; kinesthetic shadow playback needs measured start poses and matching image transport." >&2
+        exit 2
+    fi
     [[ -d "$EPISODE_DIR" ]] || { echo "No cameras up and no episode $EPISODE_DIR to shadow" >&2; exit 2; }
     echo "No cameras up: shadow rollout of $EPISODE_DIR"
     LAUNCH+=" episode:=$EPISODE_DIR"
 fi
+# All preflight checks passed: only now replace a previous runtime.
+if [[ -n "$(old_runs)" ]]; then
+    echo "Stopping the previous run..."
+    timeout 5 ros2 service call "$ENGAGE" std_srvs/srv/SetBool "{data: false}" >/dev/null 2>&1 || true
+    kill -INT $(old_runs) 2>/dev/null || true
+    for _ in $(seq 20); do [[ -z "$(old_runs)" ]] && break; sleep 0.5; done
+    kill -TERM $(old_runs) 2>/dev/null || true
+fi
+tmux kill-session -t "$SESSION" 2>/dev/null || true
 tmux new-session -d -s "$SESSION" -c "$PWD" -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" -e CONFIG="$CONFIG" \
     "source launch/env.sh; echo 'Model: $MODEL'; $LAUNCH; read -rp 'Policy stopped. Enter to close.'"
 tmux split-window -v -l 8 -t "$SESSION" -c "$PWD" -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" -e CONFIG="$CONFIG"

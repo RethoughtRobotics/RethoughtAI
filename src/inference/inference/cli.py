@@ -16,12 +16,49 @@ def resolve_config(path: str) -> Path:
     raise click.BadParameter(f"Config not found: {path}")
 
 
-def policy_settings(cfg, model_cfg):
-    """inference.policies settings for this checkpoint's type."""
+def policy_settings(cfg, model_cfg, label_lead=None):
+    """Settings for the checkpoint's type and verified action layout, not its repository name.
+    `label_lead`: the training dataset, if its labels already lead the TCP; then no run-time lead."""
+    from inference.policies import action_layout
+
+    layout = action_layout(model_cfg)
     kind = model_cfg["type"]
+    if layout == "bimanual_absolute":
+        if cfg.get("arm") != "both" or set(cfg.get("arms", {})) != {"left", "right"}:
+            raise ValueError("bimanual absolute poses without grippers require arm: both, both arm "
+                             "topics and a shared engage/stop gate; use configs/baxter_bimanual.yaml")
+        topics = ("tcp", "target", "trigger", "cuff", "home")
+        for name in ("left", "right"):
+            if any(not cfg["arms"][name].get(key) for key in topics):
+                raise ValueError(f"bimanual {name} arm needs {', '.join(topics)} topics")
+        for key in ("tcp", "target"):
+            if cfg["arms"]["left"][key] == cfg["arms"]["right"][key]:
+                raise ValueError(f"bimanual arms must have distinct {key} topics")
+        if not all(cfg.get(key) for key in ("chunk", "engage", "engaged")):
+            raise ValueError("bimanual runtime needs shared chunk, engage and engaged topics")
+        kind = f"{kind}_bimanual"
+    elif cfg.get("arm") == "both":
+        raise ValueError("arm: both requires a bimanual 28-D state / 14-D action checkpoint")
+    if layout == "absolute" and f"{kind}_absolute" in cfg.get("policies", {}):
+        kind = f"{kind}_absolute"
     if kind not in cfg.get("policies", {}):
         raise click.UsageError(f"no inference.policies.{kind} in the config (have: {', '.join(cfg.get('policies', {}))})")
-    return cfg["policies"][kind]
+    settings = cfg["policies"][kind]
+    if layout in ("absolute", "bimanual_absolute") and settings.get("rtc"):
+        raise ValueError("Absolute-pose checkpoints must not use TCP-relative RTC")
+    if label_lead and settings["merge"].get("lead"):
+        settings = {**settings, "merge": {k: v for k, v in settings["merge"].items() if k != "lead"}}
+    return settings
+
+
+def deploy_task(configured, tasks):
+    """The prompt to condition on: the dataset's task the checkpoint was trained on (`tasks`), or the
+    configured one if the dataset's tasks are unknown or include it. Several need one configured."""
+    if not tasks or configured in tasks:
+        return configured or ""
+    if len(tasks) == 1:
+        return tasks[0]
+    raise ValueError(f"task {configured!r} is not one the checkpoint was trained on: configure one of {list(tasks)}")
 
 
 def spin(name, setup, on_exit=None):
@@ -52,6 +89,49 @@ def main():
 
 
 @main.command()
+@click.argument("model")
+@click.option("--config", default="baxter.yaml", show_default=True)
+@click.option("--revision", default=None, help="Pinned Hub branch, tag or commit")
+def check(model, config, revision):
+    """Check deployment compatibility without loading weights, starting ROS or moving a robot."""
+    from inference.policies import action_layout, chunk_length, model_config, trained_lead, trained_tasks
+    from inference.runtime import check_merge
+
+    full = yaml.safe_load(resolve_config(config).read_text())
+    model_cfg = model_config(model, revision)
+    label_lead = trained_lead(model, revision)
+    tasks = trained_tasks(model, revision)
+    try:
+        settings = policy_settings(full["inference"], model_cfg, label_lead)
+        layout = action_layout(model_cfg)
+        task = deploy_task(full["inference"].get("task"), tasks)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    effective = {**model_cfg, **settings.get("overrides", {})}
+    length, every = chunk_length(effective), settings.get("every", 1)
+    horizon = min(length, int(settings["merge"].get("horizon") or length))
+    if not 0 < every < horizon:
+        raise click.ClickException(f"every ({every}) must be below the executable chunk length ({horizon})")
+    if model_cfg["type"] == "vita" and not 1 <= effective["n_action_steps"] <= effective["horizon"]:
+        raise click.ClickException("VITA n_action_steps must be within its trained horizon")
+    if layout == "absolute" and settings.get("rtc"):
+        raise click.ClickException("Absolute-pose checkpoints must not use TCP-relative RTC")
+    configured = {c["key"] for c in full["topics"]["images"]}
+    missing = {k for k in model_cfg["input_features"] if k.startswith("observation.images.")} - configured
+    if missing:
+        raise click.ClickException(f"Missing camera topics: {', '.join(sorted(missing))}")
+    click.echo(f"Compatible: {model_cfg['type']}, {layout} poses, arm {full['inference']['arm']}; "
+               f"{length} targets, predict every {every} frames, merge {settings['merge']}; "
+               + (f"no run-time lead: {label_lead}'s labels already lead" if label_lead
+                  else f"pose lead {settings['merge'].get('lead') or 0} s")
+               + f", gripper lead {settings['merge'].get('gripper_lead') or 0} s; task {task!r}"
+               + ("" if tasks else " (configured: the training dataset's tasks are unreadable)"))
+    warning = check_merge(settings["merge"], length, every, full["inference"]["fps"])
+    if warning:
+        click.echo(f"Warning: {warning}")
+
+
+@main.command()
 @click.argument("config")
 @click.option("--model", required=True, help="LeRobot checkpoint: Hub repo (user/name) or local directory")
 @click.option("--device", default="cuda", show_default=True)
@@ -66,25 +146,38 @@ def serve(config, model, device, revision):
     full = yaml.safe_load(resolve_config(config).read_text())
     cfg = full["inference"]
 
-    from inference.policies import LeRobotPolicy, model_config
+    from inference.policies import LeRobotPolicy, model_config, trained_lead, trained_tasks
     from inference.runtime import check_merge
 
-    settings = policy_settings(cfg, model_config(model, revision))
-    policy = LeRobotPolicy(model, device, cfg.get("task", ""), settings.get("rtc"), revision, settings.get("overrides"))
+    settings = policy_settings(cfg, model_config(model, revision), trained_lead(model, revision))
+    task = deploy_task(cfg.get("task"), trained_tasks(model, revision))
+    policy = LeRobotPolicy(model, device, task, settings.get("rtc"), revision, settings.get("overrides"))
     check_merge(settings["merge"], policy.chunk_size, settings.get("every", 1))
     click.echo(f"Serving {model} ({policy.type}, chunks of {policy.chunk_size}) on {device}: every "
-               f"{settings.get('every', 1)} step(s){', RTC' if policy.rtc else ''}, chunks on {cfg['chunk']}")
+               f"{settings.get('every', 1)} step(s){', RTC' if policy.rtc else ''}, task {task!r}, chunks on {cfg['chunk']}")
 
     from inference.policy_node import PolicyNode, RecordingLight
 
-    lights = []
+    lights, servers = [], []
 
     def setup(node):
-        PolicyNode(node, cfg, full["topics"]["images"], policy, settings.get("every", 1))
+        if policy.bimanual:
+            from inference.bimanual_policy_node import BimanualPolicyNode
+
+            servers.append(BimanualPolicyNode(node, cfg, full["topics"]["images"], policy,
+                                             settings.get("every", 1)))
+        else:
+            PolicyNode(node, cfg, full["topics"]["images"], policy, settings.get("every", 1))
         if full.get("trigger", {}).get("light"):  # lit as in every recorded frame
             lights.append(RecordingLight(node, full["trigger"]["light"]))
 
-    spin("policy_server", setup, on_exit=lambda: [light.off() for light in lights])
+    def shutdown():
+        for server in servers:
+            server.close()
+        for light in lights:
+            light.off()
+
+    spin("policy_server", setup, on_exit=shutdown)
 
 
 @main.command()
@@ -118,6 +211,8 @@ def run(config, episode, model, start_at, player, revision):
     if episode:
         from inference.policies import ReplayPolicy
 
+        if cfg.get("arm") == "both":
+            raise click.UsageError("Bimanual replay/start-pose loading is not supported; use live cameras")
         policy = ReplayPolicy(episode, cfg["arm"], cfg["fps"], cfg["chunk_size"])
         click.echo(f"Replaying {episode}: {len(policy)} steps ({len(policy) / cfg['fps']:.1f} s), "
                    f"chunks of {cfg['chunk_size']}, ensembling {cfg.get('temporal_ensemble_coeff')}")
@@ -127,14 +222,17 @@ def run(config, episode, model, start_at, player, revision):
         spin("policy_runtime", lambda node: Runtime(node, cfg, policy))
         return
 
-    from inference.policies import chunk_length, model_config
+    from inference.policies import chunk_length, model_config, trained_lead
 
     model_cfg = model_config(model, revision)
-    settings = policy_settings(cfg, model_cfg)
-    warning = check_merge(settings["merge"], chunk_length(model_cfg), settings.get("every", 1))
+    settings = policy_settings(cfg, model_cfg, trained_lead(model, revision))
+    if cfg.get("arm") == "both" and start_at:
+        raise click.UsageError("Bimanual shadow playback is not supported; use live cameras")
+    effective = {**model_cfg, **settings.get("overrides", {})}
+    warning = check_merge(settings["merge"], chunk_length(effective), settings.get("every", 1), cfg["fps"])
     if warning:
         click.echo(f"Warning: {warning}")
-    cfg = {**cfg, "chunk_size": chunk_length(model_cfg)}
+    cfg = {**cfg, "chunk_size": chunk_length(effective)}
     start = None
     if start_at:
         recorded = load_episode(start_at, cfg["arm"], cfg["fps"])
@@ -145,6 +243,11 @@ def run(config, episode, model, start_at, player, revision):
                f"the deadman or `ros2 service call {cfg['engage']} std_srvs/srv/SetBool \"{{data: true}}\"`.")
 
     def setup(node):
+        if cfg.get("arm") == "both":
+            from inference.bimanual_runtime import BimanualRuntime
+
+            BimanualRuntime(node, cfg, merge=settings["merge"])
+            return
         on_start = start_player(node, player, first) if player else None
         Runtime(node, cfg, merge=settings["merge"], start=start, on_start=on_start)
 

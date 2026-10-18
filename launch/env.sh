@@ -5,5 +5,5 @@ set +u
 source /opt/ros/kilted/setup.bash
 source "${BAXTER_WS:-$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../bringbackbaxter/ros2_ws")}/install/setup.bash"
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_zenoh_cpp}"
-read -r ENGAGE HOME_TOPIC < <(python3 -c "import yaml,sys; c = yaml.safe_load(open(sys.argv[1]))['inference']; print(c['engage'], c['home'])" \
+read -r ENGAGE HOME_TOPIC HOME_TOPIC_OTHER < <(python3 -c "import yaml,sys; c = yaml.safe_load(open(sys.argv[1]))['inference']; homes = list(dict.fromkeys(a['home'] for a in c['arms'].values())) if c.get('arm') == 'both' else [c['home']]; print(c['engage'], *homes)" \
     "${CONFIG:-$(dirname "${BASH_SOURCE[0]}")/../configs/baxter.yaml}")
