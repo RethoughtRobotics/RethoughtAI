@@ -14,8 +14,6 @@ dataset ──sam3_masks.py──▶ person masks ──video_remove.py (MiniMax
 | `sam3_masks.py` | SAM3 "person" masks per frame, saved as lossless FFV1 mask videos. |
 | `video_remove.py` | Video inpainting in overlapping 81-frame clips at native resolution; output pasted back only inside a feathered mask, so the robot and objects stay pixel-exact. |
 | `sam3_inpaint_dataset.py` | Original single-pass method: SAM3 masks + Telea inpainting. Fast, but leaves pale smears over large regions such as a torso. |
-| private HPC jobs | HPC jobs for the above; `the private HPC jobs` also pushes (private, tag `v3.0`) and decodes every episode. |
-| `the private HPC jobs` | Watches the Hub for new bimanual datasets and launches SAM3 on them, then relabels to a 640 ms lead and trains DiT. |
 | `../relabel_lead.py` | Rebuilds measured-TCP actions for another lead (e.g. 16 steps = 640 ms). |
 
 ## Methods
@@ -35,9 +33,9 @@ SAM3 needs a separate venv with `transformers>=5`.
 # 1. masks (GPU-bound: ~8 fps per A100 worker; spread workers over GPUs)
 python sam3_masks.py --source DATASET --out MASKS --camera observation.images.third_eye --workers 4
 
-# 2. removal + push
-METHOD=minimax SRC=DATASET MASKS=MASKS OUT=datasets/NAME_inpainted_minimax \
-    sbatch --export=ALL the private HPC jobs
+# 2. removal
+python video_remove.py --method minimax --source DATASET --masks MASKS \
+    --out datasets/NAME_inpainted_minimax --camera observation.images.third_eye
 ```
 
 Masks are unioned over ±2 frames and dilated by 6 px before inpainting, because SAM3 segments each frame
@@ -50,3 +48,6 @@ them as fast as the originals.
   sheet before training on a new dataset.
 - Only the third-eye camera is inpainted by default; wrist cameras may also show the operator's hand.
 - `evaluate.py` and `mask_dataset.py` are the earlier DeepLab / Mask R-CNN baselines for sampled frames.
+
+Batch jobs that run these tools on a cluster are kept out of this repository, in a private `hpc/`
+checkout that `.gitignore` excludes.

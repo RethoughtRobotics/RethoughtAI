@@ -57,3 +57,6 @@ __pycache__/
 
 # Downloaded checkpoints (models/<repo>/<step>/)
 models/
+
+# Private HPC checkout (cluster job scripts, paths, allocations). Never commit it here.
+hpc/
