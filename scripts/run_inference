@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 # Run a downloaded checkpoint (models/<name>_*/step-<N>/) in tmux: the policy above, a shell below
-# with ./start typed. ./start connects the policy to the arm, ./stop holds the arm where it is,
-# ./home sends it to the untuck pose (as the controller's B button).
+# with scripts/start typed. scripts/start connects the policy to the arm, scripts/stop holds the arm where it is,
+# scripts/home sends it to the untuck pose (as the controller's B button).
 # On the real robot the policy watches its cameras; with no cameras up (the sim), a shadow rollout
 # of a recorded episode (4 unless --episode).
-#   ./run_inference --act 100000
-#   ./run_inference --smolvla_CupToContainer 30000 --episode 24
-#   ./run_inference --smolvla_CupToContainer_wrist   newest checkpoint (wrist camera only)
-#   ./run_inference --multitaskdit                   MultiTask DiT (BlueCupToContainer)
-#   ./run_inference --groot                          GR00T N1.7 3B: needs a GPU with ~10 GB (--device: torch device)
-#   ./run_inference --vita_BlueCupRedContainer_kin_pose 70000
-#   ./run_inference --vita_BlueCupRedContainer_kin_lead640ms 80000
-#   ./run_inference --vita_SweepTrash_Kin 50000      automatically uses baxter_bimanual.yaml
-#   ./run_inference --multi_task_dit_SweepTrash_Kin-Full_inpainted_minimax 30000   any *SweepTrash*: bimanual; full name if ambiguous
-#   ./run_inference --multi_task_dit_kin_pose_combo_30k_r5h100 30000   kinesthetic cup MultiTask DiT
+#   scripts/run_inference --act 100000
+#   scripts/run_inference --smolvla_CupToContainer 30000 --episode 24
+#   scripts/run_inference --smolvla_CupToContainer_wrist   newest checkpoint (wrist camera only)
+#   scripts/run_inference --multitaskdit                   MultiTask DiT (BlueCupToContainer)
+#   scripts/run_inference --groot                          GR00T N1.7 3B: needs a GPU with ~10 GB (--device: torch device)
+#   scripts/run_inference --vita_BlueCupRedContainer_kin_pose 70000
+#   scripts/run_inference --vita_BlueCupRedContainer_kin_lead640ms 80000
+#   scripts/run_inference --vita_SweepTrash_Kin 50000      automatically uses baxter_bimanual.yaml
+#   scripts/run_inference --multi_task_dit_SweepTrash_Kin-Full_inpainted_minimax 30000   any *SweepTrash*: bimanual; full name if ambiguous
+#   scripts/run_inference --multi_task_dit_kin_pose_combo_30k_r5h100 30000   kinesthetic cup MultiTask DiT
 # Bring teleop up first: --left --policy for cups; --both --policy --no-gripper for SweepTrash.
 set -eo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 NAME="" STEP="" EPISODE="" CONFIG=configs/baxter.yaml DEVICE=cuda RESOLVE="" LIST="" CONFIG_GIVEN=""
 while (( $# )); do
@@ -36,7 +36,7 @@ if [[ -n "$LIST" ]]; then
     find models -mindepth 3 -maxdepth 3 -name config.json -printf '%h\n' | sort -V
     exit 0
 fi
-[[ -n "$NAME" ]] || { echo "Name a model: ./run_inference --act 100000 (models: $(ls models | tr '\n' ' '))" >&2; exit 2; }
+[[ -n "$NAME" ]] || { echo "Name a model: scripts/run_inference --act 100000 (models: $(ls models | tr '\n' ' '))" >&2; exit 2; }
 
 # models/<name> exactly, else models/<name>_* (those with step-<N>, if given); then its step-<N>
 # (newest without a step)
@@ -132,7 +132,7 @@ tmux new-session -d -s "$SESSION" -c "$PWD" -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0
 tmux split-window -v -l 8 -t "$SESSION" -c "$PWD" -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" -e CONFIG="$CONFIG"
 for _ in $(seq 50); do [[ -n "$(tmux capture-pane -p -t "$SESSION":0.1 | tr -d "[:space:]")" ]] && break; sleep 0.1; done
 # typed at the prompt, not entered; a non-default domain spelled out (shell rc files may unset it)
-tmux send-keys -t "$SESSION":0.1 "${ROS_DOMAIN_ID:+ROS_DOMAIN_ID=$ROS_DOMAIN_ID }./start"
+tmux send-keys -t "$SESSION":0.1 "${ROS_DOMAIN_ID:+ROS_DOMAIN_ID=$ROS_DOMAIN_ID }scripts/start"
 if [[ -t 1 ]]; then
     [[ -n "$TMUX" ]] && tmux switch-client -t "$SESSION" || tmux attach -t "$SESSION"
 else

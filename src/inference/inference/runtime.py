@@ -225,7 +225,7 @@ class Runtime:
 
     def _on_home(self, msg):
         """B: the teleop homes the arm. Release once, so nothing carries over: the policy server
-        resets, and re-engaging (./start still on, or the clutch held) starts from fresh chunks."""
+        resets, and re-engaging (scripts/start still on, or the clutch held) starts from fresh chunks."""
         self.chunks, self.segment, self.entry, self.approach = [], None, None, None
         self.trigger = 0.0  # open: the teleop opens it to home, and follows this trigger after
         self.gripper_closed = False
@@ -235,7 +235,8 @@ class Runtime:
             self._released(self.tcp is not None)
         if self.settled - getattr(self, "_home_logged", -np.inf) > 1.0:  # B repeats while held
             self._home_logged = self.settled
-            self._log("B: cleared, gripper open; resumes fresh after homing while ./start is on or the clutch is held")
+            self._log("B: cleared, gripper open; resumes fresh after homing while scripts/start is on "
+                      "or the clutch is held")
 
     def _on_chunk(self, msg):
         t0 = msg.joint_trajectory.header.stamp

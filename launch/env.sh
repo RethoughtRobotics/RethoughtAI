@@ -1,4 +1,4 @@
-# Sourced by run_inference, start, stop, home: ROS, the Baxter messages, the robot's middleware,
+# Sourced by scripts/run_inference, start, stop and home: ROS, the Baxter messages, the robot's middleware,
 # ENGAGE, the runtime's engage service, and HOME_TOPIC, the teleop's home button the runtime also
 # listens to (config: $CONFIG, default configs/baxter.yaml).
 set +u

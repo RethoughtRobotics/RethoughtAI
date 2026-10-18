@@ -5,8 +5,9 @@ import subprocess
 
 
 def launcher(tmp_path, *names):
-    script = tmp_path / "run_inference"
-    shutil.copyfile(Path(__file__).parents[1] / "run_inference", script)
+    script = tmp_path / "scripts" / "run_inference"
+    script.parent.mkdir()
+    shutil.copyfile(Path(__file__).parents[1] / "scripts" / "run_inference", script)
     for name in names:
         checkpoint = tmp_path / "models" / name
         checkpoint.mkdir(parents=True)
