@@ -40,6 +40,38 @@ topics:
     - /robot/limb/right/endpoint_state
     - /robot/limb/left/collision_detection_state
     - /robot/limb/right/collision_detection_state
+    # Kinesthetic: the cuff squeezed (arm guided by hand, zero-g) and its gripper buttons (dash
+    # closes, circle opens: the teleop's cuff control; their commands are on .../gripper/command).
+    - /robot/digital_io/left_lower_cuff/state
+    - /robot/digital_io/right_lower_cuff/state
+    - /robot/digital_io/left_upper_button/state
+    - /robot/digital_io/left_lower_button/state
+    - /robot/digital_io/right_upper_button/state
+    - /robot/digital_io/right_lower_button/state
+    # Mode/safety overrides: distinguish cuff presses from whether guidance was allowed.
+    # These are command events, not latched proof of the controller's current safety state.
+    - /robot/limb/left/suppress_cuff_interaction
+    - /robot/limb/right/suppress_cuff_interaction
+    - /robot/limb/left/suppress_collision_avoidance
+    - /robot/limb/right/suppress_collision_avoidance
+    - /robot/limb/left/suppress_contact_safety
+    - /robot/limb/right/suppress_contact_safety
+    - /robot/limb/left/suppress_hand_overwrench_safety
+    - /robot/limb/right/suppress_hand_overwrench_safety
+    - /robot/limb/left/suppress_gravity_compensation
+    - /robot/limb/right/suppress_gravity_compensation
+    - /robot/limb/left/set_speed_ratio
+    - /robot/limb/right/set_speed_ratio
+    # Teaching/session events and navigator wheels/buttons.
+    - /robot/navigators/left_navigator/state
+    - /robot/navigators/right_navigator/state
+    - /robot/digital_io/left_button_show/state
+    - /robot/digital_io/left_button_ok/state
+    - /robot/digital_io/left_button_back/state
+    # Explain assembly-state errors and identify the grippers/tools used in a demo.
+    - /diagnostics
+    - /robot/end_effector/left_gripper/properties
+    - /robot/end_effector/right_gripper/properties
     # Hand sensors: IMU, IR range to what is below the gripper.
     - /robot/accelerometer/left_accelerometer/state
     - /robot/accelerometer/right_accelerometer/state
@@ -96,6 +128,10 @@ trigger:
 
 recording:
   fps: 30
+  # Raw camera names above remain the live inference/viz inputs. The recorder publishes
+  # and bags JPEG copies on <topic>/compressed; use raw here for lossless source images.
+  image_transport: compressed
+  jpeg_quality: 90
 
 # inference: `serve` publishes a policy's chunks; `run` executes them (or a replay) through the
 # arm's teleop like its VR controller (bringbackbaxter: run_teleop.sh --left --policy).

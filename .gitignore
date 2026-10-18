@@ -51,7 +51,7 @@ qtcreator-*
 CATKIN_IGNORE
 
 # RethoughtAI: recorded bags and generated datasets (tens of GB), Python caches
-recorder/data/
+recorder/data
 datasets/
 __pycache__/
 

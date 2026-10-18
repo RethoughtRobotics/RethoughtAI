@@ -45,6 +45,22 @@ Configs live in `configs/`. Pass by name (`baxter.yaml`) or full path.
 | `trigger.success` | Topic or key to save episode |
 | `trigger.discard` | Topic or key to discard episode |
 | `recording.fps` | Target frame rate |
+| `recording.image_transport` | `raw` (generic default) or `compressed` (Baxter default): record JPEG copies on `<camera topic>/compressed` |
+| `recording.jpeg_quality` | JPEG quality, 1–100 (default 90); only used with compressed recording |
+
+The configured `topics.images` names remain the **raw live camera topics** used by visualization
+and inference. With compressed recording, a session-owned ROS node publishes JPEG copies and
+only those image copies are bagged. Original image headers are preserved. The exporter accepts
+both old raw bags and new compressed bags, resolving the `/compressed` suffix automatically.
+Existing bags and their saved configs are never rewritten. Set `recording.image_transport: raw`
+for lossless raw recording. JPEG is for colour/mono8 cameras, not depth. If a JPEG publisher is
+already running (for example a rollout recorder), stop it before starting this recorder, to avoid
+two publishers generating duplicate frames on the same `/compressed` topic.
+
+The additional Baxter cuff/safety overrides are **recorded commands only**: the recorder never
+publishes robot motion, speed, or safety settings. Diagnostics and navigator events provide context
+for hand-guided demos. Pure kinesthetic and bimanual demos still require a suitable action-label
+exporter; compressed-image support does not add that label mode.
 
 ## Output Structure
 
@@ -63,7 +79,9 @@ recorder/data/
 
 **keyboard** -- press keys in the terminal to control recording.
 
-**digital_io** -- Baxter cuff buttons drive recording. The left inner cuff light mirrors recording state (on = recording).
+**digital_io** -- Configured Baxter navigator buttons drive recording (left show/OK/back by default).
+The cuff squeeze enables hand guidance, independently of recording. The left inner cuff light
+mirrors recording state (on = recording).
 
 ## Session Controls
 
