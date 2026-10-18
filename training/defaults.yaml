@@ -5,7 +5,7 @@
 lerobot_dir: ~/rethought-lerobot
 # Runs go to <output_root>/<run_name>/, logs to <output_root>/logs/<run_name>.log,
 # queued pipelines to <output_root>/pipeline_<date>_<policies>/.
-output_root: /data/users/user/rethought-lerobot-outputs
+output_root: ~/rethought-lerobot-outputs
 
 dataset: blue_cup_to_container          # datasets/<name>.yaml, unless the policy config picks one
 
@@ -16,7 +16,7 @@ private: true
 
 # W&B: one project per policy, <project_prefix><wandb_name or name>.
 wandb:
-  entity: null
+  entity: null                          # null: the logged-in W&B default entity
   project_prefix: rethoughtai-
 watchdog_wandb_project: rethoughtai-watchdog    # pipeline alerts (crash, OOM, stall, NaN) go here
 

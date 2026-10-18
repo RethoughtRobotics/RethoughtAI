@@ -66,12 +66,12 @@ class Pipeline:
         wb = self.cfg.get("wandb_alert")
         if wb:
             code = (
-                "import wandb,sys; r=wandb.init(project=sys.argv[1], entity=sys.argv[2], job_type='watchdog', "
+                "import wandb,sys; r=wandb.init(project=sys.argv[1], entity=sys.argv[2] or None, job_type='watchdog', "
                 "id='pipeline-alerts', name='pipeline-alerts', resume='allow', settings=wandb.Settings(silent=True)); "
                 "wandb.alert(title=sys.argv[3], text=sys.argv[4], level=getattr(wandb.AlertLevel, sys.argv[5])); r.finish()"
             )
             try:
-                subprocess.run([sys.executable, "-c", code, wb["project"], wb["entity"], title, text, level],
+                subprocess.run([sys.executable, "-c", code, wb["project"], wb["entity"] or "", title, text, level],
                                timeout=120, capture_output=True)
             except Exception as e:  # alerting must never take the supervisor down
                 self.log(f"W&B alert failed: {e}")
