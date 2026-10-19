@@ -122,7 +122,7 @@ arm. `scripts/stop` holds the arm where it is. `scripts/home` sends it to the un
 as the controller's B button (with `scripts/start` still on, the policy resumes fresh from there).
 
 ```bash
-# bringbackbaxter: ./run_teleop.sh --left --policy (robot) or ./run_sim_teleop.sh --left --policy
+# bringbackbaxter: scripts/run_teleop.sh --left --policy (robot) or scripts/run_sim_teleop.sh --left --policy
 scripts/run_inference --act 100000                  # real robot: its cameras; sim: shadow of episode 4
 scripts/run_inference --smolvla_CupToContainer 30000 --episode 24   # sim: shadow of episode 24
 scripts/run_inference --smolvla_CupToContainer_wrist  # newest checkpoint, wrist camera only
