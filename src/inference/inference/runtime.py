@@ -1,6 +1,6 @@
 """Policy runtime: drives a robot's teleop the way its VR controller does, from action chunks.
 
-The teleop is pointed at this node instead of the controller (bringbackbaxter: run_teleop.sh
+The teleop is pointed at this node instead of the controller (BaxterSDK: scripts/run_teleop.sh
 --policy), so policy actions go through the same servo, IK, gripper filter and home button as a
 human's. It publishes what libsurvive_ros2 publishes for a hand:
   target   PoseStamped in the base frame; unchanged while released, which the teleop reads as a

@@ -12,7 +12,7 @@ topics:
     - topic: /robot/joint_states
       key: observation.state
   extra:
-    # Teleop (bringbackbaxter): measured TCP (state, delta anchor), the goal its servo chases
+    # Teleop (BaxterSDK): measured TCP (state, delta anchor), the goal its servo chases
     # (action labels; only while clutched), and its settings incl. the measured tcp_offset.
     - /teleop/left/tcp
     - /teleop/left/goal
@@ -162,7 +162,7 @@ recording:
   jpeg_quality: 90
 
 # inference: `serve` publishes a policy's chunks; `run` executes them (or a replay) through the
-# arm's teleop like its VR controller (bringbackbaxter: run_teleop.sh --left --policy).
+# arm's teleop like its VR controller (BaxterSDK: scripts/run_teleop.sh --left --policy).
 inference:
   arm: left
   fps: 25                  # policy steps per second, the dataset rate
