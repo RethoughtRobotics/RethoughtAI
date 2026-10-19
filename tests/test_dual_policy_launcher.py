@@ -92,7 +92,7 @@ def test_single_arm_and_recorder_selection(tmp_path, arm, form, policy):
     else:
         assert '--vr-topic' not in arguments
         assert '--vr-trigger-topic' not in arguments
-        assert option(arguments, '--vr-config') == 'vr_axes_base.yaml'
+        assert option(arguments, '--vr-config') == 'vr_axes_raw_id.yaml'
     other = 'right' if arm == 'left' else 'left'
     recorder = result.stdout.split('===RECORDER===', 1)[1]
     assert f'--exclude {other}' in recorder
@@ -104,7 +104,7 @@ def test_dual_vr_is_unchanged(tmp_path, selection):
     commands = teleop_arguments(result)
     assert [option(arguments, '--arm') for arguments in commands] == ['left', 'right']
     for arguments in commands:
-        assert option(arguments, '--vr-config') == 'vr_axes_base.yaml'
+        assert option(arguments, '--vr-config') == 'vr_axes_raw_id.yaml'
         assert '--vr-topic' not in arguments
         assert '--vr-trigger-topic' not in arguments
         assert '--no-gripper' in arguments
