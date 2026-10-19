@@ -19,7 +19,7 @@ def render_commands(tmp_path, *args):
     assert "setsid" not in prefix and "tmux" not in prefix.split("set -e", 1)[1]
     script = tmp_path / "bringbackbaxter" / "run_teleop.sh"
     script.parent.mkdir()
-    (tmp_path / "RethoughtAI").mkdir()
+    (tmp_path / "rethoughtai").mkdir()
     script.write_text(prefix + """
 for arm in "${ARM_LIST[@]}"; do
     echo '===TELEOP==='
