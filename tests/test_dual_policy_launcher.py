@@ -42,7 +42,7 @@ def teleop_arguments(result):
     assert result.returncode == 0, result.stderr
     teleops, _ = result.stdout.split('===RECORDER===', 1)
     return [
-        shlex.split(command.split('cartesian_delta_teleop ', 1)[1].split(';', 1)[0])
+        shlex.split(command.split('baxter_teleop.teleop ', 1)[1].split(';', 1)[0])
         for command in teleops.split('===TELEOP===')[1:]
     ]
 
