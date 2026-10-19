@@ -36,7 +36,7 @@ if [[ -n "$LIST" ]]; then
     find models -mindepth 3 -maxdepth 3 -name config.json -printf '%h\n' | sort -V
     exit 0
 fi
-[[ -n "$NAME" ]] || { echo "Name a model: scripts/run_inference --act 100000 (models: $(ls models | tr '\n' ' '))" >&2; exit 2; }
+[[ -n "$NAME" ]] || { echo "Name a model: scripts/run_inference --act 100000 (models: $(find models -mindepth 1 -maxdepth 1 -printf '%f ' 2>/dev/null))" >&2; exit 2; }
 
 # models/<name> exactly, else models/<name>_* (those with step-<N>, if given); then its step-<N>
 # (newest without a step)
@@ -91,7 +91,7 @@ SESSION=rai_inference
 # One run at a time: two runtimes would fight over the arm.
 old_runs() {  # pids of a previous run, never this script or the shells that started it
     local mine=" " p=$$
-    while (( p > 1 )); do mine+="$p "; p=$(awk '/^PPid/ {print $2}' /proc/$p/status); done
+    while (( p > 1 )); do mine+="$p "; p=$(awk '/^PPid/ {print $2}' /proc/"$p"/status); done
     for p in $(pgrep -f "policy.launch.py|inference serve|inference run|ros2 bag play"); do
         [[ "$mine" == *" $p "* ]] || echo "$p"
     done
@@ -122,9 +122,11 @@ fi
 if [[ -n "$(old_runs)" ]]; then
     echo "Stopping the previous run..."
     timeout 5 ros2 service call "$ENGAGE" std_srvs/srv/SetBool "{data: false}" >/dev/null 2>&1 || true
-    kill -INT $(old_runs) 2>/dev/null || true
+    mapfile -t runs < <(old_runs)
+    kill -INT "${runs[@]}" 2>/dev/null || true
     for _ in $(seq 20); do [[ -z "$(old_runs)" ]] && break; sleep 0.5; done
-    kill -TERM $(old_runs) 2>/dev/null || true
+    mapfile -t runs < <(old_runs)
+    if (( ${#runs[@]} )); then kill -TERM "${runs[@]}" 2>/dev/null || true; fi
 fi
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 tmux new-session -d -s "$SESSION" -c "$PWD" -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" -e CONFIG="$CONFIG" \
@@ -134,7 +136,7 @@ for _ in $(seq 50); do [[ -n "$(tmux capture-pane -p -t "$SESSION":0.1 | tr -d "
 # typed at the prompt, not entered; a non-default domain spelled out (shell rc files may unset it)
 tmux send-keys -t "$SESSION":0.1 "${ROS_DOMAIN_ID:+ROS_DOMAIN_ID=$ROS_DOMAIN_ID }scripts/start"
 if [[ -t 1 ]]; then
-    [[ -n "$TMUX" ]] && tmux switch-client -t "$SESSION" || tmux attach -t "$SESSION"
+    if [[ -n "$TMUX" ]]; then tmux switch-client -t "$SESSION"; else tmux attach -t "$SESSION"; fi
 else
     echo "tmux session $SESSION started: tmux attach -t $SESSION"
 fi

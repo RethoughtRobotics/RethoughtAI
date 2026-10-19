@@ -20,7 +20,7 @@ from adapter.lerobot_export import JOINTS
 
 OCCLUSION_GRID = (6, 8)  # cells per camera (rows, columns)
 BATCH = 8  # frames per GPU call (halved while the GPU runs out of memory)
-TARGETS = ("position", "rotation", "gripper")  # what occlusion measures the chunk's change in
+TARGETS = ('position', 'rotation', 'gripper')  # what occlusion measures the chunk's change in
 
 
 @dataclass
@@ -41,7 +41,7 @@ class Maps:
     labels: dict = field(default_factory=dict)  # dim -> a name per index, where indices aren't enough
     means: list[str] | None = None  # dims that may be averaged (default: all but the tokens)
 
-    def averaged(self, dims: list[str]) -> "Maps":
+    def averaged(self, dims: list[str]) -> 'Maps':
         """These scores with ``dims`` averaged out (those that may be: see ``means``)."""
         means = self.dims[:-1] if self.means is None else self.means
         drop = [d for d in dims if d in means and d in self.dims]
@@ -49,17 +49,29 @@ class Maps:
             return self
         scores = self.scores.mean(axis=tuple(self.dims.index(d) for d in drop))
         keep = [d for d in self.dims if d not in drop]
-        return Maps(self.method, keep, scores, self.segments, {d: v for d, v in self.labels.items() if d in keep},
-                    [d for d in means if d in keep])
+        return Maps(
+            self.method,
+            keep,
+            scores,
+            self.segments,
+            {d: v for d, v in self.labels.items() if d in keep},
+            [d for d in means if d in keep],
+        )
 
     def meta(self) -> dict:
         means = self.dims[:-1] if self.means is None else self.means
-        return {"method": self.method, "dims": self.dims, "shape": list(self.scores.shape),
-                "segments": [asdict(s) for s in self.segments], "labels": self.labels, "means": means}
+        return {
+            'method': self.method,
+            'dims': self.dims,
+            'shape': list(self.scores.shape),
+            'segments': [asdict(s) for s in self.segments],
+            'labels': self.labels,
+            'means': means,
+        }
 
 
 def joint_names(arm: str) -> list[str]:
-    return [f"{arm}_{j}" for j in JOINTS]
+    return [f'{arm}_{j}' for j in JOINTS]
 
 
 def serve(policy, cfg: dict, images: list[dict], requests, replies, batch: int = BATCH) -> None:
@@ -73,30 +85,42 @@ def serve(policy, cfg: dict, images: list[dict], requests, replies, batch: int =
     """
     import json
 
-    cameras = {c["key"]: c["topic"] for c in images if c["key"] in policy.features}
-    names = joint_names(cfg["arm"])
-    replies.write(json.dumps({"ready": True, "type": policy.type, "cameras": cameras, "tcp": cfg["tcp"],
-                              "joint_states": cfg["joint_states"], "joints": names, "gripper": cfg["gripper"],
-                              "batch": batch}) + "\n")
+    cameras = {c['key']: c['topic'] for c in images if c['key'] in policy.features}
+    names = joint_names(cfg['arm'])
+    replies.write(
+        json.dumps({
+            'ready': True,
+            'type': policy.type,
+            'cameras': cameras,
+            'tcp': cfg['tcp'],
+            'joint_states': cfg['joint_states'],
+            'joints': names,
+            'gripper': cfg['gripper'],
+            'batch': batch,
+        })
+        + '\n'
+    )
     replies.flush()
     for line in requests:
         try:
             request = json.loads(line)
-            paths = request["inputs"] if isinstance(request["inputs"], list) else [request["inputs"]]
+            paths = request['inputs'] if isinstance(request['inputs'], list) else [request['inputs']]
             frames = []
             for path in paths:
                 raw = np.load(path)
-                tcp = (raw["tcp_p"], raw["tcp_q"])
+                tcp = (raw['tcp_p'], raw['tcp_q'])
                 observation = {k: raw[k] for k in cameras}
                 # as the policy node: gripper 0 open .. 1 closed
-                observation["observation.state"] = policy.state(*tcp, 1.0 - float(raw["gripper"]) / 100.0, raw["joints"])
+                observation['observation.state'] = policy.state(
+                    *tcp, 1.0 - float(raw['gripper']) / 100.0, raw['joints']
+                )
                 frames.append((observation, tcp))
-            maps = [m.averaged(request.get("mean", [])) for m in capture_many(policy, frames, batch)]
-            np.save(request["out"], np.stack([m.scores for m in maps]))
-            reply = {"meta": maps[0].meta()}
+            maps = [m.averaged(request.get('mean', [])) for m in capture_many(policy, frames, batch)]
+            np.save(request['out'], np.stack([m.scores for m in maps]))
+            reply = {'meta': maps[0].meta()}
         except Exception as e:  # one bad frame must not end the session
-            reply = {"error": f"{type(e).__name__}: {e}"}
-        replies.write(json.dumps(reply) + "\n")
+            reply = {'error': f'{type(e).__name__}: {e}'}
+        replies.write(json.dumps(reply) + '\n')
         replies.flush()
 
 
@@ -107,11 +131,15 @@ def capture(policy, observation: dict, tcp) -> Maps:
 
 def capture_many(policy, frames: list[tuple[dict, tuple]], batch: int = BATCH) -> list[Maps]:
     """Maps for (observation, TCP) pairs; SmolVLA runs `batch` frames per GPU call."""
-    if policy.type == "smolvla":
+    if policy.type == 'smolvla':
         out = []
         for i in range(0, len(frames), batch):
-            out += _halving(lambda n, part=frames[i:i + batch]: [
-                m for j in range(0, len(part), n) for m in smolvla_attention(policy, part[j:j + n])], batch)
+            out += _halving(
+                lambda n, part=frames[i : i + batch]: [
+                    m for j in range(0, len(part), n) for m in smolvla_attention(policy, part[j : j + n])
+                ],
+                batch,
+            )
         return out
     return [occlusion(policy, obs, tcp, batch=4 * batch) for obs, tcp in frames]
 
@@ -137,9 +165,19 @@ def _prepare(policy, observations: list[dict]) -> dict:
 
     from inference.policies import letterbox
 
-    parts = [policy.pre(prepare_observation_for_inference(
-        {k: letterbox(o[k], *policy.image_shapes[k]) if k in policy.image_shapes else o[k] for k in policy.features},
-        policy.device, policy.task)) for o in observations]
+    parts = [
+        policy.pre(
+            prepare_observation_for_inference(
+                {
+                    k: letterbox(o[k], *policy.image_shapes[k]) if k in policy.image_shapes else o[k]
+                    for k in policy.features
+                },
+                policy.device,
+                policy.task,
+            )
+        )
+        for o in observations
+    ]
 
     def merge(values):
         if torch.is_tensor(values[0]):
@@ -166,8 +204,8 @@ def _letterbox(h, w, height, width):
 def _to_frame(box_in_input, frame_hw, input_hw):
     """A (top, left, bottom, right) box in model-input pixels as fractions of the original frame."""
     top, left, nh, nw = _letterbox(*frame_hw, *input_hw)
-    t, l, b, r = box_in_input
-    return ((t - top) / nh, (l - left) / nw, (b - top) / nh, (r - left) / nw)
+    y0, x0, y1, x1 = box_in_input
+    return ((y0 - top) / nh, (x0 - left) / nw, (y1 - top) / nh, (x1 - left) / nw)
 
 
 # -- SmolVLA: the action expert's attention to the image tokens ---------------------------------
@@ -203,10 +241,13 @@ def smolvla_attention(policy, frames: list[tuple[dict, tuple]]) -> list[Maps]:
     def size(name):
         def hook(module, args, out):  # tokens a module gives (returns None: the output stays)
             sizes.setdefault(name, out.shape[1])
+
         return hook
 
-    hooks = [vwe.vlm.model.connector.register_forward_hook(size("image")),
-             vwe.vlm.model.text_model.embed_tokens.register_forward_hook(size("language"))]
+    hooks = [
+        vwe.vlm.model.connector.register_forward_hook(size('image')),
+        vwe.vlm.model.text_model.embed_tokens.register_forward_hook(size('language')),
+    ]
     vwe.eager_attention_forward = recording
     try:
         with torch.inference_mode():
@@ -216,7 +257,7 @@ def smolvla_attention(policy, frames: list[tuple[dict, tuple]]) -> list[Maps]:
             policy.policy.reset()
             policy.policy.predict_action_chunk(batch, noise=noise.expand(len(frames), -1, -1).contiguous())
             cameras = [k for k in config.image_features if k in frames[0][0]]
-            per_image, lang = sizes["image"], sizes["language"]
+            per_image, lang = sizes['image'], sizes['language']
             prefix = per_image * len(cameras) + lang + 1  # images, language, state: first in every layer's keys
             stacked = torch.stack([p[..., :prefix] for p in probs]).cpu().numpy()  # (calls, B, heads, prefix)
     finally:
@@ -240,18 +281,26 @@ def smolvla_attention(policy, frames: list[tuple[dict, tuple]]) -> list[Maps]:
         rh, rw = int(H / ratio), int(W / ratio)
         pad_t, pad_l = canvas_h - rh, canvas_w - rw
         box = (-pad_t * ratio, -pad_l * ratio, rh * ratio, rw * ratio)  # the canvas in input pixels
-        segments.append(Segment(key.rsplit(".", 1)[-1], i * per_image, per_image, (side, side),
-                                _to_frame(box, (h, w), (H, W))))
-    segments += [Segment("language", len(cameras) * per_image, lang), Segment("state", prefix - 1, 1)]
-    labels = {"layer": [f"{i} {'cross' if _is_cross(vwe, i) else 'self'}" for i in range(layers)]}
-    return [Maps("attention", ["step", "layer", "head", "token"],
-                 stacked[:, b].reshape(steps, layers, -1, prefix).astype(np.float32), segments, labels)
-            for b in range(len(frames))]
+        segments.append(
+            Segment(key.rsplit('.', 1)[-1], i * per_image, per_image, (side, side), _to_frame(box, (h, w), (H, W)))
+        )
+    segments += [Segment('language', len(cameras) * per_image, lang), Segment('state', prefix - 1, 1)]
+    labels = {'layer': [f'{i} {"cross" if _is_cross(vwe, i) else "self"}' for i in range(layers)]}
+    return [
+        Maps(
+            'attention',
+            ['step', 'layer', 'head', 'token'],
+            stacked[:, b].reshape(steps, layers, -1, prefix).astype(np.float32),
+            segments,
+            labels,
+        )
+        for b in range(len(frames))
+    ]
 
 
 def _is_cross(vwe, layer: int) -> bool:
     """Expert layers alternate: cross-attention to the prefix, or self-attention over it and the actions."""
-    every = getattr(vwe, "self_attn_every_n_layers", 2) or 0
+    every = getattr(vwe, 'self_attn_every_n_layers', 2) or 0
     return bool(every) and layer % every != 0
 
 
@@ -259,36 +308,51 @@ def _is_cross(vwe, layer: int) -> bool:
 
 
 def occlusion(policy, observation, tcp, grid=OCCLUSION_GRID, batch: int = 32) -> Maps:
-    cameras = [k for k in policy.features if k.startswith("observation.images.") and k in observation]
+    cameras = [k for k in policy.features if k.startswith('observation.images.') and k in observation]
     rows, cols = grid
     cells, segments = [], []  # (camera, (top, bottom, left, right) in frame pixels, gray (3,) uint8)
     for i, key in enumerate(cameras):
         frame = observation[key]
         h, w = frame.shape[:2]
         fill = frame.reshape(-1, 3).mean(0).astype(frame.dtype)
-        cells += [(key, (r * h // rows, (r + 1) * h // rows, c * w // cols, (c + 1) * w // cols), fill)
-                  for r in range(rows) for c in range(cols)]
-        segments.append(Segment(key.rsplit(".", 1)[-1], i * rows * cols, rows * cols, grid, (0.0, 0.0, 1.0, 1.0)))
+        cells += [
+            (key, (r * h // rows, (r + 1) * h // rows, c * w // cols, (c + 1) * w // cols), fill)
+            for r in range(rows)
+            for c in range(cols)
+        ]
+        segments.append(Segment(key.rsplit('.', 1)[-1], i * rows * cols, rows * cols, grid, (0.0, 0.0, 1.0, 1.0)))
     if _on_gpu(policy, observation, cameras):
         chunks = _halving(lambda n: _occluded_on_gpu(policy, observation, cells, tcp, n), batch)
     else:
         variants = [observation]
-        for key, (t, b, l, r), fill in cells:
+        for key, (y0, y1, x0, x1), fill in cells:
             occluded = observation[key].copy()
-            occluded[t:b, l:r] = fill
+            occluded[y0:y1, x0:x1] = fill
             variants.append({**observation, key: occluded})
-        chunks = _halving(lambda n: [c for j in range(0, len(variants), n)
-                                     for c in _predict(policy, variants[j:j + n], tcp)], batch)
+        chunks = _halving(
+            lambda n: [c for j in range(0, len(variants), n) for c in _predict(policy, variants[j : j + n], tcp)], batch
+        )
     scores = [_change(chunks[0], c) for c in chunks[1:]]
-    return Maps("occlusion", ["target", "token"], np.asarray(scores, np.float32).T, segments,
-                {"target": ["position (mm)", "rotation (deg)", "gripper"]}, means=[])  # units differ
+    return Maps(
+        'occlusion',
+        ['target', 'token'],
+        np.asarray(scores, np.float32).T,
+        segments,
+        {'target': ['position (mm)', 'rotation (deg)', 'gripper']},
+        means=[],
+    )  # units differ
 
 
 def _on_gpu(policy, observation, cameras) -> bool:
     """Whether occluded variants can be made from the preprocessed frame: a batchable policy whose
     preprocessing keeps each camera's pixels in place (no letterbox)."""
-    return (hasattr(policy, "pre") and getattr(policy, "n_obs_steps", 1) == 1 and
-            all(tuple(policy.image_shapes.get(k, observation[k].shape[:2])) == observation[k].shape[:2] for k in cameras))
+    return (
+        hasattr(policy, 'pre')
+        and getattr(policy, 'n_obs_steps', 1) == 1
+        and all(
+            tuple(policy.image_shapes.get(k, observation[k].shape[:2])) == observation[k].shape[:2] for k in cameras
+        )
+    )
 
 
 def _occluded_on_gpu(policy, observation, cells, tcp, n: int) -> list[np.ndarray]:
@@ -306,11 +370,15 @@ def _occluded_on_gpu(policy, observation, cells, tcp, n: int) -> list[np.ndarray
                 grays[key] = _prepare(policy, [solid])[key][0, :, :1, :1]  # (C, 1, 1)
         out = _chunks(policy, base, tcp)
         for j in range(0, len(cells), n):
-            part = cells[j:j + n]
-            batch = {k: v.repeat(len(part), *[1] * (v.ndim - 1)) if torch.is_tensor(v) else
-                     (list(v) * len(part) if isinstance(v, (list, tuple)) else v) for k, v in base.items()}
-            for b, (key, (t, bottom, l, r), _) in enumerate(part):
-                batch[key][b, :, t:bottom, l:r] = grays[key]
+            part = cells[j : j + n]
+            batch = {
+                k: v.repeat(len(part), *[1] * (v.ndim - 1))
+                if torch.is_tensor(v)
+                else (list(v) * len(part) if isinstance(v, (list, tuple)) else v)
+                for k, v in base.items()
+            }
+            for b, (key, (y0, y1, x0, x1), _) in enumerate(part):
+                batch[key][b, :, y0:y1, x0:x1] = grays[key]
             out += _chunks(policy, batch, tcp)
     return out
 
@@ -319,7 +387,7 @@ def _chunks(policy, batch: dict, tcp) -> list[np.ndarray]:
     """Unnormalized, TCP-relative action chunks for a preprocessed batch."""
     policy.policy.reset()
     actions = policy.post(policy.policy.predict_action_chunk(batch)).float().cpu().numpy().astype(np.float64)
-    if getattr(policy, "absolute", False):
+    if getattr(policy, 'absolute', False):
         from scipy.spatial.transform import Rotation
 
         from adapter.labels import relative_actions
@@ -332,7 +400,7 @@ def _predict(policy, observations: list[dict], tcp) -> list[np.ndarray]:
     """Action chunks for observations at the same TCP: one GPU call where the policy allows it."""
     import torch
 
-    if not hasattr(policy, "pre") or getattr(policy, "n_obs_steps", 1) > 1:  # stand-ins; observation history
+    if not hasattr(policy, 'pre') or getattr(policy, 'n_obs_steps', 1) > 1:  # stand-ins; observation history
         out = []
         for obs in observations:
             torch.manual_seed(0)
@@ -348,6 +416,8 @@ def _predict(policy, observations: list[dict], tcp) -> list[np.ndarray]:
 def _change(base, other) -> list[float]:
     """Mean change over the chunk: position (mm), rotation (deg), gripper (trigger units)."""
     d = other - base
-    return [1000 * float(np.linalg.norm(d[:, :3], axis=1).mean()),
-            float(np.degrees(np.linalg.norm(d[:, 3:6], axis=1)).mean()),
-            float(np.abs(d[:, 6]).mean())]
+    return [
+        1000 * float(np.linalg.norm(d[:, :3], axis=1).mean()),
+        float(np.degrees(np.linalg.norm(d[:, 3:6], axis=1)).mean()),
+        float(np.abs(d[:, 6]).mean()),
+    ]

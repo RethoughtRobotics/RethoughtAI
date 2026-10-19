@@ -16,7 +16,9 @@ if [[ -z "$SUBS" || "$SUBS" == 0 ]]; then
     echo "Nothing listens on $HOME_TOPIC (ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}): is the teleop up?" >&2
     exit 1
 fi
-timeout 10 ros2 topic pub --once -w "$SUBS" "$HOME_TOPIC" std_msgs/msg/Empty "{}" >/dev/null \
-    && echo "Homing (${SUBS} listeners on ${HOME_TOPIC}). scripts/start to run the policy again." \
-    || { echo "Home request on $HOME_TOPIC was not delivered in 10 s" >&2; exit 1; }
+if timeout 10 ros2 topic pub --once -w "$SUBS" "$HOME_TOPIC" std_msgs/msg/Empty "{}" >/dev/null; then
+    echo "Homing (${SUBS} listeners on ${HOME_TOPIC}). scripts/start to run the policy again."
+else
+    echo "Home request on $HOME_TOPIC was not delivered in 10 s" >&2; exit 1
+fi
 done

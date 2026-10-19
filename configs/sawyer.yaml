@@ -1,3 +1,4 @@
+---
 robot: sawyer
 
 topics:
@@ -16,7 +17,7 @@ trigger:
   type: digital_io
   msg_type: intera_core_msgs/DigitalIOState
   state_field: state
-  record:  /robot/digital_io/right_lower_cuff/state
+  record: /robot/digital_io/right_lower_cuff/state
   success: /robot/digital_io/right_upper_button/state
   discard: /robot/digital_io/right_lower_button/state
 

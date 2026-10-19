@@ -1,3 +1,4 @@
+---
 # Multi-Task DiT (CLIP ViT-B/16 vision + diffusion transformer). Reproduces dit_bluecup (2026-10-12).
 name: multi_task_dit
 hub_name: multitaskdit
@@ -7,7 +8,7 @@ dataset: blue_cup_to_container
 steps: 30000
 batch_size: 96
 save_freq: 5000
-gpu_mem_mib: 43000               # batch 96 peaks around 39 GB
+gpu_mem_mib: 43000  # batch 96 peaks around 39 GB
 retry_batch_sizes: [64, 48]
 args:
   policy_type: multi_task_dit

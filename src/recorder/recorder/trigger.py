@@ -1,4 +1,5 @@
 """Trigger backends: keyboard or ROS2 digital I/O -> recording events."""
+
 import importlib
 import threading
 import time
@@ -14,11 +15,11 @@ class KeyboardTrigger:
         self._lock = threading.Lock()
         self._start_evt, self._stop_evt = start_evt, stop_evt
         self._actions = {
-            trig["record"]:  self._toggle,
-            trig["success"]: success_evt.set,
-            trig["discard"]: discard_evt.set,
+            trig['record']: self._toggle,
+            trig['success']: success_evt.set,
+            trig['discard']: discard_evt.set,
         }
-        click.echo(f"Keys -- record: [{trig['record']}]  save: [{trig['success']}]  discard: [{trig['discard']}]\n")
+        click.echo(f'Keys -- record: [{trig["record"]}]  save: [{trig["success"]}]  discard: [{trig["discard"]}]\n')
 
     def _toggle(self):
         """Flip recording state and fire start or stop event."""
@@ -33,11 +34,13 @@ class KeyboardTrigger:
 
     def start(self):
         """Spawn a daemon thread that dispatches keystrokes to action callbacks."""
+
         def _loop():
             while True:
                 ch = click.getchar()
                 if ch in self._actions:
                     self._actions[ch]()
+
         threading.Thread(target=_loop, daemon=True).start()
 
 
@@ -60,49 +63,55 @@ class RecorderTriggerNode:
         try:
             from rclpy.node import Node
         except ImportError as exc:
-            raise RuntimeError("ROS2 not found -- source your workspace first.") from exc
+            raise RuntimeError('ROS2 not found -- source your workspace first.') from exc
 
-        IOState     = _import_msg(trig["msg_type"])
-        state_field = trig.get("state_field", "state")
+        IOState = _import_msg(trig['msg_type'])
+        state_field = trig.get('state_field', 'state')
 
         self._start_evt, self._stop_evt = start_evt, stop_evt
         self._recording = False
         self._lock = threading.Lock()
 
-        self._node = Node("rai_recorder_trigger")
+        self._node = Node('rai_recorder_trigger')
 
         # Optional LED feedback -- only wired up if the config has a 'light' section.
-        light_cfg = trig.get("light")
+        light_cfg = trig.get('light')
         if light_cfg:
-            OutputCmd        = _import_msg(light_cfg["msg_type"])
-            self._light      = self._node.create_publisher(OutputCmd, light_cfg["topic"], 10)
-            self._light_name = light_cfg["name"]
-            self._OutputCmd  = OutputCmd
+            OutputCmd = _import_msg(light_cfg['msg_type'])
+            self._light = self._node.create_publisher(OutputCmd, light_cfg['topic'], 10)
+            self._light_name = light_cfg['name']
+            self._OutputCmd = OutputCmd
         else:
             self._light = self._light_name = self._OutputCmd = None
 
-        self._last_press = -float("inf")
+        self._last_press = -float('inf')
 
         def sub(topic, fn):
             self._node.create_subscription(IOState, topic, self._press(fn, state_field), 10)
-        sub(trig["record"],  self._toggle)
-        sub(trig["success"], success_evt.set)
-        sub(trig["discard"], discard_evt.set)
+
+        sub(trig['record'], self._toggle)
+        sub(trig['success'], success_evt.set)
+        sub(trig['discard'], discard_evt.set)
 
         # Optional stick gestures -- every topic (a std_msgs/String direction, e.g. libsurvive_ros2
         # /vive/{hand}/thumbstick) at the same direction for `hold` seconds fires its action once.
-        pad = trig.get("thumbstick")
+        pad = trig.get('thumbstick')
         if pad:
             from rclpy.qos import DurabilityPolicy, QoSProfile
             from std_msgs.msg import String
-            actions = {"start": lambda: self._set_recording(True), "stop": lambda: self._set_recording(False),
-                       "success": success_evt.set, "discard": discard_evt.set}
+
+            actions = {
+                'start': lambda: self._set_recording(True),
+                'stop': lambda: self._set_recording(False),
+                'success': success_evt.set,
+                'discard': discard_evt.set,
+            }
             self._pad_actions = {pad[k]: fn for k, fn in actions.items() if k in pad}
-            self._pad_hold = float(pad.get("hold", 2.0))
-            self._pad = {topic: ("", 0.0) for topic in pad["topics"]}  # topic -> (direction, since)
+            self._pad_hold = float(pad.get('hold', 2.0))
+            self._pad = {topic: ('', 0.0) for topic in pad['topics']}  # topic -> (direction, since)
             self._pad_fired = False
             qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
-            for topic in pad["topics"]:
+            for topic in pad['topics']:
                 self._node.create_subscription(String, topic, lambda msg, t=topic: self._on_pad(t, msg.data), qos)
             self._node.create_timer(0.05, self._check_pad)
 
@@ -114,16 +123,22 @@ class RecorderTriggerNode:
     def _press(self, fn, state_field):
         """Return a callback that fires fn on a debounced press: a 0 -> non-zero transition after the
         button was released for RELEASED s, and LOCKOUT s after the last press of any button."""
-        prev, released = [0], [-float("inf")]  # last state; when it last went 0
+        prev, released = [0], [-float('inf')]  # last state; when it last went 0
+
         def _cb(msg):
             val, now = getattr(msg, state_field), time.monotonic()
             if prev[0] != 0 and val == 0:
                 released[0] = now
-            elif prev[0] == 0 and val != 0 and now - released[0] >= self.RELEASED \
-                    and now - self._last_press >= self.LOCKOUT:
+            elif (
+                prev[0] == 0
+                and val != 0
+                and now - released[0] >= self.RELEASED
+                and now - self._last_press >= self.LOCKOUT
+            ):
                 self._last_press = now
                 fn()
             prev[0] = val
+
         return _cb
 
     def _set_light(self, on):
@@ -173,13 +188,14 @@ class RecorderTriggerNode:
 
 def _import_msg(type_str):
     """Import a ROS2 message class from a 'package/MsgName' string."""
-    pkg, name = type_str.split("/")
-    return getattr(importlib.import_module(f"{pkg}.msg"), name)
+    pkg, name = type_str.split('/')
+    return getattr(importlib.import_module(f'{pkg}.msg'), name)
 
 
 def _spin_node(node):
     """Spin a node until context shutdown, then release the executor."""
     from rclpy.executors import SingleThreadedExecutor
+
     ex = SingleThreadedExecutor()
     ex.add_node(node)
     try:

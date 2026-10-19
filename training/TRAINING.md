@@ -65,7 +65,7 @@ def tcp_relative(action, state):
     return np.column_stack([dp, dr, action[:, 7]]).astype(np.float32)
 ```
 
-3. **Keep the loss on padded steps.** Do not mask with `action_is_pad`. The repeated last frame is a
+1. **Keep the loss on padded steps.** Do not mask with `action_is_pad`. The repeated last frame is a
    real label meaning "hold still at the end", and leaving it in is what teaches the policy to stop.
 
 **Do not use LeRobot's `use_relative_actions` / `RelativeActionsProcessorStep`.** It computes
@@ -74,7 +74,7 @@ action 8-D instead of 7-D.
 
 ## 4. Observation preprocessing
 
-- **State → 17-D:** `[tcp.xyz (3), first two columns of R_tcp (6), gripper (1), joints (7)]`.
+- **State as 17-D:** `[tcp.xyz (3), first two columns of R_tcp (6), gripper (1), joints (7)]`.
   Use the 6-D rotation in place of the quaternion: `q` and `-q` describe the same rotation, and the
   export only keeps quaternion signs consistent within an episode, not across episodes.
 - **Images:** use native resolution, RGB, with ImageNet normalization (ACT default). Light

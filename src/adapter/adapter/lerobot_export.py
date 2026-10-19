@@ -25,20 +25,21 @@ from rosidl_runtime_py.utilities import get_message
 
 from adapter.labels import load_episode, load_measured
 
-JOINTS = ("s0", "s1", "e0", "e1", "w0", "w1", "w2")
+JOINTS = ('s0', 's1', 'e0', 'e1', 'w0', 'w1', 'w2')
 MAX_IMAGE_AGE = 0.15  # s: a frame whose image is older than this is reported (a recording stall)
 
 
 def image_rgb(msg):
-    if hasattr(msg, "format"):  # sensor_msgs/CompressedImage
+    if hasattr(msg, 'format'):  # sensor_msgs/CompressedImage
         import cv2
+
         image = cv2.imdecode(np.frombuffer(bytes(msg.data), np.uint8), cv2.IMREAD_COLOR)
         if image is None:
-            raise ValueError("Cannot decode compressed camera image")
+            raise ValueError('Cannot decode compressed camera image')
         return np.ascontiguousarray(image[..., ::-1])
-    channels = {"rgb8": 3, "bgr8": 3, "rgba8": 4, "bgra8": 4}[msg.encoding]
+    channels = {'rgb8': 3, 'bgr8': 3, 'rgba8': 4, 'bgra8': 4}[msg.encoding]
     a = np.frombuffer(bytes(msg.data), np.uint8).reshape(msg.height, msg.width, channels)[..., :3]
-    return np.ascontiguousarray(a[..., ::-1] if msg.encoding.startswith("bgr") else a)
+    return np.ascontiguousarray(a[..., ::-1] if msg.encoding.startswith('bgr') else a)
 
 
 def _continuous(q):
@@ -52,22 +53,28 @@ def _continuous(q):
 
 def _drop_leading(ep, n):
     """The episode without its first n steps."""
-    return replace(ep, **{f: getattr(ep, f)[n:] for f in ("tcp_p", "tcp_q", "target_p", "target_q", "trigger", "t")})
+    return replace(ep, **{f: getattr(ep, f)[n:] for f in ('tcp_p', 'tcp_q', 'target_p', 'target_q', 'trigger', 't')})
 
 
 def features(cameras, arms, image_shapes, gripper=True):
     """One arm: state tcp.*, gripper, joints; action goal.*, gripper. Several: each name prefixed
     with its arm (left.tcp.x ...), arms in order. Without `gripper`, no gripper in either."""
     arms = [arms] if isinstance(arms, str) else list(arms)
-    pose = ["x", "y", "z", "qx", "qy", "qz", "qw"]
-    prefix = (lambda arm: f"{arm}.") if len(arms) > 1 else (lambda arm: "")
-    f = {f"observation.images.{key}": {"dtype": "video", "shape": image_shapes[key],
-                                         "names": ["height", "width", "channels"]} for key in cameras.values()}
-    grip = ["gripper"] if gripper else []
-    state = [f"{prefix(a)}{n}" for a in arms for n in [f"tcp.{x}" for x in pose] + grip + [f"{a}_{j}" for j in JOINTS]]
-    action = [f"{prefix(a)}{n}" for a in arms for n in [f"goal.{x}" for x in pose] + grip]
-    f["observation.state"] = {"dtype": "float32", "shape": (len(state),), "names": state}
-    f["action"] = {"dtype": "float32", "shape": (len(action),), "names": action}
+    pose = ['x', 'y', 'z', 'qx', 'qy', 'qz', 'qw']
+    prefix = (lambda arm: f'{arm}.') if len(arms) > 1 else (lambda arm: '')
+    f = {
+        f'observation.images.{key}': {
+            'dtype': 'video',
+            'shape': image_shapes[key],
+            'names': ['height', 'width', 'channels'],
+        }
+        for key in cameras.values()
+    }
+    grip = ['gripper'] if gripper else []
+    state = [f'{prefix(a)}{n}' for a in arms for n in [f'tcp.{x}' for x in pose] + grip + [f'{a}_{j}' for j in JOINTS]]
+    action = [f'{prefix(a)}{n}' for a in arms for n in [f'goal.{x}' for x in pose] + grip]
+    f['observation.state'] = {'dtype': 'float32', 'shape': (len(state),), 'names': state}
+    f['action'] = {'dtype': 'float32', 'shape': (len(action),), 'names': action}
     return f
 
 
@@ -81,19 +88,19 @@ def read_frames(path, arms, cameras, t, gripper=True):
 def iter_frames(path, arms, cameras, t, gripper=True):
     """read_frames, one frame at a time: an episode's decoded images need not all fit in memory."""
     arms = [arms] if isinstance(arms, str) else list(arms)
-    joint_topic = "/robot/joint_states"
-    grippers = {f"/robot/end_effector/{arm}_gripper/state": arm for arm in arms} if gripper else {}
+    joint_topic = '/robot/joint_states'
+    grippers = {f'/robot/end_effector/{arm}_gripper/state': arm for arm in arms} if gripper else {}
     reader = rosbag2_py.SequentialReader()
-    reader.open(rosbag2_py.StorageOptions(uri=str(path), storage_id="mcap"), rosbag2_py.ConverterOptions("", ""))
+    reader.open(rosbag2_py.StorageOptions(uri=str(path), storage_id='mcap'), rosbag2_py.ConverterOptions('', ''))
     types = {x.name: x.type for x in reader.get_all_topics_and_types()}
     # Configured camera names remain raw for live inference/viz. Recorded JPEG copies use
     # <topic>/compressed; old raw bags and explicitly compressed configs remain supported.
-    cameras = {tp if tp in types else tp + "/compressed": key for tp, key in cameras.items()}
+    cameras = {tp if tp in types else tp + '/compressed': key for tp, key in cameras.items()}
     missing = set(cameras) - types.keys()
     if missing:
-        raise ValueError(f"{path}: missing camera topics: {sorted(missing)}")
+        raise ValueError(f'{path}: missing camera topics: {sorted(missing)}')
     reader.set_filter(rosbag2_py.StorageFilter(topics=[*cameras, joint_topic, *grippers]))
-    names = [f"{arm}_{j}" for arm in arms for j in JOINTS]
+    names = [f'{arm}_{j}' for arm in arms for j in JOINTS]
     latest = {}  # topic -> (time, value)
     k, started = 0, False
 
@@ -102,13 +109,17 @@ def iter_frames(path, arms, cameras, t, gripper=True):
         missing = [tp for tp in (*cameras, joint_topic, *grippers) if tp not in latest]
         if missing:
             if started:
-                raise ValueError(f"{path}: {missing} missing at frame {k}")
+                raise ValueError(f'{path}: {missing} missing at frame {k}')
             return None
         started = True
         age = max((t[k] - latest[tp][0]) / 1e9 for tp in cameras)
         grip = [latest[tp][1] for tp in grippers]
-        return ({cameras[tp]: latest[tp][1] for tp in cameras}, latest[joint_topic][1],
-                grip[0] if len(grip) == 1 else np.array(grip), age)  # gripper [] without grippers
+        return (
+            {cameras[tp]: latest[tp][1] for tp in cameras},
+            latest[joint_topic][1],
+            grip[0] if len(grip) == 1 else np.array(grip),
+            age,
+        )  # gripper [] without grippers
 
     while reader.has_next() and k < len(t):
         topic, raw, stamp = reader.read_next()
@@ -128,8 +139,22 @@ def iter_frames(path, arms, cameras, t, gripper=True):
         k += 1
 
 
-def export(session, repo_id, root, task, cameras, arm="left", fps=25, robot_type="baxter", log=print,
-           arms=None, labels="goal", lead=1, gripper=True, workers=1):
+def export(
+    session,
+    repo_id,
+    root,
+    task,
+    cameras,
+    arm='left',
+    fps=25,
+    robot_type='baxter',
+    log=print,
+    arms=None,
+    labels='goal',
+    lead=1,
+    gripper=True,
+    workers=1,
+):
     """Write every episode_* of `session` (in order) as one LeRobot dataset at `root`.
 
     `labels`: "goal", what the teleop servo chased (labels.load_episode, one arm); "measured", the
@@ -144,38 +169,65 @@ def export(session, repo_id, root, task, cameras, arm="left", fps=25, robot_type
     from multiprocessing import get_context
 
     arms = list(arms or [arm])
-    if labels == "goal" and len(arms) > 1:
-        raise ValueError("goal labels are per teleop arm: export one arm, or use measured labels")
-    episodes = sorted(Path(session).glob("episode_*"), key=lambda d: int(d.name.split("_")[1]))
+    if labels == 'goal' and len(arms) > 1:
+        raise ValueError('goal labels are per teleop arm: export one arm, or use measured labels')
+    episodes = sorted(Path(session).glob('episode_*'), key=lambda d: int(d.name.split('_')[1]))
     workers = max(1, min(workers, len(episodes)))
-    args = dict(repo_id=repo_id, task=task, cameras=cameras, fps=fps, robot_type=robot_type, arms=arms,
-                labels=labels, lead=lead, gripper=gripper)
+    args = dict(
+        repo_id=repo_id,
+        task=task,
+        cameras=cameras,
+        fps=fps,
+        robot_type=robot_type,
+        arms=arms,
+        labels=labels,
+        lead=lead,
+        gripper=gripper,
+    )
     if workers == 1:
         summary = _export_episodes(episodes, root=root, log=log, **args)
     else:
         from lerobot.datasets.aggregate import aggregate_datasets
 
         shards = np.array_split(np.arange(len(episodes)), workers)
-        tmp = Path(str(root) + ".shards")
+        tmp = Path(str(root) + '.shards')
         if tmp.exists():
             shutil.rmtree(tmp)
-        roots = [tmp / f"{i:02d}" for i in range(workers)]
-        log(f"{len(episodes)} episodes in {workers} parallel runs")
-        with ProcessPoolExecutor(workers, mp_context=get_context("spawn")) as pool:
-            jobs = [pool.submit(_export_episodes, [episodes[j] for j in shard], root=r, log=print,
-                                **{**args, "repo_id": f"{repo_id}_{i:02d}"})
-                    for i, (shard, r) in enumerate(zip(shards, roots))]
+        roots = [tmp / f'{i:02d}' for i in range(workers)]
+        log(f'{len(episodes)} episodes in {workers} parallel runs')
+        with ProcessPoolExecutor(workers, mp_context=get_context('spawn')) as pool:
+            jobs = [
+                pool.submit(
+                    _export_episodes,
+                    [episodes[j] for j in shard],
+                    root=r,
+                    log=print,
+                    **{**args, 'repo_id': f'{repo_id}_{i:02d}'},
+                )
+                for i, (shard, r) in enumerate(zip(shards, roots))
+            ]
             parts = [job.result() for job in jobs]
         summary = []
         for part in parts:
             for item in part:
-                summary.append({**item, "episode_index": len(summary)})
-                log(f"{item['source']} -> episode {len(summary) - 1}: {item['frames']} frames")
-        aggregate_datasets([f"{repo_id}_{i:02d}" for i in range(workers)], repo_id, roots=roots, aggr_root=Path(root))
+                summary.append({**item, 'episode_index': len(summary)})
+                log(f'{item["source"]} -> episode {len(summary) - 1}: {item["frames"]} frames')
+        aggregate_datasets([f'{repo_id}_{i:02d}' for i in range(workers)], repo_id, roots=roots, aggr_root=Path(root))
         shutil.rmtree(tmp)
-    (Path(root) / "meta" / "rethoughtai_sources.json").write_text(json.dumps(
-        {"session": str(Path(session).resolve().name), "arms": arms, "labels": labels, "fps": fps,
-         **({"lead_steps": lead} if labels == "measured" else {}), "gripper": gripper, "episodes": summary}, indent=1))
+    (Path(root) / 'meta' / 'rethoughtai_sources.json').write_text(
+        json.dumps(
+            {
+                'session': str(Path(session).resolve().name),
+                'arms': arms,
+                'labels': labels,
+                'fps': fps,
+                **({'lead_steps': lead} if labels == 'measured' else {}),
+                'gripper': gripper,
+                'episodes': summary,
+            },
+            indent=1,
+        )
+    )
 
 
 def _export_episodes(episodes, repo_id, root, task, cameras, fps, robot_type, arms, labels, lead, gripper, log):
@@ -185,13 +237,20 @@ def _export_episodes(episodes, repo_id, root, task, cameras, fps, robot_type, ar
     arm = arms[0]
 
     def load(path):  # arm -> Episode
-        return load_measured(path, arms, fps, lead) if labels == "measured" else {arm: load_episode(path, arm, fps)}
+        return load_measured(path, arms, fps, lead) if labels == 'measured' else {arm: load_episode(path, arm, fps)}
 
     first = load(episodes[0])[arms[0]]
     sample = read_frames(episodes[0], arms, cameras, first.t[-1:], gripper)[0][0]  # last frame: all streams are up
     shapes = {key: img.shape for key, img in sample.items()}
-    dataset = LeRobotDataset.create(repo_id, fps, features(cameras, arms, shapes, gripper), root=root,
-                                    robot_type=robot_type, streaming_encoding=True, encoder_threads=2)
+    dataset = LeRobotDataset.create(
+        repo_id,
+        fps,
+        features(cameras, arms, shapes, gripper),
+        root=root,
+        robot_type=robot_type,
+        streaming_encoding=True,
+        encoder_threads=2,
+    )
     summary = []
     for path in episodes:
         eps = load(path)
@@ -214,19 +273,28 @@ def _export_episodes(episodes, repo_id, root, task, cameras, fps, robot_type, ar
             opening = np.atleast_1d(opening)
             grip_state = (lambda i: [opening[i]]) if gripper else (lambda i: [])
             grip_action = (lambda a: [eps[a].trigger[k]]) if gripper else (lambda a: [])
-            row = {f"observation.images.{key}": img for key, img in images.items()}
-            row["observation.state"] = np.concatenate([
-                np.concatenate([eps[a].tcp_p[k], poses[a][0][k], grip_state(i), joints[7 * i:7 * i + 7]])
-                for i, a in enumerate(arms)]).astype(np.float32)
-            row["action"] = np.concatenate([
-                np.concatenate([eps[a].target_p[k], poses[a][1][k], grip_action(a)]) for a in arms]).astype(np.float32)
-            row["task"] = task
+            row = {f'observation.images.{key}': img for key, img in images.items()}
+            row['observation.state'] = np.concatenate([
+                np.concatenate([eps[a].tcp_p[k], poses[a][0][k], grip_state(i), joints[7 * i : 7 * i + 7]])
+                for i, a in enumerate(arms)
+            ]).astype(np.float32)
+            row['action'] = np.concatenate([
+                np.concatenate([eps[a].target_p[k], poses[a][1][k], grip_action(a)]) for a in arms
+            ]).astype(np.float32)
+            row['task'] = task
             dataset.add_frame(row)
             n += 1
         dataset.save_episode()
-        summary.append({"episode_index": len(summary), "source": path.name, "frames": n,
-                        "skipped_leading_frames": skip, "stale_image_frames": int(stale)})
-        log(f"{path.name}: {n} frames ({n / fps:.1f} s)"
-            + (f", {stale} with images older than {MAX_IMAGE_AGE} s" if stale else ""))
+        summary.append({
+            'episode_index': len(summary),
+            'source': path.name,
+            'frames': n,
+            'skipped_leading_frames': skip,
+            'stale_image_frames': int(stale),
+        })
+        log(
+            f'{path.name}: {n} frames ({n / fps:.1f} s)'
+            + (f', {stale} with images older than {MAX_IMAGE_AGE} s' if stale else '')
+        )
     dataset.finalize()
     return summary

@@ -6,6 +6,7 @@ release of the whole run, not Runtime's independent single-arm re-anchoring.
 """
 
 import numpy as np
+from baxter_core_msgs.msg import DigitalIOState
 from geometry_msgs.msg import PoseStamped
 from moveit_msgs.msg import RobotTrajectory
 from rclpy.qos import DurabilityPolicy, QoSProfile
@@ -13,9 +14,8 @@ from scipy.spatial.transform import Rotation, Slerp
 from sensor_msgs.msg import Joy
 from std_msgs.msg import Bool, Empty
 from std_srvs.srv import SetBool
-from baxter_core_msgs.msg import DigitalIOState
 
-from .runtime import Chunk, Runtime, SETTLE, TCP_STALE
+from .runtime import SETTLE, TCP_STALE, Chunk, Runtime
 
 
 class _SilentPublisher:
@@ -81,48 +81,45 @@ class BimanualRuntime:
     """
 
     def __init__(self, node, cfg, merge=None):
-        if cfg.get("arm") != "both" or set(cfg["arms"]) != {"left", "right"}:
-            raise ValueError("bimanual runtime requires arm: both and left/right arms")
-        if any(not np.isfinite(float(cfg[key])) or float(cfg[key]) <= 0
-               for key in ("fps", "publish_rate")):
-            raise ValueError("fps and publish_rate must be finite and positive")
+        if cfg.get('arm') != 'both' or set(cfg['arms']) != {'left', 'right'}:
+            raise ValueError('bimanual runtime requires arm: both and left/right arms')
+        if any(not np.isfinite(float(cfg[key])) or float(cfg[key]) <= 0 for key in ('fps', 'publish_rate')):
+            raise ValueError('fps and publish_rate must be finite and positive')
         self.node = node
         self._clock_sample = None
         self.engaged = self.requested = self.held = self.fresh = False
         self.settled, self.accept_after = -np.inf, np.inf
-        deadman = cfg["deadman"]
-        self.deadman_id = deadman["frame_id"]
-        self.deadman_button = int(deadman["button"])
+        deadman = cfg['deadman']
+        self.deadman_id = deadman['frame_id']
+        self.deadman_button = int(deadman['button'])
         if self.deadman_button < 0:
-            raise ValueError("deadman button must be nonnegative")
-        self.alive = -np.inf if deadman.get("alive") else np.inf
-        self.cuffs = {"left": False, "right": False}
+            raise ValueError('deadman button must be nonnegative')
+        self.alive = -np.inf if deadman.get('alive') else np.inf
+        self.cuffs = {'left': False, 'right': False}
         self.arms = {}
         for name in self.cuffs:
-            topics = {key: cfg["arms"][name].get(key)
-                      for key in ("tcp", "target", "trigger", "home", "cuff")}
-            arm_cfg = {**cfg, **topics, "engaged": None}
+            topics = {key: cfg['arms'][name].get(key) for key in ('tcp', 'target', 'trigger', 'home', 'cuff')}
+            arm_cfg = {**cfg, **topics, 'engaged': None}
             self.arms[name] = _ArmRuntime(self, arm_cfg, merge)
-        self.dt = self.arms["left"].dt
+        self.dt = self.arms['left'].dt
         if any(arm.horizon is not None and arm.horizon < 2 for arm in self.arms.values()):
-            raise ValueError("bimanual chunk horizon must contain at least two points")
+            raise ValueError('bimanual chunk horizon must contain at least two points')
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
-        self.engaged_pub = node.create_publisher(Bool, cfg["engaged"], latched)
-        for name, arm_cfg in cfg["arms"].items():
-            node.create_subscription(PoseStamped, arm_cfg["tcp"],
-                                     lambda msg, name=name: self._on_tcp(name, msg), 10)
-            if arm_cfg.get("home"):
-                node.create_subscription(Empty, arm_cfg["home"], self._on_home, 10)
-            if arm_cfg.get("cuff"):
-                node.create_subscription(DigitalIOState, arm_cfg["cuff"],
-                                         lambda msg, name=name: self._on_cuff(name, msg), 10)
-        node.create_subscription(Joy, deadman["topic"], self._on_joy, 10)
-        if deadman.get("alive"):
-            node.create_subscription(PoseStamped, deadman["alive"],
-                                     lambda msg: setattr(self, "alive", self._now()), 10)
-        node.create_subscription(RobotTrajectory, cfg["chunk"], self._on_chunk, 10)
-        node.create_service(SetBool, cfg["engage"], self._on_engage)
-        node.create_timer(1.0 / float(cfg["publish_rate"]), self._tick)
+        self.engaged_pub = node.create_publisher(Bool, cfg['engaged'], latched)
+        for name, arm_cfg in cfg['arms'].items():
+            node.create_subscription(PoseStamped, arm_cfg['tcp'], lambda msg, name=name: self._on_tcp(name, msg), 10)
+            if arm_cfg.get('home'):
+                node.create_subscription(Empty, arm_cfg['home'], self._on_home, 10)
+            if arm_cfg.get('cuff'):
+                node.create_subscription(
+                    DigitalIOState, arm_cfg['cuff'], lambda msg, name=name: self._on_cuff(name, msg), 10
+                )
+        node.create_subscription(Joy, deadman['topic'], self._on_joy, 10)
+        if deadman.get('alive'):
+            node.create_subscription(PoseStamped, deadman['alive'], lambda msg: setattr(self, 'alive', self._now()), 10)
+        node.create_subscription(RobotTrajectory, cfg['chunk'], self._on_chunk, 10)
+        node.create_service(SetBool, cfg['engage'], self._on_engage)
+        node.create_timer(1.0 / float(cfg['publish_rate']), self._tick)
         self._announce()
 
     def _now(self):
@@ -133,15 +130,15 @@ class BimanualRuntime:
     def _pose(position, quaternion):
         p, q = np.array(position, dtype=float), np.array(quaternion, dtype=float)
         if not np.isfinite(p).all() or not np.isfinite(q).all():
-            raise ValueError("nonfinite pose")
+            raise ValueError('nonfinite pose')
         if abs(np.linalg.norm(q) - 1.0) > 1e-5:
-            raise ValueError("quaternion must be normalized")
+            raise ValueError('quaternion must be normalized')
         return p, q
 
     @staticmethod
     def _seconds(stamp):
         if stamp.sec < 0 or not 0 <= stamp.nanosec < 1_000_000_000:
-            raise ValueError("invalid timestamp")
+            raise ValueError('invalid timestamp')
         # Match _now's conversion exactly at the accept_after boundary.
         return (stamp.sec * 1_000_000_000 + stamp.nanosec) * 1e-9
 
@@ -156,8 +153,7 @@ class BimanualRuntime:
         arm._on_tcp(msg)
 
     def _tcp_fresh(self, now):
-        return all(arm.tcp is not None and 0 <= now - arm.tcp[2] < TCP_STALE
-                   for arm in self.arms.values())
+        return all(arm.tcp is not None and 0 <= now - arm.tcp[2] < TCP_STALE for arm in self.arms.values())
 
     def _wanted(self, now):
         return self.requested or (self.held and now - self.alive < TCP_STALE)
@@ -173,7 +169,7 @@ class BimanualRuntime:
         if not self._wanted(self._now()):
             self._release(self._now())
         response.success = True
-        response.message = "engage requested" if self.requested else "released"
+        response.message = 'engage requested' if self.requested else 'released'
         return response
 
     def _on_home(self, msg):
@@ -206,12 +202,14 @@ class BimanualRuntime:
 
     def _on_chunk(self, msg):
         now = self._now()
-        if (not self.engaged or not self._wanted(now) or not self._tcp_fresh(now)
-                or any(self.cuffs.values())):
+        if not self.engaged or not self._wanted(now) or not self._tcp_fresh(now) or any(self.cuffs.values()):
             return
         trajectory = msg.multi_dof_joint_trajectory
-        if (list(trajectory.joint_names) != ["left_tcp", "right_tcp"]
-                or len(trajectory.points) < 2 or msg.joint_trajectory.points):
+        if (
+            list(trajectory.joint_names) != ['left_tcp', 'right_tcp']
+            or len(trajectory.points) < 2
+            or msg.joint_trajectory.points
+        ):
             return
         try:
             t0 = self._seconds(msg.joint_trajectory.header.stamp)
@@ -238,8 +236,7 @@ class BimanualRuntime:
                 if times[:n][-1] < now:
                     return
                 p, q = poses[name]
-                chunks[name] = Chunk(times[:n].copy(), np.array(p[:n]),
-                                     Rotation.from_quat(q[:n]), None, now)
+                chunks[name] = Chunk(times[:n].copy(), np.array(p[:n]), Rotation.from_quat(q[:n]), None, now)
         except (ValueError, TypeError, OverflowError):
             return
         # No arm mutates until the entire message, including beyond horizon, validates.
@@ -247,8 +244,9 @@ class BimanualRuntime:
             arm.chunks.append(chunks[name])
 
     def _covered(self, t):
-        return all(any(c.t[0] <= t <= c.end and c.arrival <= t + 1e-9 for c in arm.chunks)
-                   for arm in self.arms.values())
+        return all(
+            any(c.t[0] <= t <= c.end and c.arrival <= t + 1e-9 for c in arm.chunks) for arm in self.arms.values()
+        )
 
     def _tick(self):
         self._clock_sample = self.node.get_clock().now()
@@ -266,8 +264,7 @@ class BimanualRuntime:
             self._release(now)
             return
         if not self.engaged:
-            if (any(arm.frozen is None for arm in self.arms.values())
-                    or now - self.settled < SETTLE):
+            if any(arm.frozen is None for arm in self.arms.values()) or now - self.settled < SETTLE:
                 self._release(now)
                 return
             self.engaged, self.accept_after = True, now
@@ -283,7 +280,7 @@ class BimanualRuntime:
             for arm in self.arms.values():
                 arm.hold = arm.last_goal
                 arm.segment, arm.entry = None, None
-        first = self.arms["left"]
+        first = self.arms['left']
         if first.segment is None or now - first.segment[0] >= self.dt:
             for arm in self.arms.values():
                 arm._policy_step(now)

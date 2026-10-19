@@ -30,12 +30,12 @@ GOAL_HOLD = 0.05  # s: a goal older than this means the clutch was released (the
 
 @dataclass
 class Episode:
-    tcp_p: np.ndarray      # (N, 3)
-    tcp_q: np.ndarray      # (N, 4)
-    target_p: np.ndarray   # (N, 3)
-    target_q: np.ndarray   # (N, 4)
-    trigger: np.ndarray    # (N,)
-    t: np.ndarray          # (N,) recording time, ns
+    tcp_p: np.ndarray  # (N, 3)
+    tcp_q: np.ndarray  # (N, 4)
+    target_p: np.ndarray  # (N, 3)
+    target_q: np.ndarray  # (N, 4)
+    trigger: np.ndarray  # (N,)
+    t: np.ndarray  # (N,) recording time, ns
     fps: float
 
     def __len__(self):
@@ -49,64 +49,72 @@ def _pose(msg):
 
 def _gripper_trigger(msg):
     """Trigger value from a gripper command, inverting the teleop's opening = 100 * (1 - trigger)."""
-    return 1.0 - float(json.loads(msg.args)["position"]) / 100.0
+    return 1.0 - float(json.loads(msg.args)['position']) / 100.0
 
 
-def load_episode(path, arm="left", fps=25.0) -> Episode:
-    topics = {"tcp": f"/teleop/{arm}/tcp", "goal": f"/teleop/{arm}/goal",
-              "gripper": f"/robot/end_effector/{arm}_gripper/command"}
+def load_episode(path, arm='left', fps=25.0) -> Episode:
+    topics = {
+        'tcp': f'/teleop/{arm}/tcp',
+        'goal': f'/teleop/{arm}/goal',
+        'gripper': f'/robot/end_effector/{arm}_gripper/command',
+    }
     reader = rosbag2_py.SequentialReader()
-    reader.open(rosbag2_py.StorageOptions(uri=str(Path(path)), storage_id="mcap"), rosbag2_py.ConverterOptions("", ""))
+    reader.open(rosbag2_py.StorageOptions(uri=str(Path(path)), storage_id='mcap'), rosbag2_py.ConverterOptions('', ''))
     types = {t.name: t.type for t in reader.get_all_topics_and_types()}
-    missing = [n for n in ("tcp", "goal") if topics[n] not in types]
+    missing = [n for n in ('tcp', 'goal') if topics[n] not in types]
     if missing:
-        raise ValueError(f"{path}: no {', '.join(topics[n] for n in missing)} (recorded before the teleop published it)")
+        raise ValueError(
+            f'{path}: no {", ".join(topics[n] for n in missing)} (recorded before the teleop published it)'
+        )
     reader.set_filter(rosbag2_py.StorageFilter(topics=[t for t in topics.values() if t in types]))
     data = {n: [] for n in topics}  # name -> [(time, value)]
     while reader.has_next():
         topic, raw, t = reader.read_next()
         name = next(n for n, tp in topics.items() if tp == topic)
         msg = deserialize_message(raw, get_message(types[topic]))
-        data[name].append((t, _gripper_trigger(msg) if name == "gripper" else _pose(msg)))
+        data[name].append((t, _gripper_trigger(msg) if name == 'gripper' else _pose(msg)))
 
-    goal_t = np.array([t for t, _ in data["goal"]])
-    tcp_t = np.array([t for t, _ in data["tcp"]])
+    goal_t = np.array([t for t, _ in data['goal']])
+    tcp_t = np.array([t for t, _ in data['tcp']])
     t = np.arange(goal_t[0], goal_t[-1] + 1, int(1e9 / fps))
 
     def latest(times, at):  # index of the latest message at or before each time (-1: none yet)
-        return np.searchsorted(times, at, side="right") - 1
+        return np.searchsorted(times, at, side='right') - 1
 
     ti = np.maximum(latest(tcp_t, t), 0)
-    tcp_p = np.array([data["tcp"][i][1][0] for i in ti])
-    tcp_q = np.array([data["tcp"][i][1][1] for i in ti])
+    tcp_p = np.array([data['tcp'][i][1][0] for i in ti])
+    tcp_q = np.array([data['tcp'][i][1][1] for i in ti])
     gi = latest(goal_t, t)
     clutched = (gi >= 0) & (t - goal_t[np.maximum(gi, 0)] <= GOAL_HOLD * 1e9)
     target_p, target_q = tcp_p.copy(), tcp_q.copy()
     for k in np.where(clutched)[0]:
-        target_p[k], target_q[k] = data["goal"][gi[k]][1]
+        target_p[k], target_q[k] = data['goal'][gi[k]][1]
 
     trigger = np.zeros(len(t))  # gripper open until the first command
-    if data["gripper"]:
-        gr_t = np.array([x for x, _ in data["gripper"]])
+    if data['gripper']:
+        gr_t = np.array([x for x, _ in data['gripper']])
         gr = latest(gr_t, t)
-        trigger = np.where(gr >= 0, np.array([v for _, v in data["gripper"]])[np.maximum(gr, 0)], 0.0)
+        trigger = np.where(gr >= 0, np.array([v for _, v in data['gripper']])[np.maximum(gr, 0)], 0.0)
     return Episode(tcp_p, tcp_q, target_p, target_q, trigger, t, fps)
 
 
-def load_measured(path, arms=("left",), fps=25.0, lead=1) -> dict[str, Episode]:
+def load_measured(path, arms=('left',), fps=25.0, lead=1) -> dict[str, Episode]:
     """Kinesthetic episodes (the arm guided by hand, no teleop goal): per arm, the target at a step is
     the measured TCP `lead` steps later (the last step holds), so even the first action of a chunk is
     where the hand took the arm next, as a teleop goal leads the arm. The trigger is the measured
     gripper opening (0 open .. 1 closed). Steps span the time every arm's TCP is recorded, on one
     clock for all arms."""
-    topics = {(arm, kind): tp for arm in arms for kind, tp in (
-        ("tcp", f"/teleop/{arm}/tcp"), ("gripper", f"/robot/end_effector/{arm}_gripper/state"))}
+    topics = {
+        (arm, kind): tp
+        for arm in arms
+        for kind, tp in (('tcp', f'/teleop/{arm}/tcp'), ('gripper', f'/robot/end_effector/{arm}_gripper/state'))
+    }
     reader = rosbag2_py.SequentialReader()
-    reader.open(rosbag2_py.StorageOptions(uri=str(Path(path)), storage_id="mcap"), rosbag2_py.ConverterOptions("", ""))
+    reader.open(rosbag2_py.StorageOptions(uri=str(Path(path)), storage_id='mcap'), rosbag2_py.ConverterOptions('', ''))
     types = {t.name: t.type for t in reader.get_all_topics_and_types()}
-    missing = [tp for (arm, kind), tp in topics.items() if kind == "tcp" and tp not in types]
+    missing = [tp for (arm, kind), tp in topics.items() if kind == 'tcp' and tp not in types]
     if missing:
-        raise ValueError(f"{path}: no {', '.join(missing)} (the teleop publishes the measured TCP)")
+        raise ValueError(f'{path}: no {", ".join(missing)} (the teleop publishes the measured TCP)')
     reader.set_filter(rosbag2_py.StorageFilter(topics=[tp for tp in topics.values() if tp in types]))
     data = {key: [] for key in topics}
     by_topic = {tp: key for key, tp in topics.items()}
@@ -114,23 +122,23 @@ def load_measured(path, arms=("left",), fps=25.0, lead=1) -> dict[str, Episode]:
         topic, raw, t = reader.read_next()
         key = by_topic[topic]
         msg = deserialize_message(raw, get_message(types[topic]))
-        data[key].append((t, _pose(msg) if key[1] == "tcp" else 1.0 - float(msg.position) / 100.0))
+        data[key].append((t, _pose(msg) if key[1] == 'tcp' else 1.0 - float(msg.position) / 100.0))
 
-    start = max(data[(arm, "tcp")][0][0] for arm in arms)
-    end = min(data[(arm, "tcp")][-1][0] for arm in arms)
+    start = max(data[(arm, 'tcp')][0][0] for arm in arms)
+    end = min(data[(arm, 'tcp')][-1][0] for arm in arms)
     t = np.arange(start, end + 1, int(1e9 / fps))
 
     def latest(rows):
         times = np.array([x for x, _ in rows])
-        return np.maximum(np.searchsorted(times, t, side="right") - 1, 0)
+        return np.maximum(np.searchsorted(times, t, side='right') - 1, 0)
 
     out = {}
     for arm in arms:
-        tcp = data[(arm, "tcp")]
+        tcp = data[(arm, 'tcp')]
         i = latest(tcp)
         p = np.array([tcp[k][1][0] for k in i])
         q = np.array([tcp[k][1][1] for k in i])
-        grip = data[(arm, "gripper")]
+        grip = data[(arm, 'gripper')]
         trigger = np.array([grip[k][1] for k in latest(grip)]) if grip else np.zeros(len(t))
         ahead = np.minimum(np.arange(len(t)) + lead, len(t) - 1)
         out[arm] = Episode(p, q, p[ahead], q[ahead], trigger, t, fps)
