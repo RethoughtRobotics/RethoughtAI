@@ -122,7 +122,7 @@ arm. `scripts/stop` holds the arm where it is. `scripts/home` sends it to the un
 as the controller's B button (with `scripts/start` still on, the policy resumes fresh from there).
 
 ```bash
-# bringbackbaxter: scripts/run_teleop.sh --left --policy (robot) or scripts/run_sim_teleop.sh --left --policy
+# BaxterSDK: scripts/run_teleop.sh --left --policy (robot) or scripts/run_sim_teleop.sh --left --policy
 scripts/run_inference --act 100000                  # real robot: its cameras; sim: shadow of episode 4
 scripts/run_inference --smolvla_CupToContainer 30000 --episode 24   # sim: shadow of episode 24
 scripts/run_inference --smolvla_CupToContainer_wrist  # newest checkpoint, wrist camera only
@@ -216,8 +216,8 @@ run. `run_inference` selects the two-arm config automatically for the exact Swee
 source launch/env.sh
 .venv/bin/inference check models/vita_SweepTrash_Kin/step-050000 --config configs/baxter_bimanual.yaml
 
-# When ready for a supervised test, from ../bringbackbaxter:
-./run_teleop.sh --both --policy --no-gripper
+# When ready for a supervised test, from ../baxter_sdk:
+scripts/run_teleop.sh --both --policy --no-gripper
 # Then from RethoughtAI (opens tmux; DOES NOT execute scripts/start):
 scripts/run_inference --vita_SweepTrash_Kin 50000
 ```

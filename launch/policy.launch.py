@@ -5,7 +5,7 @@
 
 With `episode` (a shadow rollout), the policy watches that episode's recorded cameras: the arm
 first moves to the episode's start pose, then the bag plays from its first step.
-Bring the arm and teleop up first (bringbackbaxter: run_sim_teleop.sh --left --policy).
+Bring the arm and teleop up first (BaxterSDK: scripts/run_sim_teleop.sh --left --policy).
 """
 
 from pathlib import Path

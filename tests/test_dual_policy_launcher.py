@@ -7,7 +7,7 @@ import subprocess
 import pytest
 
 
-LAUNCHER = Path(__file__).resolve().parents[2] / "bringbackbaxter" / "scripts" / "run_teleop.sh"
+LAUNCHER = Path(__file__).resolve().parents[2] / "baxter_sdk" / "scripts" / "run_teleop.sh"
 SAFETY_BOUNDARY = "# Two teleops on one arm fight"
 
 
@@ -17,9 +17,9 @@ def render_commands(tmp_path, *args):
     # Stop before process checks, camera startup, and either terminal backend.
     prefix = source.split(SAFETY_BOUNDARY, 1)[0]
     assert "setsid" not in prefix and "tmux" not in prefix.split("set -e", 1)[1]
-    script = tmp_path / "bringbackbaxter" / "scripts" / "run_teleop.sh"
+    script = tmp_path / "baxter_sdk" / "scripts" / "run_teleop.sh"
     script.parent.mkdir(parents=True)
-    (tmp_path / "rethoughtai").mkdir()
+    (tmp_path / "rethought_ai").mkdir()
     script.write_text(prefix + """
 for arm in "${ARM_LIST[@]}"; do
     echo '===TELEOP==='
