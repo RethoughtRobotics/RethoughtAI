@@ -22,7 +22,7 @@ def to_lerobot(
     try:
         from forge.formats.registry import FormatRegistry
     except ImportError:
-        raise RuntimeError('forge-robotics not installed — run: uv add forge-robotics')
+        raise RuntimeError('forge-robotics not installed; run: uv add forge-robotics')
 
     sessions = [sessions] if isinstance(sessions, (str, Path)) else list(sessions)
     bags = sorted(b for s in sessions for b in Path(s).glob('episode_*/'))
@@ -30,7 +30,7 @@ def to_lerobot(
         raise ValueError(f'No episode bags found under: {sessions}')
 
     output_dir = Path(output_dir)
-    click.echo(f'Converting {len(bags)} episode(s) → {output_dir}')
+    click.echo(f'Converting {len(bags)} episode(s) to {output_dir}')
 
     reader = FormatRegistry.get_reader('rosbag')
     writer = FormatRegistry.get_writer('lerobot-v3')
@@ -54,7 +54,7 @@ def to_lerobot(
             writer.write_episode(episode, output_dir, episode_index=i)
 
     writer.finalize(output_dir, info)
-    click.echo(f'Dataset written → {output_dir}')
+    click.echo(f'Dataset written to {output_dir}')
 
     if hub_repo:
         _push_to_hub(output_dir, hub_repo)
@@ -67,7 +67,7 @@ def _push_to_hub(output_dir: Path, hub_repo: str) -> None:
     try:
         from huggingface_hub import HfApi
     except ImportError:
-        raise RuntimeError('huggingface-hub not installed — run: uv add huggingface-hub')
+        raise RuntimeError('huggingface-hub not installed; run: uv add huggingface-hub')
     click.echo(f'Pushing to hf://{hub_repo} …')
     HfApi().upload_folder(folder_path=str(output_dir), repo_id=hub_repo, repo_type='dataset')
-    click.echo(f'Done → https://huggingface.co/datasets/{hub_repo}')
+    click.echo(f'Done: https://huggingface.co/datasets/{hub_repo}')

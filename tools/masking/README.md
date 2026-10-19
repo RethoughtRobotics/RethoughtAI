@@ -20,7 +20,7 @@ dataset ──sam3_masks.py──▶ person masks ──video_remove.py (MiniMax
 
 | Method | Model | Steps | Notes |
 | --- | --- | --- | --- |
-| Telea | OpenCV | — | Per frame. Smears and flicker on large masks. |
+| Telea | OpenCV | n/a | Per frame. Smears and flicker on large masks. |
 | MiniMax-Remover | Wan2.1-1.3B, distilled (NeurIPS 2025) | 12 | Fast, no CFG; temporally consistent. |
 | EffectErase | Wan2.1-Fun-1.3B + LoRA (CVPR 2026) | 50 | Also removes shadows and reflections. CC BY-NC 4.0. |
 

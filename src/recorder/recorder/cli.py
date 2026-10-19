@@ -46,7 +46,7 @@ def all_topics(config: dict) -> list[str]:
 @click.group()
 @click.version_option(__version__)
 def main():
-    """RAI record_cli — collect robot demonstrations."""
+    """RAI record_cli: collect robot demonstrations."""
     pass
 
 

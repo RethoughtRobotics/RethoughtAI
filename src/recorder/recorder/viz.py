@@ -47,7 +47,7 @@ def _to_numpy(msg) -> np.ndarray | None:
         return None
     arr = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, channels)
     if msg.encoding == 'bgr8':
-        arr = arr[:, :, ::-1]  # BGR→RGB
+        arr = arr[:, :, ::-1]  # BGR to RGB
     elif msg.encoding == 'bgra8':
-        arr = arr[:, :, [2, 1, 0, 3]]  # BGRA→RGBA
+        arr = arr[:, :, [2, 1, 0, 3]]  # BGRA to RGBA
     return arr

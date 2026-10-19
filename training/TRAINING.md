@@ -74,7 +74,7 @@ action 8-D instead of 7-D.
 
 ## 4. Observation preprocessing
 
-- **State → 17-D:** `[tcp.xyz (3), first two columns of R_tcp (6), gripper (1), joints (7)]`.
+- **State as 17-D:** `[tcp.xyz (3), first two columns of R_tcp (6), gripper (1), joints (7)]`.
   Use the 6-D rotation in place of the quaternion: `q` and `-q` describe the same rotation, and the
   export only keeps quaternion signs consistent within an episode, not across episodes.
 - **Images:** use native resolution, RGB, with ImageNet normalization (ACT default). Light

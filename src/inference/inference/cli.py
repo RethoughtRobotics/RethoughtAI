@@ -88,7 +88,7 @@ def spin(name, setup, on_exit=None):
 @click.group()
 @click.version_option(__version__)
 def main():
-    """RAI Inference — deploy trained policies to ROS2 robots."""
+    """RAI Inference: deploy trained policies to ROS2 robots."""
     pass
 
 

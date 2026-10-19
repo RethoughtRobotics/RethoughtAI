@@ -1,0 +1,5 @@
+# Formatting-only commits, skipped by git blame (git config blame.ignoreRevsFile .git-blame-ignore-revs)
+# and by GitHub's blame view.
+
+# Adopt the shared code standard: mechanical formatting
+4d1d9bbd62d835026bf9d1759472e9521ed7bf47

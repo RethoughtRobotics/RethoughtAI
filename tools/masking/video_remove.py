@@ -92,7 +92,10 @@ def load_effecterase(root: Path):
 
     def run(frames: np.ndarray, masks: np.ndarray, steps: int) -> np.ndarray:
         t, h, w_ = masks.shape
-        to_t = lambda x: torch.from_numpy(x).float().permute(3, 0, 1, 2).cuda() / 127.5 - 1.0  # T H W C -> C T H W
+
+        def to_t(x):  # T H W C to C T H W, in [-1, 1]
+            return torch.from_numpy(x).float().permute(3, 0, 1, 2).cuda() / 127.5 - 1.0
+
         m3 = np.repeat((masks[..., None] * 255).astype(np.uint8), 3, axis=-1)
         k = int(masks.reshape(t, -1).sum(1).argmax())  # reference crop from the frame with the most person
         ref = crop_square_from_pil(Image.fromarray(m3[k]), Image.fromarray(frames[k]), target_size=224).cuda()

@@ -204,8 +204,8 @@ def _letterbox(h, w, height, width):
 def _to_frame(box_in_input, frame_hw, input_hw):
     """A (top, left, bottom, right) box in model-input pixels as fractions of the original frame."""
     top, left, nh, nw = _letterbox(*frame_hw, *input_hw)
-    t, l, b, r = box_in_input
-    return ((t - top) / nh, (l - left) / nw, (b - top) / nh, (r - left) / nw)
+    y0, x0, y1, x1 = box_in_input
+    return ((y0 - top) / nh, (x0 - left) / nw, (y1 - top) / nh, (x1 - left) / nw)
 
 
 # -- SmolVLA: the action expert's attention to the image tokens ---------------------------------
@@ -325,9 +325,9 @@ def occlusion(policy, observation, tcp, grid=OCCLUSION_GRID, batch: int = 32) ->
         chunks = _halving(lambda n: _occluded_on_gpu(policy, observation, cells, tcp, n), batch)
     else:
         variants = [observation]
-        for key, (t, b, l, r), fill in cells:
+        for key, (y0, y1, x0, x1), fill in cells:
             occluded = observation[key].copy()
-            occluded[t:b, l:r] = fill
+            occluded[y0:y1, x0:x1] = fill
             variants.append({**observation, key: occluded})
         chunks = _halving(
             lambda n: [c for j in range(0, len(variants), n) for c in _predict(policy, variants[j : j + n], tcp)], batch
@@ -377,8 +377,8 @@ def _occluded_on_gpu(policy, observation, cells, tcp, n: int) -> list[np.ndarray
                 else (list(v) * len(part) if isinstance(v, (list, tuple)) else v)
                 for k, v in base.items()
             }
-            for b, (key, (t, bottom, l, r), _) in enumerate(part):
-                batch[key][b, :, t:bottom, l:r] = grays[key]
+            for b, (key, (y0, y1, x0, x1), _) in enumerate(part):
+                batch[key][b, :, y0:y1, x0:x1] = grays[key]
             out += _chunks(policy, batch, tcp)
     return out
 

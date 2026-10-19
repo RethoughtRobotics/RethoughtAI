@@ -408,7 +408,7 @@ def contact_sheet(args):
             canvas.paste(image, (0, height * index + 30))
         draw.text(
             (5, height * index + 5),
-            f'{row["image"]} removal={row["mask_fraction"]:.1%} — UNREVIEWED prediction',
+            f'{row["image"]} removal={row["mask_fraction"]:.1%} (UNREVIEWED prediction)',
             fill='white',
         )
     canvas.save(args.out)

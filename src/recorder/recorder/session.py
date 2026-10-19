@@ -86,7 +86,7 @@ class EpisodeBag:
 def run_session(session_dir: Path, config: dict, topics: list[str], viz: bool) -> None:
     """Run an interactive session until Ctrl+C, recording one bag per episode.
 
-    The active bag is always terminated on exit — even mid-episode — to
+    The active bag is always terminated on exit, even mid-episode, to
     prevent orphaned ros2 bag record processes from leaking memory.
     """
     trig = config['trigger']
@@ -126,7 +126,7 @@ def run_session(session_dir: Path, config: dict, topics: list[str], viz: bool) -
                 screen.episode = episode
                 screen.recording()
             _set_title(episode, 'recording')
-            click.echo(f'[episode {episode:03d}] Recording — press record again to stop.')
+            click.echo(f'[episode {episode:03d}] Recording. Press record again to stop.')
 
             stop_evt.wait()
             # Only a save/discard made after stopping counts, not one pressed while recording.
@@ -137,7 +137,7 @@ def run_session(session_dir: Path, config: dict, topics: list[str], viz: bool) -
             if screen:
                 screen.decide(length, bag.frames(image_topic))
             _set_title(episode, 'save or discard?')
-            click.echo(f'[episode {episode:03d}] Stopped — save or discard.')
+            click.echo(f'[episode {episode:03d}] Stopped: save or discard.')
 
             while not success_evt.is_set() and not discard_evt.is_set():
                 time.sleep(0.05)
@@ -169,7 +169,7 @@ def run_session(session_dir: Path, config: dict, topics: list[str], viz: bool) -
             _set_title(episode, 'idle')
 
     except KeyboardInterrupt:
-        click.echo(f'\nSession ended — {saved} episode(s) saved, {episode} in {session_dir.name}.')
+        click.echo(f'\nSession ended: {saved} episode(s) saved, {episode} in {session_dir.name}.')
     finally:
         if bag is not None:
             bag.discard()
@@ -231,4 +231,4 @@ def _next_episode(session_dir: Path) -> int:
 
 def _set_title(episode: int, state: str) -> None:
     """Update the terminal window title with current episode and state."""
-    click.echo(f'\033]0;RAI — Ep {episode:03d} | {state}\007', nl=False)
+    click.echo(f'\033]0;RAI: Ep {episode:03d} | {state}\007', nl=False)

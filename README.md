@@ -25,13 +25,13 @@ RAI is a 3-step pipeline for learning from demonstrations with ROS2: record, ada
 
 <img src="assets/overview.png" alt="RAI" width="100%" />
 
-**[recorder](recorder/)** — Record demonstrations to MCAP with live Rerun visualization. Trigger via physical buttons (Baxter, Sawyer) or keyboard (any robot).
+**[recorder](recorder/)**: Record demonstrations to MCAP with live Rerun visualization. Trigger via physical buttons (Baxter, Sawyer) or keyboard (any robot).
 
-**[adapter](adapter/)** — Convert MCAP recordings to LeRobot v3 datasets, quality-filter episodes, and push to HuggingFace Hub.
+**[adapter](adapter/)**: Convert MCAP recordings to LeRobot v3 datasets, quality-filter episodes, and push to HuggingFace Hub.
 
-**[training](training/)** — Train ACT, SmolVLA, VITA, Multi-Task DiT, GR00T or pi0.5 on those datasets, from composable YAML configs, with an unattended queue and watchdog.
+**[training](training/)**: Train ACT, SmolVLA, VITA, Multi-Task DiT, GR00T or pi0.5 on those datasets, from composable YAML configs, with an unattended queue and watchdog.
 
-**[inference](inference/)** — Deploy a trained policy from HuggingFace back to your ROS2 robot.
+**[inference](inference/)**: Deploy a trained policy from HuggingFace back to your ROS2 robot.
 
 ---
 

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "rai"
 version = "0.1.0"
-description = "RethoughtAI — record demonstrations, convert to LeRobot v3, deploy policies"
+description = "RethoughtAI: record demonstrations, convert to LeRobot v3, deploy policies"
 requires-python = ">=3.12"
 dependencies = [
     "pyyaml",

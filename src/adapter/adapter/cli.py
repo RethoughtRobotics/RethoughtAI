@@ -23,7 +23,7 @@ def resolve_config(name: str) -> Path:
 @click.group()
 @click.version_option(__version__)
 def main():
-    """RAI Adapter — convert session recordings to LeRobot v3 datasets."""
+    """RAI Adapter: convert session recordings to LeRobot v3 datasets."""
     pass
 
 
@@ -178,4 +178,4 @@ def push(dataset, repo_id, private, collection):
 @click.argument('dataset_path', type=click.Path(exists=True))
 def quality(dataset_path):
     """Score episode quality in a LeRobot v3 dataset."""
-    click.echo('adapt_cli quality — not yet implemented')
+    click.echo('adapt_cli quality: not yet implemented')
