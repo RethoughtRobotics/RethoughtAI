@@ -1,3 +1,4 @@
+---
 robot: baxter
 
 topics:
@@ -130,14 +131,14 @@ topics:
     - /vive/left/thumbstick
     - /vive/right/thumbstick
     - /libsurvive/joy
-    - /libsurvive/tf          # VR tracking tree, kept off /tf
+    - /libsurvive/tf  # VR tracking tree, kept off /tf
     - /libsurvive/tf_static
 
 trigger:
   type: digital_io
   msg_type: baxter_core_msgs/DigitalIOState
   state_field: state
-  record:  /robot/digital_io/left_button_show/state
+  record: /robot/digital_io/left_button_show/state
   success: /robot/digital_io/left_button_ok/state
   discard: /robot/digital_io/left_button_back/state
   screen: session  # drawn session screens; true for the image screens in assets/
@@ -149,8 +150,8 @@ trigger:
   thumbstick:
     topics: [/vive/left/thumbstick, /vive/right/thumbstick]
     hold: 2.0
-    start:   north
-    stop:    south
+    start: north
+    stop: south
     success: east
     discard: west
 
@@ -165,24 +166,24 @@ recording:
 # arm's teleop like its VR controller (BaxterSDK: scripts/run_teleop.sh --left --policy).
 inference:
   arm: left
-  fps: 25                  # policy steps per second, the dataset rate
-  publish_rate: 100        # target stream, Hz
+  fps: 25  # policy steps per second, the dataset rate
+  publish_rate: 100  # target stream, Hz
   tcp: /teleop/left/tcp
   target: /policy/left/target
   trigger: /policy/left/trigger
-  engage: /policy/left/engage   # std_srvs/SetBool: engage without the deadman (scripts/start, scripts/stop)
-  engaged: /policy/left/engaged # runtime -> policy server: start fresh on every change
-  home: /vive/right/b_button    # B: clear the policy, resume fresh (swap_hands: right controller drives left arm)
+  engage: /policy/left/engage  # std_srvs/SetBool: engage without the deadman (scripts/start, scripts/stop)
+  engaged: /policy/left/engaged  # runtime -> policy server: start fresh on every change
+  home: /vive/right/b_button  # B: clear the policy, resume fresh (swap_hands: right controller drives left arm)
   cuff: /robot/digital_io/left_lower_cuff/state  # squeezed = correcting by hand (zero-g), any policy
-  resume_ramp: 0.3         # s, crossfade into the re-anchored chunk after a correction
-  chunk: /policy/left/chunk     # serve -> run
+  resume_ramp: 0.3  # s, crossfade into the re-anchored chunk after a correction
+  chunk: /policy/left/chunk  # serve -> run
   joint_states: /robot/joint_states
   gripper: /robot/end_effector/left_gripper/state
-  task: Pick up the blue cup and place it in the red container   # only if a checkpoint's dataset tasks are unreadable
-  deadman:                 # held = run: the trackpad touch of the controller driving this arm
+  task: Pick up the blue cup and place it in the red container  # only if a checkpoint's dataset tasks are unreadable
+  deadman:  # held = run: the trackpad touch of the controller driving this arm
     topic: /libsurvive/joy
-    frame_id: LHR-12D31191 # right_serial in libsurvive_ros2 vive_devices.yaml; swap_hands gives it the left arm
-    button: 17             # touch bit: SURVIVE_BUTTON_MAX (16) + SURVIVE_BUTTON_TRACKPAD (1)
+    frame_id: LHR-12D31191  # right_serial in libsurvive_ros2 vive_devices.yaml; swap_hands gives it the left arm
+    button: 17  # touch bit: SURVIVE_BUTTON_MAX (16) + SURVIVE_BUTTON_TRACKPAD (1)
     alive: /vive/right/target  # released when that controller is no longer tracked
   # Per checkpoint type: inference every `every` steps, chunk merge (runtime.py), optional RTC.
   policies:

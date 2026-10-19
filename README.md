@@ -13,7 +13,6 @@
 
   A ROS2-native pipeline for robot learning. Collect demonstrations, convert to training-ready datasets, and deploy trained policies.
 
-
 ---
 
 ## About
@@ -261,4 +260,3 @@ mocked shell commands, without starting ROS or moving hardware. Actual GPU infer
 integrated wrapper on SweepTrash's first exported state and real decoded camera frames returned
 finite `(32, 14)` absolute actions; state reconstruction error was zero. The full focused suite and
 real `inference check` pass. A live simulation/hardware rollout has not been performed.
-

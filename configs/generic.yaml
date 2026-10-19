@@ -1,3 +1,4 @@
+---
 robot: generic
 
 topics:
@@ -11,7 +12,7 @@ topics:
 
 trigger:
   type: keyboard
-  start:   space
+  start: space
   success: enter
   discard: q
 

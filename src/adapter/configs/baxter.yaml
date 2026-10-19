@@ -1,7 +1,8 @@
+---
 robot_type: baxter
 fps: 30.0
 output: ./dataset
-hub_repo: null   # set to "username/dataset-name" to push to HuggingFace
+hub_repo:  # set to "username/dataset-name" to push to HuggingFace
 
 camera_mapping:
   left_hand_camera: observation.images.left

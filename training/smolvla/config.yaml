@@ -1,12 +1,13 @@
+---
 # SmolVLA (SmolVLM2-500M backbone + flow-matching action expert). Reproduces smolvla_cup_run1.
 name: smolvla
 backend: task
-dataset: cup_to_container        # SmolVLA resizes to 512x512 internally; 224x224 sources lose detail
+dataset: cup_to_container  # SmolVLA resizes to 512x512 internally; 224x224 sources lose detail
 steps: 30000
 batch_size: 64
 save_freq: 5000
-gpu_mem_mib: 30000               # rough estimate, not measured
+gpu_mem_mib: 30000  # rough estimate, not measured
 retry_batch_sizes: [32, 16]
 args:
   policy_type: smolvla
-  # cameras: [observation.images.left]   # wrist-only variant (smolvla_cup_wrist, 2026-10-11)
+  # cameras: [observation.images.left]  # wrist-only variant (smolvla_cup_wrist, 2026-10-11)

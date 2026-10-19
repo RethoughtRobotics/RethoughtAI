@@ -21,14 +21,14 @@ import time
 from collections import deque
 
 import numpy as np
-from builtin_interfaces.msg import Duration
 from baxter_core_msgs.msg import DigitalIOState, EndEffectorState
+from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import PoseStamped, Transform
 from moveit_msgs.msg import RobotTrajectory
 from nav_msgs.msg import Path
+from rclpy.qos import DurabilityPolicy, QoSProfile
 from rclpy.time import Time
 from scipy.spatial.transform import Rotation
-from rclpy.qos import DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Bool
 from trajectory_msgs.msg import JointTrajectoryPoint, MultiDOFJointTrajectoryPoint
@@ -50,10 +50,10 @@ class PolicyNode:
     def __init__(self, node, cfg, images, policy, every=1):
         """`images`: the config's topics.images; the policy's cameras are used."""
         self.node, self.policy = node, policy
-        self.fps, self.every = float(cfg["fps"]), int(every)
+        self.fps, self.every = float(cfg['fps']), int(every)
         self.dt = 1.0 / self.fps
-        self.arm = cfg["arm"]
-        self.joint_names = [f"{self.arm}_{j}" for j in JOINTS]
+        self.arm = cfg['arm']
+        self.joint_names = [f'{self.arm}_{j}' for j in JOINTS]
         self.latest = {}  # name -> (value, receive time)
         self.lock = threading.Lock()
         self.last = None  # last chunk published, for RTC
@@ -66,27 +66,30 @@ class PolicyNode:
         self.anchor = None  # TCP (p, R) the last chunk was planned from
         self.squeezed = self.correcting = False  # the cuff now; a correction as the worker sees it
 
-        self.cameras = {c["key"]: c["topic"] for c in images if c["key"] in policy.features}
-        missing = [k for k in policy.features if k.startswith("observation.images.") and k not in self.cameras]
+        self.cameras = {c['key']: c['topic'] for c in images if c['key'] in policy.features}
+        missing = [k for k in policy.features if k.startswith('observation.images.') and k not in self.cameras]
         if missing:
-            raise ValueError(f"no camera topic configured for {', '.join(missing)}")
+            raise ValueError(f'no camera topic configured for {", ".join(missing)}')
         for key, topic in self.cameras.items():
             node.create_subscription(Image, topic, lambda m, k=key: self._store(k, np.array(image_rgb(m))), 2)
-        node.create_subscription(PoseStamped, cfg["tcp"], self._on_tcp, 10)
-        node.create_subscription(JointState, cfg["joint_states"], self._on_joints, 10)
-        node.create_subscription(EndEffectorState, cfg["gripper"],
-                                 lambda m: self._store("gripper", 1.0 - float(m.position) / 100.0), 10)
-        if cfg.get("engaged"):
+        node.create_subscription(PoseStamped, cfg['tcp'], self._on_tcp, 10)
+        node.create_subscription(JointState, cfg['joint_states'], self._on_joints, 10)
+        node.create_subscription(
+            EndEffectorState, cfg['gripper'], lambda m: self._store('gripper', 1.0 - float(m.position) / 100.0), 10
+        )
+        if cfg.get('engaged'):
             latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
-            node.create_subscription(Bool, cfg["engaged"], lambda m: self.fresh.set(), latched)
-        if cfg.get("cuff"):
-            node.create_subscription(DigitalIOState, cfg["cuff"], lambda m: setattr(self, "squeezed", bool(m.state)), 10)
-        self.chunk_pub = node.create_publisher(RobotTrajectory, cfg["chunk"], 10)
-        self.path_pub = node.create_publisher(Path, cfg["chunk"] + "_path", 10)
+            node.create_subscription(Bool, cfg['engaged'], lambda m: self.fresh.set(), latched)
+        if cfg.get('cuff'):
+            node.create_subscription(
+                DigitalIOState, cfg['cuff'], lambda m: setattr(self, 'squeezed', bool(m.state)), 10
+            )
+        self.chunk_pub = node.create_publisher(RobotTrajectory, cfg['chunk'], 10)
+        self.path_pub = node.create_publisher(Path, cfg['chunk'] + '_path', 10)
         self.samples = deque(maxlen=2 * policy.n_obs_steps + 2)  # (time, observation), every half step
         if policy.n_obs_steps > 1:
             node.create_timer(self.dt / 2, self._sample)
-        threading.Thread(target=self._run, daemon=True, name="policy").start()
+        threading.Thread(target=self._run, daemon=True, name='policy').start()
 
     def _now(self):
         return self.node.get_clock().now().nanoseconds * 1e-9
@@ -97,23 +100,23 @@ class PolicyNode:
 
     def _on_tcp(self, msg):
         p, o = msg.pose.position, msg.pose.orientation
-        self._store("tcp", (np.array([p.x, p.y, p.z]), np.array([o.x, o.y, o.z, o.w])))
+        self._store('tcp', (np.array([p.x, p.y, p.z]), np.array([o.x, o.y, o.z, o.w])))
 
     def _on_joints(self, msg):
         if self.joint_names[0] in msg.name:
-            self._store("joints", np.array([msg.position[msg.name.index(n)] for n in self.joint_names]))
+            self._store('joints', np.array([msg.position[msg.name.index(n)] for n in self.joint_names]))
 
     def _observation(self):
         """(time, observation, TCP) from the latest inputs, or None while any is missing or stale."""
         now = self._now()
         with self.lock:
             latest = dict(self.latest)
-        names = [*self.cameras, "tcp", "joints", "gripper"]
+        names = [*self.cameras, 'tcp', 'joints', 'gripper']
         if any(n not in latest or now - latest[n][1] > STALE for n in names):
             return None
-        tcp = latest["tcp"][0]
+        tcp = latest['tcp'][0]
         obs = {key: latest[key][0] for key in self.cameras}
-        obs["observation.state"] = self.policy.state(*tcp, latest["gripper"][0], latest["joints"][0])
+        obs['observation.state'] = self.policy.state(*tcp, latest['gripper'][0], latest['joints'][0])
         return now, obs, tcp
 
     def _sample(self):
@@ -147,15 +150,17 @@ class PolicyNode:
         if self.last is None or self.last.end < t:
             return delay, None
         if delay >= horizon:
-            self._warn_once(f"inference delay ({delay} steps) reaches RTC's execution_horizon ({horizon}): "
-                            "fresh chunks, not continued, until it is below")
+            self._warn_once(
+                f"inference delay ({delay} steps) reaches RTC's execution_horizon ({horizon}): "
+                'fresh chunks, not continued, until it is below'
+            )
             return delay, None
         ts = t + self.dt * np.arange(int((self.last.end - t) * self.fps) + 1)
         samples = [self.last.at(x) for x in ts]
         positions, rotations = np.array([s[0] for s in samples]), Rotation.concatenate([s[1] for s in samples])
         lead = np.linalg.norm(positions[0] - tcp[0])
         if lead > MAX_LEAD:
-            self._warn_once(f"the last chunk is {1000 * lead:.0f} mm ahead of the TCP: a fresh chunk, not continued")
+            self._warn_once(f'the last chunk is {1000 * lead:.0f} mm ahead of the TCP: a fresh chunk, not continued')
             return delay, None
         self.warned = False
         return delay, relative_actions(positions, rotations, np.array([s[2] for s in samples]), *tcp)
@@ -180,7 +185,7 @@ class PolicyNode:
                 self.correcting = self.squeezed
                 self.policy.reset()
                 with self.lock:
-                    tcp = self.latest.get("tcp")
+                    tcp = self.latest.get('tcp')
                 if not self.correcting and self.last is not None and tcp is not None:
                     self.last = self.last.reanchored(*self.anchor, tcp[0][0], Rotation.from_quat(tcp[0][1]))
             if self.correcting:
@@ -206,27 +211,36 @@ class PolicyNode:
             self._publish(t, positions, rotations, actions[:, 6])
             if self.count % max(1, round(LOG_EVERY * self.fps / self.every)) == 0:
                 self.node.get_logger().info(
-                    f"{self.count} chunks; inference p50 {1000 * self.latency.percentile(0.5):.0f} ms, "
-                    f"recent max {1000 * self.latency.percentile(0.99):.0f} ms ({self.dt * 1000:.0f} ms per step)")
+                    f'{self.count} chunks; inference p50 {1000 * self.latency.percentile(0.5):.0f} ms, '
+                    f'recent max {1000 * self.latency.percentile(0.99):.0f} ms ({self.dt * 1000:.0f} ms per step)'
+                )
 
     def _publish(self, t, positions, rotations, triggers):
         stamp = Time(nanoseconds=round(t * 1e9)).to_msg()
         msg, path = RobotTrajectory(), Path()
         for header in (msg.joint_trajectory.header, msg.multi_dof_joint_trajectory.header, path.header):
-            header.stamp, header.frame_id = stamp, "base"
-        msg.multi_dof_joint_trajectory.joint_names = [f"{self.arm}_tcp"]
-        msg.joint_trajectory.joint_names = [f"{self.arm}_gripper"]
+            header.stamp, header.frame_id = stamp, 'base'
+        msg.multi_dof_joint_trajectory.joint_names = [f'{self.arm}_tcp']
+        msg.joint_trajectory.joint_names = [f'{self.arm}_gripper']
         for k, (p, q, trigger) in enumerate(zip(positions, rotations.as_quat(), triggers)):
             offset = k * self.dt
             duration = Duration(sec=int(offset), nanosec=int(round((offset - int(offset)) * 1e9)))
             tf = Transform()
             tf.translation.x, tf.translation.y, tf.translation.z = (float(x) for x in p)
             tf.rotation.x, tf.rotation.y, tf.rotation.z, tf.rotation.w = (float(x) for x in q)
-            msg.multi_dof_joint_trajectory.points.append(MultiDOFJointTrajectoryPoint(transforms=[tf], time_from_start=duration))
-            msg.joint_trajectory.points.append(JointTrajectoryPoint(positions=[float(trigger)], time_from_start=duration))
+            msg.multi_dof_joint_trajectory.points.append(
+                MultiDOFJointTrajectoryPoint(transforms=[tf], time_from_start=duration)
+            )
+            msg.joint_trajectory.points.append(
+                JointTrajectoryPoint(positions=[float(trigger)], time_from_start=duration)
+            )
             pose = PoseStamped()
             pose.header = path.header
-            pose.pose.position.x, pose.pose.position.y, pose.pose.position.z = tf.translation.x, tf.translation.y, tf.translation.z
+            pose.pose.position.x, pose.pose.position.y, pose.pose.position.z = (
+                tf.translation.x,
+                tf.translation.y,
+                tf.translation.z,
+            )
             pose.pose.orientation = tf.rotation
             path.poses.append(pose)
         self.chunk_pub.publish(msg)
@@ -241,10 +255,10 @@ class RecordingLight:
     def __init__(self, node, light):
         import importlib
 
-        package, name = light["msg_type"].split("/")
-        self.msg_type = getattr(importlib.import_module(f"{package}.msg"), name)
-        self.name = light["name"]
-        self.pub = node.create_publisher(self.msg_type, light["topic"], 10)
+        package, name = light['msg_type'].split('/')
+        self.msg_type = getattr(importlib.import_module(f'{package}.msg'), name)
+        self.name = light['name']
+        self.pub = node.create_publisher(self.msg_type, light['topic'], 10)
         self._set(True)
         node.create_timer(1.0, lambda: self._set(True))
 
@@ -256,4 +270,3 @@ class RecordingLight:
     def off(self):
         self._set(False)
         time.sleep(0.3)  # let it go out before the node does
-

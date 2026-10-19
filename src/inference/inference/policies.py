@@ -9,7 +9,7 @@ from adapter.labels import chunk_actions, load_episode, model_state, relative_ac
 
 # Policies whose predict_action_chunk reads the last n_obs_steps observations from queues that only
 # select_action fills: LeRobotPolicy fills them itself from the observations it is given.
-OBS_HISTORY = {"multi_task_dit"}
+OBS_HISTORY = {'multi_task_dit'}
 
 
 def raw_state(tcp_p, tcp_q, gripper, joints):
@@ -31,7 +31,7 @@ def letterbox(image, height, width):
     nh, nw = round(h * scale), round(w * scale)
     out = np.zeros((height, width, 3), np.uint8)
     top, left = (height - nh) // 2, (width - nw) // 2
-    out[top:top + nh, left:left + nw] = stretch(image, nh, nw)
+    out[top : top + nh, left : left + nw] = stretch(image, nh, nw)
     return out
 
 
@@ -43,8 +43,12 @@ def stretch(image, height, width):
     import torch
     import torch.nn.functional as F
 
-    resized = F.interpolate(torch.from_numpy(np.ascontiguousarray(image)).permute(2, 0, 1)[None].float(),
-                            (height, width), mode="bilinear", antialias=True)
+    resized = F.interpolate(
+        torch.from_numpy(np.ascontiguousarray(image)).permute(2, 0, 1)[None].float(),
+        (height, width),
+        mode='bilinear',
+        antialias=True,
+    )
     return resized[0].permute(1, 2, 0).round().clamp(0, 255).byte().numpy()
 
 
@@ -68,7 +72,7 @@ class ReplayPolicy:
         return len(self.episode)
 
     def __call__(self, observation):
-        return chunk_actions(self.episode, observation["step"], self.chunk_size)
+        return chunk_actions(self.episode, observation['step'], self.chunk_size)
 
 
 def model_dir(model, revision=None):
@@ -83,21 +87,21 @@ def model_dir(model, revision=None):
 def model_config(model, revision=None):
     """The checkpoint's config.json, without loading the weights."""
     if Path(model).is_dir():
-        return json.loads((Path(model) / "config.json").read_text())
+        return json.loads((Path(model) / 'config.json').read_text())
     from huggingface_hub import hf_hub_download
 
-    return json.loads(Path(hf_hub_download(model, "config.json", revision=revision)).read_text())
+    return json.loads(Path(hf_hub_download(model, 'config.json', revision=revision)).read_text())
 
 
 def train_config(model, revision=None):
     """The checkpoint's train_config.json, or None if it has none."""
     if Path(model).is_dir():
-        path = Path(model) / "train_config.json"
+        path = Path(model) / 'train_config.json'
     else:
         from huggingface_hub import hf_hub_download
 
         try:
-            path = Path(hf_hub_download(model, "train_config.json", revision=revision))
+            path = Path(hf_hub_download(model, 'train_config.json', revision=revision))
         except Exception:
             return None
     return json.loads(path.read_text()) if path.exists() else None
@@ -109,8 +113,8 @@ def trained_lead(model, revision=None):
     import re
 
     train = train_config(model, revision)
-    name = train and train["dataset"]["repo_id"]
-    return name if name and re.search(r"_lead\d+ms", name) else None
+    name = train and train['dataset']['repo_id']
+    return name if name and re.search(r'_lead\d+ms', name) else None
 
 
 def trained_tasks(model, revision=None):
@@ -119,13 +123,14 @@ def trained_tasks(model, revision=None):
     train = train_config(model, revision)
     if not train:
         return ()
-    from huggingface_hub import hf_hub_download
     import pandas as pd
+    from huggingface_hub import hf_hub_download
 
-    dataset = train["dataset"]
+    dataset = train['dataset']
     try:
-        path = hf_hub_download(dataset["repo_id"], "meta/tasks.parquet", repo_type="dataset",
-                               revision=dataset.get("revision"))
+        path = hf_hub_download(
+            dataset['repo_id'], 'meta/tasks.parquet', repo_type='dataset', revision=dataset.get('revision')
+        )
     except Exception:  # offline and not cached, or an older dataset format
         return ()
     return tuple(pd.read_parquet(path).index)
@@ -134,20 +139,22 @@ def trained_tasks(model, revision=None):
 def chunk_length(config):
     """Actions in a chunk the policy returns (config.json as a dict): `chunk_size` (ACT, SmolVLA), or
     `n_action_steps` for a policy that plans `horizon` steps and returns the first ones (VITA)."""
-    return config.get("chunk_size") or config["n_action_steps"]
+    return config.get('chunk_size') or config['n_action_steps']
 
 
 def action_layout(config):
     """Validate the state/action contract before loading weights or starting a runtime."""
-    layout = (config["input_features"]["observation.state"]["shape"][0],
-              config["output_features"]["action"]["shape"][0])
+    layout = (
+        config['input_features']['observation.state']['shape'][0],
+        config['output_features']['action']['shape'][0],
+    )
     if layout == (17, 7):
-        return "relative"
+        return 'relative'
     if layout == (15, 8):
-        return "absolute"
+        return 'absolute'
     if layout == (28, 14):
-        return "bimanual_absolute"
-    raise ValueError(f"state/action dims {layout}, expected (17, 7), (15, 8) or (28, 14)")
+        return 'bimanual_absolute'
+    raise ValueError(f'state/action dims {layout}, expected (17, 7), (15, 8) or (28, 14)')
 
 
 def load_config(path):
@@ -161,15 +168,15 @@ def load_config(path):
 
     import inference.vita  # noqa: F401  registers the "vita" policy type
 
-    config = json.loads((path / "config.json").read_text())
-    known = {f.name for f in dataclasses.fields(PreTrainedConfig.get_choice_class(config["type"]))} | {"type"}
+    config = json.loads((path / 'config.json').read_text())
+    known = {f.name for f in dataclasses.fields(PreTrainedConfig.get_choice_class(config['type']))} | {'type'}
     extra = {k: config.pop(k) for k in list(config) if k not in known}
     if not extra:
         return PreTrainedConfig.from_pretrained(path)
     if ignored := {k: v for k, v in extra.items() if v is not None}:
-        warnings.warn(f"{path}: this LeRobot ignores {ignored}")
+        warnings.warn(f'{path}: this LeRobot ignores {ignored}')
     with tempfile.TemporaryDirectory() as tmp:
-        (Path(tmp) / "config.json").write_text(json.dumps(config))
+        (Path(tmp) / 'config.json').write_text(json.dumps(config))
         return PreTrainedConfig.from_pretrained(tmp)
 
 
@@ -191,32 +198,34 @@ class LeRobotPolicy:
     over the first `delay` steps (Real-Time Chunking).
     """
 
-    def __init__(self, model, device, task="", rtc=None, revision=None, overrides=None):
+    def __init__(self, model, device, task='', rtc=None, revision=None, overrides=None):
         import torch
         from lerobot.policies import get_policy_class, make_pre_post_processors
         from lerobot.processor import NormalizerProcessorStep
 
         path = model_dir(model, revision)
         cfg = load_config(path)
-        layout = action_layout(json.loads((path / "config.json").read_text()))
-        self.bimanual = layout == "bimanual_absolute"
-        self.absolute = layout in ("absolute", "bimanual_absolute")
+        layout = action_layout(json.loads((path / 'config.json').read_text()))
+        self.bimanual = layout == 'bimanual_absolute'
+        self.absolute = layout in ('absolute', 'bimanual_absolute')
         if self.absolute and rtc:
-            raise ValueError(f"{cfg.type} predicts absolute goals; RTC continues TCP-relative chunks: "
-                             "leave `rtc` out of its inference settings")
+            raise ValueError(
+                f'{cfg.type} predicts absolute goals; RTC continues TCP-relative chunks: '
+                'leave `rtc` out of its inference settings'
+            )
         cfg.device, cfg.pretrained_path = device, path
-        if cfg.type == "groot" and device == "cpu":  # its bf16 autocast mixes dtypes on the CPU
+        if cfg.type == 'groot' and device == 'cpu':  # its bf16 autocast mixes dtypes on the CPU
             cfg.use_bf16, cfg.model_params_fp32 = False, True
         for key, value in (overrides or {}).items():  # e.g. num_steps: fewer flow steps, less latency
             setattr(cfg, key, value)
         # Cameras of different shapes, which a policy resizes to one itself (MultiTask DiT's
         # image_resize_shape, by a newer LeRobot): this one requires them equal, so they get that shape
         # here, stretched as the policy would. Equal shapes keep their letterbox (BlueCupToContainer).
-        cameras = {tuple(f.shape) for k, f in cfg.input_features.items() if k.startswith("observation.images.")}
-        self.resize = getattr(cfg, "image_resize_shape", None) if len(cameras) > 1 else None
+        cameras = {tuple(f.shape) for k, f in cfg.input_features.items() if k.startswith('observation.images.')}
+        self.resize = getattr(cfg, 'image_resize_shape', None) if len(cameras) > 1 else None
         if self.resize:
             for key, feature in cfg.input_features.items():
-                if key.startswith("observation.images."):
+                if key.startswith('observation.images.'):
                     feature.shape = (feature.shape[0], *self.resize)
         self.policy = get_policy_class(cfg.type).from_pretrained(path, config=cfg)
         if rtc:
@@ -224,26 +233,27 @@ class LeRobotPolicy:
             from lerobot.rollout.inference.rtc import supports_rtc_inference
 
             if not supports_rtc_inference(self.policy):
-                raise ValueError(f"{cfg.type} does not support RTC: leave `rtc` out of its inference settings")
+                raise ValueError(f'{cfg.type} does not support RTC: leave `rtc` out of its inference settings')
             from lerobot.configs import RTCAttentionSchedule
 
             rtc = dict(rtc)
-            if "prefix_attention_schedule" in rtc:
-                rtc["prefix_attention_schedule"] = RTCAttentionSchedule[rtc["prefix_attention_schedule"].upper()]
+            if 'prefix_attention_schedule' in rtc:
+                rtc['prefix_attention_schedule'] = RTCAttentionSchedule[rtc['prefix_attention_schedule'].upper()]
             self.policy.config.rtc_config = RTCConfig(**rtc)
             self.policy.init_rtc_processor()
         self.policy.to(device).eval()
 
-        if (path / "policy_preprocessor.json").exists():
-            overrides = {"device_processor": {"device": device}}
-            if (path / "tokenizer").is_dir():  # saved with the checkpoint, named relative to it
-                overrides["tokenizer_processor"] = {"tokenizer_name": str(path / "tokenizer")}
-            self.pre, self.post = make_pre_post_processors(
-                cfg, pretrained_path=path, preprocessor_overrides=overrides)
+        if (path / 'policy_preprocessor.json').exists():
+            overrides = {'device_processor': {'device': device}}
+            if (path / 'tokenizer').is_dir():  # saved with the checkpoint, named relative to it
+                overrides['tokenizer_processor'] = {'tokenizer_name': str(path / 'tokenizer')}
+            self.pre, self.post = make_pre_post_processors(cfg, pretrained_path=path, preprocessor_overrides=overrides)
         else:
-            stats = json.loads((path / "normalization_stats.json").read_text())
-            stats = {k: {s: np.asarray(v, dtype=np.float32) for s, v in st.items() if v is not None}
-                     for k, st in stats.items()}
+            stats = json.loads((path / 'normalization_stats.json').read_text())
+            stats = {
+                k: {s: np.asarray(v, dtype=np.float32) for s, v in st.items() if v is not None}
+                for k, st in stats.items()
+            }
             self.pre, self.post = make_pre_post_processors(cfg, dataset_stats=stats)
         # for RTC; GR00T normalizes inside its own packing step
         self.normalizer = next((s for s in self.pre.steps if isinstance(s, NormalizerProcessorStep)), None)
@@ -251,7 +261,9 @@ class LeRobotPolicy:
         self.type, self.chunk_size = cfg.type, chunk_length(vars(cfg))
         self.n_obs_steps = cfg.n_obs_steps if cfg.type in OBS_HISTORY else 1
         self.features = list(cfg.input_features)
-        self.image_shapes = {k: tuple(f.shape[1:]) for k, f in cfg.input_features.items() if k.startswith("observation.images.")}
+        self.image_shapes = {
+            k: tuple(f.shape[1:]) for k, f in cfg.input_features.items() if k.startswith('observation.images.')
+        }
 
     def reset(self):
         self.policy.reset()
@@ -260,11 +272,10 @@ class LeRobotPolicy:
 
     def state(self, tcp_p, tcp_q, gripper, joints):
         """observation.state for this checkpoint's layout."""
-        if getattr(self, "bimanual", False):
+        if getattr(self, 'bimanual', False):
             # Dataset order is [left pose, left joints, right pose, right joints].
             # Signs are made continuous at TCP reception, not forced to qy >= 0.
-            return np.concatenate([np.r_[tcp_p[a], tcp_q[a], joints[a]]
-                                   for a in ("left", "right")]).astype(np.float32)
+            return np.concatenate([np.r_[tcp_p[a], tcp_q[a], joints[a]] for a in ('left', 'right')]).astype(np.float32)
         return (raw_state if self.absolute else model_state)(tcp_p, tcp_q, gripper, joints)
 
     def __call__(self, observation, delay=0, prev=None, tcp=None, history=()):
@@ -274,22 +285,31 @@ class LeRobotPolicy:
         from lerobot.policies.utils import populate_queues, prepare_observation_for_inference
         from lerobot.processor import TransitionKey, create_transition
 
-        if self.absolute and not getattr(self, "bimanual", False) and tcp is None:
-            raise ValueError(f"{self.type} predicts absolute goals: pass the TCP observed")
+        if self.absolute and not getattr(self, 'bimanual', False) and tcp is None:
+            raise ValueError(f'{self.type} predicts absolute goals: pass the TCP observed')
         torch = self.torch
 
         def preprocess(obs):
-            return self.pre(prepare_observation_for_inference(
-                {k: (stretch if self.resize else letterbox)(obs[k], *self.image_shapes[k]) if k in self.image_shapes else obs[k]
-                 for k in self.features}, self.device, self.task))
+            return self.pre(
+                prepare_observation_for_inference(
+                    {
+                        k: (stretch if self.resize else letterbox)(obs[k], *self.image_shapes[k])
+                        if k in self.image_shapes
+                        else obs[k]
+                        for k in self.features
+                    },
+                    self.device,
+                    self.task,
+                )
+            )
 
         # RTC guidance needs gradients, which inference_mode forbids
         with torch.no_grad() if self.rtc else torch.inference_mode():
             if self.type in OBS_HISTORY:  # its queues hold exactly these observations
                 self.policy.reset()
-                for obs in [*history[-(self.n_obs_steps - 1):], observation]:
+                for obs in [*history[-(self.n_obs_steps - 1) :], observation]:
                     # cameras stacked, as the queue holds them; no `action` (None here), as select_action
-                    batch = self.policy._prepare_batch({k: v for k, v in preprocess(obs).items() if k != "action"})
+                    batch = self.policy._prepare_batch({k: v for k, v in preprocess(obs).items() if k != 'action'})
                     self.policy._queues = populate_queues(self.policy._queues, batch)
             else:
                 batch = preprocess(observation)
@@ -300,12 +320,12 @@ class LeRobotPolicy:
                     prev = self.normalizer(create_transition(action=prev))[TransitionKey.ACTION]
                     horizon = self.policy.config.rtc_config.execution_horizon
                     pad = torch.zeros((horizon, prev.shape[-1]), device=self.device)
-                    pad[:min(horizon, len(prev))] = prev[:horizon]
+                    pad[: min(horizon, len(prev))] = prev[:horizon]
                     prev = pad
-                kwargs = {"inference_delay": delay, "prev_chunk_left_over": prev}
+                kwargs = {'inference_delay': delay, 'prev_chunk_left_over': prev}
             actions = self.policy.predict_action_chunk(batch, **kwargs)
             actions = self.post(actions)[0].float().cpu().numpy().astype(np.float64)
-        if self.absolute and not getattr(self, "bimanual", False):
+        if self.absolute and not getattr(self, 'bimanual', False):
             from scipy.spatial.transform import Rotation
 
             actions = relative_actions(actions[:, :3], Rotation.from_quat(actions[:, 3:7]), actions[:, 7], *tcp)

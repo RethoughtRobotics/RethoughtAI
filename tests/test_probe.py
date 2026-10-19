@@ -24,20 +24,20 @@ def test_trace_counts_calls_and_shapes():
     model = Toy()
     root = probe.trace(model, lambda: model(torch.zeros(5, 1, 4)))
     nodes = {n.name: n for n in probe.walk(root)}
-    assert nodes["layers.0"].calls == 3 and nodes["layers.0"].outputs == [[5, 1, 4]]
-    assert nodes["unused"].calls == 0
-    assert nodes["attn"].attention and not nodes["layers.0"].attention
+    assert nodes['layers.0'].calls == 3 and nodes['layers.0'].outputs == [[5, 1, 4]]
+    assert nodes['unused'].calls == 0
+    assert nodes['attn'].attention and not nodes['layers.0'].attention
     assert root.params == sum(p.numel() for p in model.parameters())
 
 
 def test_alternating_stack_folds_to_its_unit():
     model = Toy()
     root = probe.trace(model, lambda: model(torch.zeros(5, 1, 4)))
-    layers = next(n for n in root.children if n.name == "layers")
+    layers = next(n for n in root.children if n.name == 'layers')
     assert probe.period(layers) == 2
     assert probe.period(root) == 0  # named children are not a stack
     out = probe.text(root)
-    assert "2–5  repeat 0–1" in out and "    2  Linear" not in out
+    assert '2–5  repeat 0–1' in out and '    2  Linear' not in out
 
 
 def test_json_round_trip():
@@ -47,6 +47,8 @@ def test_json_round_trip():
 
 
 def test_blank_observation_is_hwc_images_and_state():
-    obs = probe.blank_observation({"observation.images.left": {"type": "VISUAL", "shape": [3, 4, 6]},
-                                   "observation.state": {"type": "STATE", "shape": [17]}})
-    assert obs["observation.images.left"].shape == (4, 6, 3) and obs["observation.state"].shape == (17,)
+    obs = probe.blank_observation({
+        'observation.images.left': {'type': 'VISUAL', 'shape': [3, 4, 6]},
+        'observation.state': {'type': 'STATE', 'shape': [17]},
+    })
+    assert obs['observation.images.left'].shape == (4, 6, 3) and obs['observation.state'].shape == (17,)

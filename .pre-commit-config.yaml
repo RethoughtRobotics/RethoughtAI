@@ -1,14 +1,43 @@
 ---
-# Guard: no HPC infrastructure in this public repository. Job scripts and cluster details belong
-# in the private hpc/ checkout. The patterns are written so this file does not match itself.
+# src/inference/inference/vita/ is vendored (Apache-2.0, the VITA authors and Hugging Face): never reformatted.
+exclude: ^src/inference/inference/vita/
 repos:
+  - repo: https://github.com/polymathrobotics/polymath_code_standard
+    rev: v2.6.1
+    hooks:
+      # Basic checks and fixes that apply to any text file and the git repository itself
+      - id: polymath-general
+        exclude: \.(gif|png|jpg|jpeg)$
+      # Specific languages
+      - id: polymath-python
+      - id: polymath-cpp
+      - id: polymath-shell
+      - id: polymath-cmake
+      - id: polymath-docker
+      - id: polymath-markdown
+      - id: polymath-xml
+      - id: polymath-yaml
+      - id: polymath-toml
+      - id: polymath-json
+  # House rule: no arrow characters or em dashes in any text file. Write "to" or "then" instead of
+  # an arrow, and a comma, colon or parentheses instead of an em dash. pygrep matches bytes, so the
+  # pattern is UTF-8: the em dash (U+2014) and the arrow blocks U+2190-21FF and U+27F0-27FF.
+  - repo: local
+    hooks:
+      - id: no-arrows-or-em-dashes
+        name: No arrow characters or em dashes
+        language: pygrep
+        entry: \xe2(\x80\x94|\x86[\x90-\xbf]|\x87[\x80-\xbf]|\x9f[\xb0-\xbf])
+        types: [text]
+  # Guard: no HPC infrastructure in this public repository. Job scripts and cluster details belong
+  # in the private hpc/ checkout. The patterns are written so this file does not match itself.
   - repo: local
     hooks:
       - id: no-hpc-job-files
         name: No HPC job files
         language: fail
         entry: HPC job scripts belong in the private hpc/ checkout, not in this repository
-        files: '\.(sbatch|slurm)$|(^|/)hpc/'
+        files: \.(sbatch|slurm)$|(^|/)hpc/
       - id: no-hpc-infrastructure
         name: No HPC infrastructure details
         language: pygrep

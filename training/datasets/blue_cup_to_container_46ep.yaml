@@ -1,3 +1,4 @@
+---
 # BlueCupToContainer without episodes 4, 14, 24, 34 and 44: the 46-episode set the GR00T and pi0.5
 # runs trained on (2026-10-12/13). Only the lerobot backend can select episodes.
 repo_id: andnetdeboer/BlueCupToContainer

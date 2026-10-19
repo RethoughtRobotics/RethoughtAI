@@ -1,3 +1,4 @@
+---
 # Pose-only SweepTrash deployment. Start teleop with --both --policy --no-gripper.
 robot: baxter
 topics:
