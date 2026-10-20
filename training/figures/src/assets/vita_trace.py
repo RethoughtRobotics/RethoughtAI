@@ -97,8 +97,8 @@ cos = float(np.dot(z1, z_demo) / np.linalg.norm(z1) / np.linalg.norm(z_demo))
 pos_err = float(np.linalg.norm(pred[:, :3] - demo[: len(pred), :3], axis=1).mean())
 print('observer', trace['observer'].shape, 'z0', trace['z0'].shape, 'steps', len(steps))
 print(f'cos(z1, z_demo) = {cos:.3f}; mean left xyz error {pos_err * 1000:.1f} mm')
-json.dump(
-    {
+OUT.write_text(
+    json.dumps({
         'state': state.round(3).tolist(),
         'img_feats': trace['observer'][28:].reshape(3, 512).round(3).tolist(),
         'steps': [s.round(3).tolist() for s in steps],
@@ -107,6 +107,6 @@ json.dump(
         'demo': demo.round(3).tolist(),
         'cos': cos,
         'pos_err_mm': pos_err * 1000,
-    },
-    open(OUT, 'w'),
+    })
+    + '\n'
 )

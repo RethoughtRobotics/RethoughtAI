@@ -50,13 +50,13 @@ ep = data[data.episode_index == 0]
 i = int(T * FPS)
 
 # model.typ: the 16-step chunk and the state at t.
-json.dump(
-    {
+(HERE / 'chunk.json').write_text(
+    json.dumps({
         'chunk': np.stack(ep['action'].values[i : i + 16]).round(3).tolist(),
         'state': np.asarray(ep['observation.state'].values[i]).round(3).tolist(),
         't': T,
-    },
-    open(HERE / 'chunk.json', 'w'),
+    })
+    + '\n'
 )
 
 # dit.typ: parameters by module, and the 32-step chunk min-max normalised as the DiT trains on it,
@@ -93,28 +93,28 @@ def alpha_bar(s):
 betas = np.array([min(1 - alpha_bar((k + 1) / steps) / alpha_bar(k / steps), 0.999) for k in range(steps)])
 abar = np.cumprod(1 - betas)[50]
 eps = np.random.default_rng(0).standard_normal(x0.shape)
-json.dump(
-    {
+(HERE / 'dit.json').write_text(
+    json.dumps({
         'params': params,
         'x0': x0.round(3).tolist(),
         'xt': (math.sqrt(abar) * x0 + math.sqrt(1 - abar) * eps).round(3).tolist(),
         'eps': eps.round(3).tolist(),
         'abar_t': float(abar),
-    },
-    open(HERE / 'dit.json', 'w'),
+    })
+    + '\n'
 )
 
 # ttt_lora.typ: eight seeded latent offsets of VITA's z0, and illustrative rewards.
 vita = json.load(open(HERE / 'vita.json'))
 z0, sigma = np.array(vita['steps'][0]), 0.03
 starts = z0 + sigma * np.random.default_rng(0).standard_normal((8, 512))
-json.dump(
-    {
+(HERE / 'ttt.json').write_text(
+    json.dumps({
         'z0': z0.round(3).tolist(),
         'z_demo': vita['z_demo'],
         'sigma': sigma,
         'starts': starts.round(3).tolist(),
         'rewards': [0.25, 0.3, 1.4, 0.2, 0.55, 1.45, 0.3, 0.6],
-    },
-    open(HERE / 'ttt.json', 'w'),
+    })
+    + '\n'
 )
