@@ -2,6 +2,7 @@
 
   ros2 launch launch/policy.launch.py model:=models/act_CupToContainer/step-100000
   ros2 launch launch/policy.launch.py model:=... episode:=recorder/data/CupToContainer/episode_004
+  ros2 launch launch/policy.launch.py model:=models/vita_X/step-30000 adapter:=adapters/t1 alpha:=0.5
 
 With `episode` (a shadow rollout), the policy watches that episode's recorded cameras: the arm
 first moves to the episode's start pose, then the bag plays from its first step.
@@ -18,16 +19,18 @@ from launch.substitutions import EnvironmentVariable, LaunchConfiguration
 
 
 def processes(context):
-    model, episode, config, device, revision = (
-        LaunchConfiguration(n).perform(context) for n in ('model', 'episode', 'config', 'device', 'revision')
+    model, episode, config, device, revision, adapter, alpha = (
+        LaunchConfiguration(n).perform(context)
+        for n in ('model', 'episode', 'config', 'device', 'revision', 'adapter', 'alpha')
     )
     rev = ['--revision', revision] if revision else []
+    lora = (['--adapter', adapter] if adapter else []) + (['--alpha', alpha] if alpha else [])
     shadow = ['--start-at', episode, '--player', '/rosbag2_player'] if episode else []
     actions = [
         # Respawned if it dies (e.g. it exits on a lost GPU context, bimanual_policy_node.device_lost):
         # the runtime holds the arm and resumes on the new server's chunks.
         ExecuteProcess(
-            cmd=['uv', 'run', 'inference', 'serve', config, '--model', model, '--device', device, *rev],
+            cmd=['uv', 'run', 'inference', 'serve', config, '--model', model, '--device', device, *rev, *lora],
             name='serve',
             output='screen',
             respawn=True,
@@ -56,6 +59,10 @@ def generate_launch_description():
         DeclareLaunchArgument('config', default_value='configs/baxter.yaml'),
         DeclareLaunchArgument('device', default_value='cuda'),
         DeclareLaunchArgument('revision', default_value='', description='Hub branch/tag/commit of the model'),
+        DeclareLaunchArgument('adapter', default_value='', description='VITA LoRA adapter directory (inference.lora)'),
+        DeclareLaunchArgument(
+            'alpha', default_value='', description="the adapter's weight: 0 the base, 1 (default) adapted"
+        ),
         # the robot stack's middleware, unless the shell sets one
         SetEnvironmentVariable(
             'RMW_IMPLEMENTATION', EnvironmentVariable('RMW_IMPLEMENTATION', default_value='rmw_zenoh_cpp')

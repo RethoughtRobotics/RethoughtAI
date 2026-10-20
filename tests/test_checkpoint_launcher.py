@@ -49,3 +49,20 @@ def test_duplicate_numeric_steps_rejected(tmp_path):
 def test_list_never_starts_ros(tmp_path):
     run = launcher(tmp_path, 'vita_demo/step-3000')
     assert run('--list').stdout.strip() == 'models/vita_demo/step-3000'
+
+
+def test_a_model_directory_or_repo_skips_the_lookup(tmp_path):
+    run = launcher(tmp_path, 'elsewhere/step-1')
+    assert run('--model', str(tmp_path / 'models/elsewhere/step-1'), '--resolve').stdout.strip() == str(
+        tmp_path / 'models/elsewhere/step-1'
+    )
+    assert run('--model', 'user/vita_sim', '--revision', 'step-030000', '--resolve').stdout.strip() == 'user/vita_sim'
+    assert run('--model', 'user/vita_sim', '--vita', '--resolve').returncode == 2
+
+
+def test_alpha_needs_an_adapter(tmp_path):
+    run = launcher(tmp_path, 'vita_demo/step-3000')
+    assert run('--vita', '--alpha', '0.5', '--resolve').returncode == 2
+    assert run('--vita', '--adapter', str(tmp_path), '--resolve').returncode == 2  # no adapter.json
+    (tmp_path / 'adapter.json').write_text('{}')
+    assert run('--vita', '--adapter', str(tmp_path), '--alpha', '0', '--resolve').returncode == 0
