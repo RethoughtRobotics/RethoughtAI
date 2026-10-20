@@ -196,9 +196,11 @@ class LeRobotPolicy:
 
     With `rtc` (RTCConfig fields): `prev`, the unexecuted actions of the current chunk, is inpainted
     over the first `delay` steps (Real-Time Chunking).
+    With `adapter` (a lora.save directory), VITA's flow net runs with that LoRA adapter at `alpha` (0: the
+    base exactly).
     """
 
-    def __init__(self, model, device, task='', rtc=None, revision=None, overrides=None):
+    def __init__(self, model, device, task='', rtc=None, revision=None, overrides=None, adapter=None, alpha=1.0):
         import torch
         from lerobot.policies import get_policy_class, make_pre_post_processors
         from lerobot.processor import NormalizerProcessorStep
@@ -242,6 +244,12 @@ class LeRobotPolicy:
             self.policy.config.rtc_config = RTCConfig(**rtc)
             self.policy.init_rtc_processor()
         self.policy.to(device).eval()
+        if adapter:
+            from inference import lora
+
+            if cfg.type != 'vita':
+                raise ValueError(f'LoRA adapters are for VITA checkpoints, not {cfg.type}')
+            lora.load(lora.flow_net(self.policy), adapter, alpha)
 
         if (path / 'policy_preprocessor.json').exists():
             overrides = {'device_processor': {'device': device}}

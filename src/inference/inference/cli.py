@@ -145,13 +145,20 @@ def check(model, config, revision):
 @click.option('--model', required=True, help='LeRobot checkpoint: Hub repo (user/name) or local directory')
 @click.option('--device', default='cuda', show_default=True)
 @click.option('--revision', default=None, help='Hub branch, tag or commit of --model (e.g. step-005000)')
-def serve(config, model, device, revision):
+@click.option(
+    '--adapter', type=click.Path(exists=True, file_okay=False), default=None, help='VITA LoRA adapter (inference.lora)'
+)
+@click.option('--alpha', type=float, default=None, help='With --adapter: its weight, 0 the base exactly (default 1)')
+def serve(config, model, device, revision, adapter, alpha):
     """Run a policy on the robot's topics, publishing its action chunks for `run`.
 
     \b
     Examples:
       inference serve baxter.yaml --model andnetdeboer/ACT_20261007-2113_ckpt010000
+      inference serve baxter.yaml --model models/vita_X/step-30000 --adapter adapters/t1 --alpha 0.5
     """
+    if alpha is not None and not adapter:
+        raise click.UsageError('--alpha needs --adapter')
     full = yaml.safe_load(resolve_config(config).read_text())
     cfg = full['inference']
 
@@ -160,10 +167,15 @@ def serve(config, model, device, revision):
 
     settings = policy_settings(cfg, model_config(model, revision), trained_lead(model, revision))
     task = deploy_task(cfg.get('task'), trained_tasks(model, revision))
-    policy = LeRobotPolicy(model, device, task, settings.get('rtc'), revision, settings.get('overrides'))
+    alpha = 1.0 if alpha is None else alpha
+    policy = LeRobotPolicy(
+        model, device, task, settings.get('rtc'), revision, settings.get('overrides'), adapter=adapter, alpha=alpha
+    )
     check_merge(settings['merge'], policy.chunk_size, settings.get('every', 1))
     click.echo(
-        f'Serving {model} ({policy.type}, chunks of {policy.chunk_size}) on {device}: every '
+        f'Serving {model} ({policy.type}, chunks of {policy.chunk_size})'
+        + (f' with adapter {adapter} at alpha {alpha}' if adapter else '')
+        + f' on {device}: every '
         f'{settings.get("every", 1)} step(s){", RTC" if policy.rtc else ""}, task {task!r}, chunks on {cfg["chunk"]}'
     )
 

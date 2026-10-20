@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # Run a downloaded policy checkpoint (models/<name>_*/step-<N>/) on the arm, in tmux.
 # Usage: scripts/run_inference --NAME [STEP] [options]
+#        scripts/run_inference --model DIR|REPO [--revision REV] [options]
 #   --NAME       checkpoint name or a unique prefix, e.g. --act, --smolvla_CupToContainer
 #   STEP         training step (default: newest)
+#   --model M    a checkpoint directory or Hub repo (user/name) instead of a downloaded --NAME
+#   --revision R with a Hub --model: its branch, tag or commit (e.g. step-030000)
+#   --adapter D  VITA LoRA adapter directory (inference.lora), on the checkpoint's flow net
+#   --alpha A    with --adapter: its weight, 0 the base exactly (default 1)
 #   --episode N  sim: shadow rollout of recorded episode N (default 4); refused with live cameras
 #   --config F   RethoughtAI config (default: configs/baxter.yaml; *SweepTrash*: baxter_bimanual.yaml)
 #   --device D   torch device (default: cuda)
@@ -24,13 +29,19 @@
 #   scripts/run_inference --vita_SweepTrash_Kin 50000      automatically uses baxter_bimanual.yaml
 #   scripts/run_inference --multi_task_dit_SweepTrash_Kin-Full_inpainted_minimax 30000   any *SweepTrash*: bimanual; full name if ambiguous
 #   scripts/run_inference --multi_task_dit_kin_pose_combo_30k_r5h100 30000   kinesthetic cup MultiTask DiT
+#   scripts/run_inference --model andnetdeboer/vita_X --revision step-030000 --adapter adapters/t1 --alpha 0.5
 
 set -eo pipefail
 cd "$(dirname "$0")/.."
 
 NAME="" STEP="" EPISODE="" CONFIG=configs/baxter.yaml DEVICE=cuda RESOLVE="" LIST="" CONFIG_GIVEN=""
+MODEL="" REVISION="" ADAPTER="" ALPHA=""
 while (( $# )); do
     case "$1" in
+        --model) MODEL="$2"; shift ;;
+        --revision) REVISION="$2"; shift ;;
+        --adapter) ADAPTER="$(realpath "$2")"; shift ;;
+        --alpha) ALPHA="$2"; shift ;;
         --resolve) RESOLVE=1 ;;
         --list) LIST=1 ;;
         --episode) EPISODE="$2"; shift ;;
@@ -46,46 +57,53 @@ if [[ -n "$LIST" ]]; then
     find models -mindepth 3 -maxdepth 3 -name config.json -printf '%h\n' | sort -V
     exit 0
 fi
-[[ -n "$NAME" ]] || { echo "Name a model: scripts/run_inference --act 100000 (models: $(find models -mindepth 1 -maxdepth 1 -printf '%f ' 2>/dev/null))" >&2; exit 2; }
-
-# models/<name> exactly, else models/<name>_* (those with step-<N>, if given); then its step-<N>
-# (newest without a step)
-shopt -s nullglob
-step_dirs() {
-    local d digits
-    for d in "$1"/step-*; do
-        digits="${d##*/step-}"
-        [[ -d "$d" && "$digits" =~ ^[0-9]+$ && -f "$d/config.json" ]] || continue
-        if [[ -z "$STEP" ]] || (( 10#$digits == 10#${STEP#step-} )); then
-            printf '%s\n' "$d"
-        fi
-    done
-}
-dirs=()
-if [[ -d models/"$NAME" ]]; then
-    dirs=(models/"$NAME")
+[[ -z "$ALPHA" || -n "$ADAPTER" ]] || { echo "--alpha needs --adapter" >&2; exit 2; }
+[[ -z "$ADAPTER" || -f "$ADAPTER/adapter.json" ]] || { echo "--adapter $ADAPTER: no adapter.json there" >&2; exit 2; }
+if [[ -n "$MODEL" ]]; then
+    [[ -z "$NAME" ]] || { echo "Give --model or --$NAME, not both" >&2; exit 2; }
+    [[ ! -d "$MODEL" ]] || MODEL="$(realpath "$MODEL")"
 else
-    for d in models/"$NAME"_*; do [[ -d "$d" && -n "$(step_dirs "$d")" ]] && dirs+=("$d"); done
+    [[ -n "$NAME" ]] || { echo "Name a model: scripts/run_inference --act 100000 (models: $(find models -mindepth 1 -maxdepth 1 -printf '%f ' 2>/dev/null))" >&2; exit 2; }
+
+    # models/<name> exactly, else models/<name>_* (those with step-<N>, if given); then its step-<N>
+    # (newest without a step)
+    shopt -s nullglob
+    step_dirs() {
+        local d digits
+        for d in "$1"/step-*; do
+            digits="${d##*/step-}"
+            [[ -d "$d" && "$digits" =~ ^[0-9]+$ && -f "$d/config.json" ]] || continue
+            if [[ -z "$STEP" ]] || (( 10#$digits == 10#${STEP#step-} )); then
+                printf '%s\n' "$d"
+            fi
+        done
+    }
+    dirs=()
+    if [[ -d models/"$NAME" ]]; then
+        dirs=(models/"$NAME")
+    else
+        for d in models/"$NAME"_*; do [[ -d "$d" && -n "$(step_dirs "$d")" ]] && dirs+=("$d"); done
+    fi
+    if (( ${#dirs[@]} != 1 )); then
+        echo "--$NAME${STEP:+ $STEP}: ${#dirs[@]} matching downloaded models. Steps are exact: 3000 is not 30000." >&2
+        echo "Available matching checkpoints (use the full model name if ambiguous):" >&2
+        for d in models/"$NAME" models/"$NAME"_*; do
+            [[ -d "$d" ]] || continue
+            printf '  %s:' "${d#models/}" >&2
+            for checkpoint in "$d"/step-*; do [[ -f "$checkpoint/config.json" ]] && printf ' %s' "${checkpoint##*/}" >&2; done
+            printf '\n' >&2
+        done
+        exit 2
+    fi
+    matches=()
+    while IFS= read -r checkpoint; do [[ -n "$checkpoint" ]] && matches+=("$checkpoint"); done < <(step_dirs "${dirs[0]}" | sort -V)
+    (( ${#matches[@]} )) || { echo "No downloaded step ${STEP:-latest} for ${dirs[0]}; use --list to see available checkpoints." >&2; exit 2; }
+    if [[ -n "$STEP" ]] && (( ${#matches[@]} > 1 )); then
+        echo "Duplicate numeric checkpoint step: ${matches[*]}; remove ambiguity before launching." >&2
+        exit 2
+    fi
+    MODEL="${matches[${#matches[@]}-1]}"
 fi
-if (( ${#dirs[@]} != 1 )); then
-    echo "--$NAME${STEP:+ $STEP}: ${#dirs[@]} matching downloaded models. Steps are exact: 3000 is not 30000." >&2
-    echo "Available matching checkpoints (use the full model name if ambiguous):" >&2
-    for d in models/"$NAME" models/"$NAME"_*; do
-        [[ -d "$d" ]] || continue
-        printf '  %s:' "${d#models/}" >&2
-        for checkpoint in "$d"/step-*; do [[ -f "$checkpoint/config.json" ]] && printf ' %s' "${checkpoint##*/}" >&2; done
-        printf '\n' >&2
-    done
-    exit 2
-fi
-matches=()
-while IFS= read -r checkpoint; do [[ -n "$checkpoint" ]] && matches+=("$checkpoint"); done < <(step_dirs "${dirs[0]}" | sort -V)
-(( ${#matches[@]} )) || { echo "No downloaded step ${STEP:-latest} for ${dirs[0]}; use --list to see available checkpoints." >&2; exit 2; }
-if [[ -n "$STEP" ]] && (( ${#matches[@]} > 1 )); then
-    echo "Duplicate numeric checkpoint step: ${matches[*]}; remove ambiguity before launching." >&2
-    exit 2
-fi
-MODEL="${matches[${#matches[@]}-1]}"
 [[ -n "$RESOLVE" ]] && { echo "$MODEL"; exit 0; }
 if [[ "$NAME" == *SweepTrash* && -z "$CONFIG_GIVEN" ]]; then
     CONFIG=configs/baxter_bimanual.yaml
@@ -95,7 +113,7 @@ EPISODE_DIR="recorder/data/CupToContainer/episode_$(printf %03d "$((10#${EPISODE
 
 source launch/env.sh
 # Reject unsupported layouts before stopping an existing run or touching ROS services.
-.venv/bin/inference check "$MODEL" --config "$CONFIG"
+.venv/bin/inference check "$MODEL" --config "$CONFIG" ${REVISION:+--revision "$REVISION"}
 SESSION=rai_inference
 
 # One run at a time: two runtimes would fight over the arm.
@@ -116,6 +134,7 @@ for topic in $(python3 -c "import yaml,sys; print(*(c['topic'] for c in yaml.saf
     [[ "$(timeout 5 ros2 topic info "$topic" 2>/dev/null)" =~ Publisher\ count:\ [1-9] ]] && live+=("$topic")
 done
 LAUNCH="ros2 launch launch/policy.launch.py model:=$MODEL config:=$CONFIG device:=$DEVICE"
+LAUNCH+="${REVISION:+ revision:=$REVISION}${ADAPTER:+ adapter:=$ADAPTER}${ALPHA:+ alpha:=$ALPHA}"
 if (( ${#live[@]} )); then
     [[ -z "$EPISODE" ]] || { echo "--episode $EPISODE: the robot's cameras are up (${live[*]}), and a shadow rollout would mix their frames with the bag's" >&2; exit 2; }
     echo "Live: the robot's cameras (${live[*]})"

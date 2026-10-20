@@ -183,6 +183,11 @@ scripts/run_inference --vita_BlueCupRedContainer_kin_lead640ms 80000
   `[xyz, quaternion xyzw, gripper]`. `LeRobotPolicy` converts to the internal relative format using
   the **observed** TCP, then `PolicyNode` reconstructs the same absolute targets. The TCP is not
   added twice; no change to the teleop's servo/IK is required.
+- A LoRA adapter (`inference.lora`: A, B, rank and target names, saved as `adapter.safetensors`
+  and `adapter.json`) runs on a VITA checkpoint's flow net with `--adapter DIR --alpha A`
+  (0 is the base exactly, default 1). `--model DIR|REPO [--revision REV]` runs a checkpoint
+  directory or Hub repo instead of a downloaded `--NAME`:
+  `scripts/run_inference --model user/vita_X --revision step-030000 --adapter adapters/t1 --alpha 0.5`.
 - The trained horizon is 32 frames (1.28 s at 25 Hz); its saved `n_action_steps` is 16. Deployment
   overrides only the returned slice to 32 and predicts every 16 frames (0.64 s), using `latest`.
   The tail covers inference latency: returning only 16 ends at 0.60 s and leaves a coverage gap.
