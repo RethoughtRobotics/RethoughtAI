@@ -1,9 +1,19 @@
 #!/usr/bin/env bash
-# Run a downloaded checkpoint (models/<name>_*/step-<N>/) in tmux: the policy above, a shell below
-# with scripts/start typed. scripts/start connects the policy to the arm, scripts/stop holds the arm where it is,
-# scripts/home sends it to the untuck pose (as the controller's B button).
-# On the real robot the policy watches its cameras; with no cameras up (the sim), a shadow rollout
-# of a recorded episode (4 unless --episode).
+# Run a downloaded policy checkpoint (models/<name>_*/step-<N>/) on the arm, in tmux.
+# Usage: scripts/run_inference --NAME [STEP] [options]
+#   --NAME       checkpoint name or a unique prefix, e.g. --act, --smolvla_CupToContainer
+#   STEP         training step (default: newest)
+#   --episode N  sim: shadow rollout of recorded episode N (default 4); refused with live cameras
+#   --config F   RethoughtAI config (default: configs/baxter.yaml; *SweepTrash*: baxter_bimanual.yaml)
+#   --device D   torch device (default: cuda)
+#   --list       list the downloaded checkpoints
+#   --resolve    print the checkpoint folder it would run, and exit
+# Teleop first: baxter_sdk scripts/run_teleop.sh --left --policy (two arms: --both --policy --no-gripper).
+# Then scripts/start connects the policy, scripts/stop holds the arm, scripts/home sends it home.
+
+# The policy runs in the top pane, a shell below has scripts/start typed. On the real robot the
+# policy watches its cameras; with none up (the sim) it runs a shadow rollout of a recorded episode.
+# Examples:
 #   scripts/run_inference --act 100000
 #   scripts/run_inference --smolvla_CupToContainer 30000 --episode 24
 #   scripts/run_inference --smolvla_CupToContainer_wrist   newest checkpoint (wrist camera only)
@@ -14,7 +24,7 @@
 #   scripts/run_inference --vita_SweepTrash_Kin 50000      automatically uses baxter_bimanual.yaml
 #   scripts/run_inference --multi_task_dit_SweepTrash_Kin-Full_inpainted_minimax 30000   any *SweepTrash*: bimanual; full name if ambiguous
 #   scripts/run_inference --multi_task_dit_kin_pose_combo_30k_r5h100 30000   kinesthetic cup MultiTask DiT
-# Bring teleop up first: --left --policy for cups; --both --policy --no-gripper for SweepTrash.
+
 set -eo pipefail
 cd "$(dirname "$0")/.."
 
@@ -26,7 +36,7 @@ while (( $# )); do
         --episode) EPISODE="$2"; shift ;;
         --config) CONFIG="$2"; CONFIG_GIVEN=1; shift ;;
         --device) DEVICE="$2"; shift ;;
-        -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,/^$/{/^#/s/^# \{0,1\}//p}' "$0"; exit 0 ;;
         --*) NAME="${1#--}"; [[ "${2:-}" =~ ^(step-)?[0-9]+$ ]] && { STEP="$2"; shift; } ;;
         *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
