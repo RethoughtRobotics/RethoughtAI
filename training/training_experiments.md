@@ -23,10 +23,12 @@ gap between two seeds of the same run (runs 1 and 2) is not a finding.
 | Item | Rule | Why |
 |---|---|---|
 | Held-out episodes | **3, 10, 17, 24, 31, 38, 45, 52** (8 of 56, spread across sessions) | The same 8 for every run, so every run is tested on the same thing |
-| How they are held out | **Train-only dataset copies** with those 8 removed (step 0 below) | The `task` backend (VITA, DiT) trains on every episode and refuses an episode list (`train.py` `task_cmd`); switching some runs to the `lerobot` backend would change the training loop for those runs only |
+| Training loop | **`lerobot-train` for every run** (`lerobot` backend, configs `vita_sweep` and `dit_sweep`), rethought-lerobot branch `sweep-experiments` | It trained M1 and M2. The `task` backend's script is written for the single-arm cup task (15-D state, 8-D action, its own hardcoded episode split) and cannot read SweepTrash |
+| How they are held out | **Train-only dataset copies** with those 8 removed (step 0 below) | Normalization statistics are recomputed without the held-out episodes |
+| Validation loss | Every frame of the **evaluation-only copy** with the run's own label lead (`dataset.eval_repo_id`), every 2000 steps | `lerobot-train`'s default holds out the last 10% of the training episodes: 1 or 2 of train12's 12 demos, and only the first 2048 frames of them. Validation loss is watched, never used to choose anything |
 | Identical frames | Before launching, check every variant has 56 episodes with identical lengths | The inpainted and lead variants must be the same frames, or the pairs are not pairs |
-| Training | 30k steps, the policy's config batch size, seed 42, same augmentation | Only the named change differs |
-| Checkpoint | The final step only | Picking a step by held-out score leaks the test set into the choice |
+| Training | 30k steps, seed 42, M1's and M2's recipes (VITA batch 128 fp32 EMA 0.75, DiT batch 64 bf16; LeRobot's default image augmentation for both) | Only the named change differs |
+| Checkpoint | The final step is the one compared. Every 5k steps is saved, to see when the sweep skip appears | Picking a step by held-out score leaks the test set into the choice |
 | Fewer demos | Nested and fixed: 12 in 24 in 48, spread across sessions | Otherwise "fewer demos" also means "different demos" |
 | Evaluation images | The **inpainted (minimax)** held-out frames, for every model | At deployment no operator is in view; raw frames keep the operator cue in the test set and flatter a model that learned it |
 | Robot tests | No help by hand. A takeover is logged as a correction and the attempt counts as a failure | The 2026-10-15 rollouts mixed policy and operator and cannot be read as policy behaviour |
@@ -43,8 +45,13 @@ dataset (for example with LeRobot's dataset editing tool), then add one `dataset
 | `..._minimax_lead640ms_train12` | the same | 12, a fixed subset of the 24 |
 | `..._minimax_train48` | `SweepTrash_Kin-Full_inpainted_minimax` (lead 0) | 48 |
 | `SweepTrash_Kin-Full_train48` | `SweepTrash_Kin-Full` (raw, lead 0) | 48 |
+| `..._minimax_lead640ms_heldout8` | `SweepTrash_Kin-Full_inpainted_minimax_lead640ms` | the 8 held-out only: validation for lead-640 ms runs |
+| `..._minimax_heldout8` | `SweepTrash_Kin-Full_inpainted_minimax` | the 8 held-out only: validation for lead-0 runs (raw-trained run 5 too) |
+| `SweepTrash_Kin-Full_heldout8` | `SweepTrash_Kin-Full` (raw) | the 8 held-out only: the extra raw-image evaluation of runs 4 and 5 |
 
-Record the exact episode lists of the 24 and 12 subsets in their YAML comments.
+The dataset configs are `datasets/sweep_*.yaml`; their comments list the original episode indices each
+copy keeps (train24 = 0 2 5 7 9 12 14 16 19 21 23 26 28 30 33 35 37 40 42 44 47 49 51 54; train12 =
+0 5 9 14 19 23 28 33 37 42 47 51).
 
 ## Metrics
 
@@ -63,6 +70,10 @@ episode are correlated, so the episode is the unit.
 3. **Error per phase.** Metric 1 split into place, sweep, carry, empty.
 
 Multi-Task DiT samples from noise, so it is evaluated with 5 fixed noise seeds and averaged.
+
+Runs 4 and 5 are also evaluated on the **raw** held-out frames. A raw-trained model tested on inpainted
+frames loses the operator cue and meets inpainting artifacts at once; the 2 x 2 (trained on, tested on)
+separates the two.
 
 ## Methods
 
@@ -152,22 +163,28 @@ signal, not the machinery.
 ## Tonight's runs
 
 Baseline **B** = M1 (VITA), `..._minimax_lead640ms_train48`, 1 observation frame, seed 42. Each run
-differs from the run in "compare with" in exactly the named change.
+differs from the run in "compare with" in exactly the named change. Run `<N>` is
+`train.py <vita_sweep|dit_sweep> --dataset sweep_<copy> --name <vita|multi_task_dit>_exp<N> --set hub_suffix=_exp<N>`
+plus its change as `--set`.
 
 | # | Method | Dataset copy | Change | Compare with | Question |
 |---|---|---|---|---|---|
 | 1 | M1 | `minimax_lead640ms_train48` | none (B) | | baseline |
-| 2 | M1 | `minimax_lead640ms_train48` | seed 7 | 1 | noise floor: smaller gaps are not findings |
-| 3 | M1 | `minimax_lead640ms_train48` | `n_obs_steps: 2` | 1 | does a second frame stop the sweep skip? |
+| 2 | M1 | `minimax_lead640ms_train48` | `seed=7` | 1 | noise floor: smaller gaps are not findings |
+| 2b | M1 | `minimax_lead640ms_train48` | `seed=123` | 1, 2 | noise floor from three seeds instead of one gap |
+| 3 | M1 | `minimax_lead640ms_train48` | `args.policy.n_obs_steps=2` (frames t-1, t: 40 ms apart) | 1 | does a second frame stop the sweep skip? |
+| 3b | M1 | `minimax_lead640ms_train48` | as 3 plus `args.policy.obs_stride=38` (frames t-38, t: 1.52 s apart) | 3 | does a frame from before the current motion help where the frame 40 ms back cannot? |
 | 4 | M1 | `minimax_train48` | label lead 0 | 1 | do lead-640 ms labels matter? |
 | 5 | M1 | `SweepTrash_Kin-Full_train48` | raw frames (no inpainting) | 4 | does the operator in view create a shortcut? (the raw set has only lead 0, so its pair is 4) |
 | 6 | M1 | `minimax_lead640ms_train24` | 24 demos | 1 | few-shot curve |
 | 7 | M1 | `minimax_lead640ms_train12` | 12 demos | 6, 1 | few-shot curve |
 | 8 | M2 | `minimax_lead640ms_train48` | architecture | 1 | VITA against DiT at 48 demos |
-| 9 | M2 | `minimax_lead640ms_train12` | architecture at 12 demos | 8, 7 | does DiT fall off faster with fewer demos? |
+| 8b | M2 | `minimax_lead640ms_train24` | 24 demos | 8 | DiT's few-shot curve, so run 9 is read along a curve |
+| 9 | M2 | `minimax_lead640ms_train12` | architecture at 12 demos | 8b, 7 | does DiT fall off faster with fewer demos? |
 
 Measured cost on an RTX 6000 Ada: VITA 4.8 steps/s (about 1.7 h for 30k), DiT 1.4 steps/s (about
-6 h). Run 9 is the one deliberate two-factor cell, read only against both of its neighbours.
+6 h): 9 VITA and 3 DiT runs, about 33 GPU hours. Runs 6, 7 against 1 and 8b, 9 against 8 give one
+few-shot curve per architecture; 7 against 9 compares them at 12 demos.
 
 ## Next runs (need code first)
 
@@ -186,15 +203,24 @@ Fill in from the evaluation script; median over the 8 held-out episodes (range i
 |---|---|---|---|---|
 | 1 | | | | |
 | 2 | | | | |
+| 2b | | | | |
 | 3 | | | | |
+| 3b | | | | |
 | 4 | | | | |
 | 5 | | | | |
 | 6 | | | | |
 | 7 | | | | |
 | 8 | | | | |
+| 8b | | | | |
 | 9 | | | | |
 
 ## Limits
+
+- **Label lead and the servo.** The lead-640 ms datasets were labelled for the servo's 0.6 s lag. Since
+  2026-10-16 the lag is 0.15 s, so on the robot a lead-640 ms model now over-leads. The planned
+  feedforward (the runtime passes the chunk's velocity to `servo_twist`) makes lead 0 the label to train
+  on. Open-loop metrics compare against the recorded trajectory and are unaffected; robot tests of
+  lead-640 ms models with today's servo are not.
 
 - Open-loop metrics screen; they do not measure task success. The best two runs and B go to the robot.
 - One task, one operator, one robot.

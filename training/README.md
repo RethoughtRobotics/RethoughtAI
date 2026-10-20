@@ -14,7 +14,8 @@ training/
 ├── tmux_train.sh           run any command in a detached tmux session on one GPU, teed to a log
 ├── upload_checkpoints.py   push checkpoints to a HF model repo (step-* branches + main)
 ├── defaults.yaml           shared settings: paths, HF/W&B accounts, validation, seed, ...
-├── datasets/               one YAML per dataset (repo id, episodes)
+├── datasets/               one YAML per dataset (repo id, episodes, optional eval_repo_id)
+├── vita_sweep/, dit_sweep/ config.yaml only: VITA and DiT with lerobot-train (training_experiments.md)
 └── <policy>/               act, smolvla, multi_task_dit, vita, groot, pi05
     ├── config.yaml         backend, steps, batch size, GPU memory, policy arguments
     ├── train.sh            launcher: training/<policy>/train.sh [train.py options]
@@ -31,7 +32,9 @@ huggingface-cli login && wandb login              # checkpoints go to HF, metric
 
 Then check `defaults.yaml`: `lerobot_dir`, `output_root`, `hub_owner` and the W&B entity are per user.
 The fork must include held-out validation (`dataset.eval_split` / `eval_steps`) and PEFT
-`rank_pattern` support, which the pi0.5 config needs.
+`rank_pattern` support, which the pi0.5 config needs. A dataset config with `eval_repo_id` validates on
+every episode of that dataset instead of splitting episodes off the training set; that needs
+`dataset.eval_repo_id` (rethought-lerobot branch `sweep-experiments`).
 
 ## 2. Pick a policy
 

@@ -113,13 +113,18 @@ def flag_value(v) -> str:
 
 def lerobot_cmd(cfg: dict) -> list[str]:
     ds, val, wb = cfg['dataset'], cfg['val'], cfg['wandb']
+    # A dataset config with eval_repo_id validates on every episode of that dataset instead of splitting
+    # episodes off the training set.
+    eval_repo = ds.get('eval_repo_id')
     common = {
         'dataset.repo_id': ds['repo_id'],
         'dataset.episodes': ds.get('episodes'),
         'dataset.video_backend': cfg['video_backend'],
         'dataset.image_transforms.enable': cfg['image_augmentation'],
-        'dataset.eval_split': val['split'],
-        'eval_steps': val['every'] if val['split'] else 0,
+        'dataset.eval_repo_id': eval_repo,
+        'dataset.eval_split': 0.0 if eval_repo else val['split'],
+        'max_eval_samples': 0 if eval_repo else None,
+        'eval_steps': val['every'] if val['split'] or eval_repo else 0,
         'policy.device': 'cuda',
         'policy.push_to_hub': True,
         'policy.private': cfg['private'],

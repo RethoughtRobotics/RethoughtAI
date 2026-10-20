@@ -1,0 +1,12 @@
+---
+# SweepTrash_Kin-Full_inpainted_minimax_lead640ms_train24
+#   train-only copy of SweepTrash_Kin-Full_inpainted_minimax_lead640ms (training_experiments.md, step 0).
+# Keeps 24 of its 56 episodes, renumbered from 0. Original episode indices kept:
+#   0 2 5 7 9 12 14 16 19 21 23 26 28 30 33 35 37 40 42 44 47 49 51 54
+# Never in any training copy (the evaluation episodes): 3 10 17 24 31 38 45 52.
+# A fixed subset of the train48 episodes; train12 is a fixed subset of these.
+repo_id: andnetdeboer/SweepTrash_Kin-Full_inpainted_minimax_lead640ms_train24
+short_name: SweepTrash_Kin-Full_inpainted_minimax_lead640ms_train24
+episodes:  # all of the copy
+# Validation loss on every evaluation episode (lerobot-train dataset.eval_repo_id):
+eval_repo_id: andnetdeboer/SweepTrash_Kin-Full_inpainted_minimax_lead640ms_heldout8

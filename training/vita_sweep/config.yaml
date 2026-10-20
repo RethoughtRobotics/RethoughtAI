@@ -1,0 +1,21 @@
+---
+# VITA with lerobot-train on the SweepTrash train-only copies (training_experiments.md, M1). Reproduces
+# the recipe of vita_SweepTrash_Kin-Full_inpainted_minimax_lead640ms_aug_30k_r1: fp32, EMA 0.75, LeRobot's
+# default image augmentation, cameras resized to 240x320 before augmenting.
+# The dataset config's eval_repo_id holds the evaluation episodes, so no training episode is split off.
+name: vita
+backend: lerobot
+dataset: sweep_minimax_lead640ms_train48
+steps: 30000
+batch_size: 128
+save_freq: 5000
+gpu_mem_mib: 30000  # rough estimate, not measured
+retry_batch_sizes: [64]
+args:
+  policy.type: vita
+  policy.horizon: 32  # 1.28 s at 25 fps
+  policy.n_action_steps: 16
+  ema.enable: true
+  ema.power: 0.75
+  dataset.image_transforms.resize_shape: [240, 320]
+  dataset.image_transforms.resize_antialias: false
