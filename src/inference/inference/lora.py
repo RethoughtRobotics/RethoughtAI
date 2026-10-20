@@ -7,7 +7,9 @@ On VITA they sit on fc1 and fc2 of each flow net block (VITA_TARGETS: 8 layers w
 latents runs.
 
 An adapter on disk is a directory: adapter.safetensors (each target's A and B) and adapter.json
-(rank and target names).
+(rank, target names and, if saved with one, `root`: the module of the policy the names are relative
+to, e.g. 'vita' for adapters on the observation encoder or action decoder too). An adapter without
+a root is on the flow net.
 """
 
 import fnmatch
@@ -46,9 +48,12 @@ class LoRALinear(nn.Module):
         return self.alpha * self.B @ self.A
 
 
+FLOW_NET = 'vita.flow_net'
+
+
 def flow_net(policy):
     """The module VITA's adapter names are relative to: VitaPolicy's flow net."""
-    return policy.vita.flow_net
+    return policy.get_submodule(FLOW_NET)
 
 
 def targets(root, patterns=VITA_TARGETS):
@@ -91,8 +96,9 @@ def parameters(root):
     return [p for m in adapters(root).values() for p in (m.A, m.B)]
 
 
-def save(root, path):
-    """Write root's adapters (A, B, rank, target names) to the directory `path`."""
+def save(root, path, name=None):
+    """Write root's adapters (A, B, rank, target names) to the directory `path`; `name`, root's
+    module name in the policy (as policy.get_submodule takes it), is stored as the adapter's root."""
     from safetensors.torch import save_file
 
     layers = adapters(root)
@@ -105,7 +111,10 @@ def save(root, path):
     path.mkdir(parents=True, exist_ok=True)
     tensors = {f'{name}.{k}': getattr(m, k).detach().cpu().contiguous() for name, m in layers.items() for k in 'AB'}
     save_file(tensors, str(path / WEIGHTS))
-    (path / META).write_text(json.dumps({'rank': ranks.pop(), 'targets': list(layers)}, indent=2) + '\n')
+    meta = {'rank': ranks.pop(), 'targets': list(layers)}
+    if name is not None:
+        meta['root'] = name
+    (path / META).write_text(json.dumps(meta, indent=2) + '\n')
     return path
 
 
@@ -128,3 +137,13 @@ def load(root, path, alpha=1.0):
                     raise ValueError(f'{name}.{k}: adapter {tuple(value.shape)}, layer {tuple(param.shape)}')
                 param.copy_(value)
     return wrapped
+
+
+def root_of(policy, path):
+    """The module of `policy` that the adapter at `path` is named relative to."""
+    return policy.get_submodule(json.loads((Path(path) / META).read_text()).get('root', FLOW_NET))
+
+
+def load_policy(policy, path, alpha=1.0):
+    """load() on the module of `policy` the adapter names as its root (the flow net if none)."""
+    return load(root_of(policy, path), path, alpha)

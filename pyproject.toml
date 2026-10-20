@@ -25,12 +25,14 @@ dependencies = [
 record    = "recorder.cli:main"
 adapt     = "adapter.cli:main"
 inference = "inference.cli:main"
+ttt       = "ttt.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = [
     "src/recorder/recorder",
     "src/adapter/adapter",
     "src/inference/inference",
+    "src/ttt/ttt",
 ]
 
 # CUDA 12.8 torch: runs on NVIDIA driver >= 525; PyPI's CUDA 13 build needs >= 580
