@@ -1,0 +1,11 @@
+---
+# BlueCupRedContainer_sim_train37
+#   train-only copy of BlueCupRedContainer_sim: scripted demonstrations in the MuJoCo sim (BaxterSDK
+#   baxter_mujoco datagen, seed 0; random layouts and lighting), recorded with the robot's recorder
+#   config and exported with measured TCP labels, no lead.
+# Keeps episodes 0 to 36 of its 60, renumbered from 0 (sim plan: S2b).
+repo_id: andnetdeboer/BlueCupRedContainer_sim_train37
+short_name: BlueCupRedContainer_sim_train37
+episodes:  # all of the copy
+# Validation loss on every evaluation episode (lerobot-train dataset.eval_repo_id):
+eval_repo_id: andnetdeboer/BlueCupRedContainer_sim_heldout5
