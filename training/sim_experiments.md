@@ -6,548 +6,605 @@ reuses; read that first.
 
 ## The question
 
-The real experiments can only score policies open loop, on recorded frames, with a demonstration
-playing the corrector, on 18 test episodes from the same sessions. **Which features of the data, the
-observations, the model and the correction actually change closed-loop success, each one tested on
-its own?** The MuJoCo sim (BaxterSDK `baxter_mujoco`) runs the policy through the same runtime,
-teleop, IK and gripper as the robot, scores success automatically, and generates as many scripted
-demonstrations as needed under controlled variation, so every factor can be changed alone, with
-paired layouts and several training seeds.
+**Can a frozen visuomotor policy be fixed at test time, from a handful of corrections or its own
+attempts, by updating a small adapter, without losing what it already does, and faster per minute of
+robot time than collecting more demonstrations, fine-tuning or reinforcement learning?**
 
-What the sim does not answer: its gripper fingers are shorter, it grasps the cup's wall higher and
-its images are rendered, so a sim result shows whether a mechanism works, not how large it is on
-the robot. Anything that matters is carried back to the real data (the "Real counterpart" column).
+A method paper that claims this has to show five things, in order, and this plan is built as those
+five parts:
+
+1. **The problem is real**: the base fails systematically, and more demonstrations alone do not fix
+   it as cheaply (part 1).
+2. **It beats the obvious alternatives**, the simplest first: fine-tuning, retraining with the
+   corrections (DAgger), a residual policy, steering the latent, reward (part 2).
+3. **Every component earns its place**: each part of the method removed or changed on its own
+   (part 3).
+4. **The correction signal is understood**: where corrections come from, how many, how good they
+   must be, when to update (part 4).
+5. **It generalises and transfers**: unseen conditions, other base policies and base strengths,
+   repeated adaptation, and the sim's ranking confirmed on the robot (parts 5 and 6).
+
+The real plan scores open loop on 18 recorded test episodes with a demonstration as the corrector.
+The MuJoCo sim (BaxterSDK `baxter_mujoco`) runs the policy through the robot's own runtime, teleop,
+IK and gripper, scores success itself, and supplies an expert that can correct any state the policy
+reaches, so each question is answered closed loop, one factor at a time, with paired layouts and
+several training seeds. Its fingers are shorter, it grasps the cup's wall higher and its images are
+rendered: sim results rank methods; the robot sizes them (part 6).
 
 ## Data
 
-All sim data is the cup task (`BlueCupRedContainer` scene, the lab of `baxter_mujoco/lab.toml`),
-recorded with the robot's recorder config and exported like the real cup data: measured TCP labels,
-no lead, left arm, 8-D action, 15-D state, left hand and third_eye cameras, 25 fps.
+The cup task (`BlueCupRedContainer` scene, the lab of `baxter_mujoco/lab.toml`), recorded with the
+robot's recorder config and exported as the real cup data: measured TCP labels, no lead, left arm,
+8-D action, 15-D state, left hand and third_eye cameras, 25 fps. Layouts lie in the real ranges
+capped at the sim arm's reach (x at most 0.87 m); lighting is random per episode.
 
 | Set | Source | Use |
 |---|---|---|
-| Base | generated episodes 0 to 20 (21, as the real base) | trains every base policy |
-| Correction pool | generated episodes 21 to 37 (17) | the only source of offline corrections |
-| Test, open loop | generated episodes 38 to 55 (18) | path and progress error, as the real plan |
-| Test, closed loop | 50 layouts, seeds 1000 to 1049, never generated as demonstrations | success; every condition runs the same 50, in the same order |
+| Base | episodes 0 to 20 (21, as the real base) | trains the base policy |
+| Correction pool | episodes 21 to 37 (17) | offline corrections (the real plan's simulated corrector) |
+| Test, open loop | episodes 38 to 55 (18) | path and progress error, comparable with the real plan |
+| Adaptation layouts | 20 layouts, seeds 500 to 519 | where on-policy corrections and attempts are collected |
+| Test, closed loop | 50 layouts, seeds 1000 to 1049 | success; never used to adapt or to choose anything |
 
-`andnetdeboer/BlueCupRedContainer_sim` (60 episodes, seed 0) already holds episodes 0 to 59 of the
-reference generator. An experiment that changes the data (group A) generates its own episodes with
-the same seeds, so its layouts match the reference episode for episode.
+`andnetdeboer/BlueCupRedContainer_sim` (seed 0) holds the generator's episodes 0 to 59.
 
-### The reference condition S0
+### The references
 
-Every experiment changes exactly one row of this table and keeps the rest.
+Every plan changes one thing against these and keeps the rest.
 
-| Factor | S0 |
+| | Reference |
 |---|---|
-| Demonstrations | 21 (episodes 0 to 20) |
-| Layouts | cup x 0.46 to 0.87 m, y -0.20 to 0.44 m; container x 0.42 to 0.87 m, y -0.28 to 0.36 m (the real ranges, capped at the sim arm's reach) |
-| Lighting | randomised per episode (`scenes.sample_lighting`) |
-| Grasp | the cup's wall from straight above, fixed orientation |
-| Demonstration noise | none: the scripted plan exactly |
-| Labels | measured TCP, no lead |
-| Cameras | left hand and third_eye |
-| State | TCP pose, gripper, 7 joints |
-| History | the current frame only |
-| Policy | VITA, the repository configuration, 30k steps, training seed 0 |
-| Chunk | 32 steps decoded, 16 run |
-| Image augmentation | the repository default |
-| Distractors | none |
+| **S0, the base** | VITA [1], the repository configuration, 30k steps, episodes 0 to 20, training seed 0; 32-step chunks, 16 run |
+| **M0, the method** | the real plan's T1: LoRA [4] rank 16 on the flow net's 8 linear layers, $\mathcal{L}_1$ with anchor $\lambda = 0.5$, frames off by more than 3 cm, corrections from 4 pool episodes (21, 25, 29, 33), 200 steps, batch 256, learning rate 1e-4, $\alpha = 1$ |
 
 ## Shared method
 
-### The base policy
+### Base and adapter
 
 ![VITA](figures/vita.png)
-
-VITA [1], as in the real plan: observation latent to action latent by flow matching, a 32-step
-chunk of which 16 run. One S0 base is trained three times (training seeds 0, 1, 2: S0, S0b, S0c);
-their spread is the noise floor of every comparison below.
-
-### Closed-loop evaluation
-
-`run_sim_teleop.sh --cup --cameras --left --policy` with the policy runtime (`scripts/run_inference`)
-driving it, exactly as on the robot. Per attempt: the layout and lighting of its seed, the arm and
-gripper at home, the right arm parked, 40 s. Scored from the sim's object poses:
-
-1. **Success**: the cup at rest inside the container (`CupTask.success`), within 40 s.
-2. **Phase reached**: reach, grasp (gripper closed on the cup), transfer (cup lifted), release (cup
-   in the container). The furthest phase is the partial credit of a failure.
-3. **Time to success** (s), successes only.
-4. **Failure mode**, from the logged trajectory: missed grasp, dropped in transit, released outside,
-   stalled (no progress for 5 s), timeout.
-
-Open-loop metrics on the 18 open-loop test episodes are the real plan's (progress error, path error,
-phase errors), so every sim result has an open-loop number comparable to the real ones.
-
-### Statistics
-
-The unit is the **layout** (50), paired across conditions: the same seeds, layouts and lighting.
-Success is compared as the paired difference in success rate with a 95% bootstrap interval over
-layouts [7, 8]; continuous metrics as the median paired difference. **An effect counts** only if its
-interval excludes zero **and** it exceeds the spread of S0, S0b and S0c. Nothing is tuned on the 50
-test layouts.
-
-### Code to write (shared by the plans below)
-
-1. **Generator switches** in `baxter_mujoco.datagen` (one flag each, defaults = S0): `--n`,
-   layout region, `--lab-lighting` (exists), grasp yaw range, demonstration noise, distractor.
-2. **Reach cap**: the S0 layout ranges in `scenes.py` (x at most 0.87 m; every failed attempt of the
-   first 60-episode run had the cup or container beyond it).
-3. **Closed-loop evaluator**: for each seed, set the layout and lighting (`/sim/layout`,
-   `/sim/lighting`), home, start the policy, watch `/sim/objects` and the gripper, stop at success or
-   40 s, write one row per attempt (seed, success, phase, time, failure mode) and keep the bag.
-4. **Planner as corrector**: `CupTask.plan` from the arm's current TCP and the cup's current pose
-   (`/sim/objects`), so the scripted expert can label any state the policy reaches.
-5. **Dataset subsets** by episode list (`split_dataset`), as the real `_trainK` / `_heldoutM` copies.
-6. **Results**: one table row per condition, intervals against S0, the seed spread.
-
-## Group A: what in the data matters
-
-### Plan S1: how many demonstrations?
-
-**Inquiry.** Few-shot imitation degrades as demonstrations shrink; the real few-shot curve (the old
-runs 6 and 7) costs a robot session per point and stops at 56. Data size is the first factor of
-offline imitation studies [25].
-
-**Hypothesis H-S1.** Success rises steeply from 5 to 21 demonstrations and flattens by 55. **Null:**
-no change beyond the seed spread from 21 to 200.
-
-| # | Demonstrations |
-|---|---|
-| S1a | 5 |
-| S1b | 10 |
-| S0 | 21 |
-| S1c | 55 |
-| S1d | 200 |
-
-**Expected outcome.** S1a and S1b clearly below S0; S1c above S0; S1d within the seed spread of S1c.
-**Falsified if** S1d beats S1c by more than S1c beats S0.
-**Real counterpart.** The real 12 / 24 / 48 curve (`sweep_*_train12/24/48`).
-**Code to write.** Item 5.
-
-### Plan S2: does lighting randomisation buy robustness?
-
-**Inquiry.** Randomising rendering during training makes vision policies robust to appearance they
-never saw [26].
-
-**Hypothesis H-S2.** A base trained under the lab's fixed lighting succeeds as often as S0 under the
-lab's lighting but less under randomised test lighting. **Null:** no difference under either.
-
-| # | Training lighting | Test lighting |
-|---|---|---|
-| S0 | randomised | randomised |
-| S0-lab | randomised | the lab's |
-| S2 | the lab's | randomised |
-| S2-lab | the lab's | the lab's |
-
-**Expected outcome.** S2-lab about S0-lab; S2 clearly below S0. **Falsified if** S2's interval
-against S0 includes zero.
-**Real counterpart.** None directly; it says whether real data needs lighting variety.
-**Code to write.** Item 1 (`--lab-lighting` exists for the generator; the evaluator needs it too).
-
-### Plan S3: does it extrapolate to unseen layouts?
-
-**Inquiry.** Imitation policies interpolate between demonstrated states and fail outside them;
-whether a flow policy extrapolates to an unseen region of the table is a question of coverage, not
-of data size.
-
-**Hypothesis H-S3.** Trained on cups at x below 0.70 m only, success on test cups beyond 0.70 m
-drops well below S0's, while success below 0.70 m stays. **Null:** no drop beyond 0.70 m.
-
-| # | Training cups | Scored on |
-|---|---|---|
-| S0 | x 0.46 to 0.87 | test cups below / beyond 0.70 m |
-| S3 | x 0.46 to 0.70 (21 demonstrations) | the same |
-
-**Expected outcome.** S3 beyond 0.70 m at most half of S0 beyond 0.70 m; below 0.70 m within noise.
-**Falsified if** the beyond-0.70 m difference interval includes zero.
-**Real counterpart.** Where the real cups were placed; whether real demonstrations need to span the
-table.
-**Code to write.** Layout region switch (item 1).
-
-### Plan S4: do recovery demonstrations help?
-
-**Inquiry.** Behaviour cloning compounds its errors because demonstrations never leave the expert's
-path [5]; injecting noise during demonstration and recording the expert's recovery fixes the
-coverage cheaply (DART [27]).
-
-**Hypothesis H-S4.** Demonstrations whose arm is pushed off the plan and recovered raise success over
-clean ones at the same 21 episodes. **Null:** no change.
-
-| # | Demonstrations |
-|---|---|
-| S0 | clean |
-| S4 | the commanded TCP perturbed (2 cm, 0.5 s, twice per episode), the planner recovering; labels as recorded |
-
-**Expected outcome.** S4 above S0, mostly fewer stalled and missed-grasp failures.
-**Falsified if** the S4 against S0 interval includes zero.
-**Real counterpart.** Whether to perturb the real arm during demonstrations.
-**Code to write.** Demonstration noise switch (item 1) using the planner of item 4.
-
-### Plan S5: does orientation variety matter?
-
-**Inquiry.** The real demonstrations turn the wrist (quaternion x from -0.57 to 0.04); the sim's
-grasp never does. If the policy uses orientation as a cue for phase, variety changes what it learns.
-
-**Hypothesis H-S5.** Randomising the grasp yaw by up to 30 degrees changes success by less than the
-seed spread under the S0 test, and raises it when test layouts need a turned wrist. **Null:** no
-change in either.
-
-| # | Grasp yaw in demonstrations | Test |
-|---|---|---|
-| S0 | fixed | S0 layouts |
-| S5 | uniform +-30 degrees | S0 layouts |
-| S5-turn | uniform +-30 degrees | container rotated so the release needs a turned wrist |
-
-**Expected outcome.** S5 within noise of S0; S5-turn above S0 on the turned test.
-**Falsified if** S5 is clearly below S0 (variety costs data) or S5-turn shows no gain.
-**Code to write.** Grasp yaw switch (item 1); a turned-release variant of `CupTask.plan`.
-
-### Plan S6: measured pose or commanded goal as the label?
-
-**Inquiry.** The adapter can label each frame with the measured TCP (`--labels measured`, the
-kinesthetic choice) or with the goal the servo chased (`--labels goal`); the servo lags the goal by
-about 1/K, so the two differ by a lag the policy must undo or reproduce. TODO section 5: gripper
-labels are the measured opening, not the intent.
-
-**Hypothesis H-S6.** Goal labels raise success through faster, less lagged motion, and command-based
-gripper labels close earlier and drop less. **Null:** no difference.
-
-| # | Pose labels | Gripper labels |
-|---|---|---|
-| S0 | measured | measured opening |
-| S6 | goal | measured opening |
-| S6g | measured | commanded (trigger) |
-
-**Expected outcome.** S6 shorter time to success; S6g fewer missed grasps.
-**Falsified if** neither interval excludes zero.
-**Real counterpart.** Real teleop sessions have both; the kinesthetic ones only measured.
-**Code to write.** Gripper command labels in `adapter/labels.py`; no generator change.
-
-## Group B: what in the observation matters
-
-### Plan S7: which camera carries the task?
-
-**Inquiry.** Policies with a wrist and a scene camera often lean on one of them; the real combo /
-drop augmentations (third_eye dropout 30%) assume the scene camera can mislead.
-
-**Hypothesis H-S7.** The hand camera alone succeeds at grasping but fails more at finding the
-container; the third_eye alone grasps worse. Both together are best. **Null:** one camera matches
-both.
-
-| # | Cameras |
-|---|---|
-| S0 | hand and third_eye |
-| S7h | hand only |
-| S7t | third_eye only |
-
-**Expected outcome.** S7h more released-outside failures, S7t more missed grasps, both below S0.
-**Falsified if** either single camera is within the seed spread of S0.
-**Code to write.** None (the training config's camera list).
-
-### Plan S8: does proprioception invite copying?
-
-**Inquiry.** Given its own past state, a cloned policy can learn to continue its motion instead of
-reading the scene (causal confusion [28], copycat agents [29]); TODO section 5 lists the copycat
-shortcut.
-
-**Hypothesis H-S8.** Removing the joint angles from the state (keeping TCP and gripper) changes
-success by less than the seed spread; removing the whole state lowers it. **Null:** both within
-noise.
-
-| # | State |
-|---|---|
-| S0 | TCP, gripper, 7 joints (15-D) |
-| S8a | TCP and gripper (8-D) |
-| S8b | none (images only) |
-
-**Expected outcome.** S8a within noise of S0; S8b below S0, mostly in the transfer phase.
-**Falsified if** S8a differs from S0 beyond noise in either direction.
-**Code to write.** State subsets in the training config.
-
-### Plan S9: does a frame of history help or hurt?
-
-**Inquiry.** The old real runs 3 and 3b asked whether a second frame, 40 ms or 1.52 s back, stops the
-sweep skip; history can also feed copycat behaviour [29].
-
-**Hypothesis H-S9.** A frame 1.52 s back raises success on attempts that pass through visually
-ambiguous states (cup lifted, arm over the table); a frame 40 ms back does not. **Null:** neither
-changes success.
-
-| # | Observation frames |
-|---|---|
-| S0 | t |
-| S9a | t - 1, t (40 ms) |
-| S9b | t - 38, t (1.52 s) |
-
-**Expected outcome.** S9a within noise; S9b above S0. **Falsified if** S9b's interval includes zero.
-**Real counterpart.** The old runs 3 and 3b, now with closed-loop success.
-**Code to write.** None (`n_obs_steps`, `obs_stride`).
-
-### Plan S10: does a correlated distractor create a shortcut?
-
-**Inquiry.** Networks learn whatever cue predicts the label most simply, including ones that only
-happen to correlate in the training data [30]. The real data has one: the operator in frame,
-correlated with the task's phase, which inpainting removes. The sim can create such a cue on
-purpose, then break the correlation at test.
-
-**Hypothesis H-S10.** A marker whose position follows the container in training (where the cup goes)
-makes the policy release at the marker when the two disagree at test; masking the marker in
-training (as inpainting removes the operator) restores S0's success. **Null:** no change.
-
-| # | Training | Test |
-|---|---|---|
-| S0 | no marker | no marker |
-| S10 | marker beside the container | marker moved 20 cm from the container |
-| S10m | marker present but masked from the images | as S10 |
-
-**Expected outcome.** S10 clearly below S0 with released-outside failures toward the marker; S10m
-within noise of S0. **Falsified if** S10 is within noise of S0.
-**Real counterpart.** Whether the operator in frame is a shortcut, and whether minimax inpainting is
-what removes it.
-**Code to write.** Distractor switch (item 1); marker masking in the image pipeline.
-
-### Plan S11: does image augmentation earn its cost?
-
-**Inquiry.** The real runs train with the default augmentations and third_eye dropout (combo / drop);
-none was tested alone.
-
-| # | Augmentation |
-|---|---|
-| S0 | repository default |
-| S11a | none |
-| S11b | default plus third_eye dropout 30% |
-
-**Hypothesis H-S11.** S11a below S0 under randomised lighting; S11b within noise of S0. **Null:** all
-within noise.
-**Expected outcome / falsified if** as the hypothesis and null.
-**Code to write.** None.
-
-## Group C: what in the model matters
-
-### Plan S12: VITA or DiT at few demonstrations?
-
-![Multi-Task DiT](figures/dit.png)
-
-**Inquiry.** The old real runs 8 to 9 asked whether the 278 M Multi-Task DiT falls off faster than
-VITA with fewer demonstrations; the sim gives the whole curve.
-
-**Hypothesis H-S12.** At 55 demonstrations the DiT matches VITA; at 10 it falls further. **Null:**
-the gap is the same at both sizes.
-
-| # | Policy | Demonstrations |
-|---|---|---|
-| S0 / S1b / S1c | VITA | 21 / 10 / 55 |
-| S12a / S12b / S12c | Multi-Task DiT | 21 / 10 / 55 |
-
-**Expected outcome.** S12c within noise of S1c; S12b clearly below S1b.
-**Falsified if** the DiT minus VITA gap at 10 is no larger than at 55.
-**Code to write.** None.
-
-### Plan S13: how much of each chunk to run?
-
-**Inquiry.** Running a long chunk open loop ignores new observations; running a short one re-plans
-often and stitches plans (TODO section 5: plan seams, 55 mm steps between chunks).
-
-| # | Chunk run of 32 |
-|---|---|
-| S13a | 8 |
-| S0 | 16 |
-| S13b | 32 |
-
-**Hypothesis H-S13.** S13a raises success through re-planning; S13b lowers it. **Null:** within
-noise. **Expected outcome / falsified if** as the hypothesis and null.
-**Code to write.** None (runtime setting).
-
-## Group D: test-time training, closed loop
 
 ![TTT designs](figures/ttt.png)
 
 ![TTT at tensor level](figures/ttt_lora.png)
 
-The real plan's test plans 1 to 9 on the sim cup base, with the same LoRA [4], losses and settings
-($\mathcal{L}_1$, $\lambda = 0.5$, rank 16, 200 steps), scored closed loop. The base is S0.
+As in the real plan: VITA flows an observation latent $z_0$ to an action latent; the adapter adds
+$\alpha BA$ to frozen weights; $\ell_\phi$ is the flow-matching error and the anchor replays base
+pairs. S0 is trained three times (seeds 0, 1, 2) and every adaptation is run with three update seeds;
+both spreads together are the noise floor.
 
-### Plan S14: offline corrections, closed-loop success
-
-![Test plan 1](figures/test-plan-1.png)
-
-**Inquiry.** The real test plan 1 scores corrections open loop only.
-
-**Hypothesis H-S14.** T1's update (demonstration as corrector, pool episodes 21, 25, 29, 33) raises
-closed-loop success over S0. **Null:** no change.
-
-| # | Condition |
-|---|---|
-| S0 | base |
-| S14 | the real plan's T1 on sim pool episodes |
-
-**Expected outcome.** S14 above S0, and its open-loop gain of the same sign as the real T1-cup.
-**Falsified if** the interval includes zero. **Code to write.** The real plan's items 4 to 8.
-
-### Plan S15: on-policy corrections (DAgger) against offline ones
+### Two correctors
 
 ![One correction](figures/correction-2.png)
 
-**Inquiry.** The real plan's corrector labels only the states the demonstrations visited; DAgger [5]
-and HG-DAgger [6] label the states the learner itself reaches. The planner can do that in the sim,
-which removes the real plan's first threat to validity.
+- **Offline (the real plan's):** a pool demonstration's chunk is the target wherever the base's plan
+  is more than 3 cm off it. Only states the demonstrations visited.
+- **On-policy (the sim's):** the base runs on the adaptation layouts; wherever its plan is more than
+  3 cm from the scripted planner's, replanned from the arm's current pose and the cup's current pose,
+  the planner's chunk is the target. The states the policy itself reaches, as DAgger [5] and
+  HG-DAgger [6] require.
 
-**Hypothesis H-S15.** Corrections labelled by the planner on the policy's own failing attempts (the
-3 cm rule, from 4 rounds of attempts) raise success more than S14's offline corrections at the same
-number of corrected frames. **Null:** no difference.
+### Closed-loop evaluation
 
-| # | Corrections |
-|---|---|
-| S14 | offline, from demonstrations |
-| S15 | on-policy, planner-labelled, same frame count |
+`run_sim_teleop.sh --cup --cameras --left --policy` with the policy runtime (`scripts/run_inference`)
+driving it, as on the robot. Per attempt: the layout and lighting of its seed, the arm and gripper at
+home, the right arm parked, 40 s. Scored from the sim's object poses:
 
-**Expected outcome.** S15 above S14, mostly fewer stalled attempts.
-**Falsified if** the S15 against S14 interval includes zero.
-**Code to write.** Item 4; correction extraction from evaluator bags.
+1. **Success**: the cup at rest in the container within 40 s (`CupTask.success`).
+2. **Phase reached**: reach, grasp, transfer, release; the partial credit of a failure.
+3. **Time to success** (s).
+4. **Failure mode**: missed grasp, dropped in transit, released outside, stalled (5 s without
+   progress), timeout.
+5. **Forgetting**: success on the 50 test layouts minus the base's, restricted to layouts the base
+   solved (did the update break what worked?).
+6. **Cost**: corrected frames, attempts, simulated robot minutes, update compute (s on the robot
+   computer's GPU).
 
-### Plan S16: how good must a human correction be?
+Open-loop metrics on the 18 open-loop test episodes are the real plan's.
 
-**Inquiry.** A person corrects late, partly and from another pose; the real plan cannot measure how
-much that costs. The sim's planner can be degraded on purpose.
+### Statistics
 
-**Hypothesis H-S16.** Corrections 0.5 s late keep most of S15's gain; corrections covering half the
-chunk, or with 2 cm noise, lose more. **Null:** no degradation loses more than the seed spread.
+The unit is the **test layout** (50), paired across conditions. Success differences come with a 95%
+bootstrap interval over layouts [7, 8]. **An effect counts** only if the interval excludes zero
+**and** it exceeds the noise floor. Choices (thresholds, $\beta$, learning rates) are made on the
+adaptation layouts, never on the 50 test layouts.
 
-| # | Planner corrections |
-|---|---|
-| S15 | exact |
-| S16a | 0.5 s late |
-| S16b | first half of the chunk only |
-| S16c | 2 cm Gaussian noise on each waypoint |
+### Code to write
 
-**Expected outcome.** S16a within noise of S15; S16b and S16c below it, above S0.
-**Falsified if** every degradation is within noise of S15 (corrections are robust: good news, but the
-hypothesis fails).
-**Code to write.** Degradation options on item 4.
+1. **Closed-loop evaluator**: per seed, set layout and lighting (`/sim/layout`, `/sim/lighting`),
+   home, run the policy, watch `/sim/objects` and the gripper, stop at success or 40 s, one row per
+   attempt, the bag kept.
+2. **Planner as corrector**: `CupTask.plan` from the current TCP and the cup's current pose, and its
+   chunk at any frame.
+3. **Correction extraction** from evaluator bags: gated frames into $(z_0, z_\text{h})$ pairs.
+4. The real plan's items 4 to 8 (latent cache, LoRA wrapper, corrector, update loop, evaluation),
+   extended by the variants each plan below names.
+5. **Adapter loading** and $\alpha$ in the policy runtime, so an adapted policy runs closed loop.
 
-### Plan S17: corrections against reward, piloted in the sim
+## Part 1: is there a problem worth fixing?
 
-![Test plan 9](figures/test-plan-9.png)
+### Plan S1: how and where does the base fail?
 
-**Inquiry.** The real test plan 9 compares a human's corrections with reward on attempts, per minute
-of robot time. In the sim, success is the reward, attempts cost no operator and K, beta and sigma
-can be chosen before the robot.
+**Inquiry.** Test-time correction is only interesting if the base's failures are systematic (the
+same states, every time), not noise; a correction cannot teach a random failure.
 
-**Hypothesis H-S17.** Design A (S15's planner corrections) reaches 40 of 50 test successes in fewer
-attempts than design B (the reward-weighted update, $K = 8$, $\beta$ from $\mathrm{KL}(w \| U) =
-\ln 2$ [13]). **Null:** B as fast or faster.
+**Hypothesis H-S1.** The three S0 bases fail on largely the same test layouts, in the same modes
+(more than half of each base's failures shared by all three). **Null:** failures are independent
+across seeds.
 
 | # | Condition |
 |---|---|
-| S17a | A: 3 rounds of attempts with planner corrections |
-| S17b | B: 3 rounds of $K = 8$ seeded latent offsets, success reward |
+| S0, S0b, S0c | the base, training seeds 0, 1, 2, on the 50 test layouts |
 
-**Expected outcome.** A reaches 40 of 50 within 3 rounds; B needs more attempts. The settings of B
-that work here are the robot run's.
-**Falsified if** B reaches 40 of 50 in fewer attempts.
-**Code to write.** The real plan's design B items, against the sim.
+**Expected outcome.** 40 to 70% success; failures concentrated in one or two modes and in shared
+layouts. **Falsified if** the overlap of failed layouts across seeds is no larger than chance.
+**Code to write.** Items 1 and 5.
 
-## Group E: does sim data help on the robot?
+### Plan S2: is it just a lack of data?
 
-### Plan S18: co-training with sim
+**Inquiry.** The cheapest fix is more demonstrations. A correction method has to beat that at equal
+human effort, or it is a slower way to collect data (DAgger's argument [5]; the real test plan 3).
 
-**Inquiry.** Mixing simulated demonstrations into real training data improves real policies when the
-sim covers what the real data lacks [31].
+**Hypothesis H-S2.** Adapting S0 with corrections from 4 episodes raises success more than retraining
+the base with those 4 episodes as whole demonstrations, and as much as retraining with 16 more.
+**Null:** extra demonstrations match or beat corrections at equal episodes.
 
-**Hypothesis H-S18.** Real episodes 0 to 20 plus 200 sim episodes lower open-loop path error on the
-real test episodes 38 to 55 against the real episodes alone. **Null:** no change, or worse.
-
-| # | Training data |
+| # | Condition |
 |---|---|
-| R-base | real cup episodes 0 to 20 |
-| S18 | the same plus 200 sim episodes |
+| S2a | base trained on 25 demonstrations (0 to 20 plus 21, 25, 29, 33) |
+| S2b | base trained on 37 demonstrations (0 to 36) |
+| S2c | base trained on 55 demonstrations |
+| M0 | S0 plus corrections from 21, 25, 29, 33 |
 
-**Expected outcome.** S18 lower path error in the reach and transfer phases; grasp phase unchanged
-(the sim grasps differently). **Falsified if** the interval includes zero.
-**Code to write.** Dataset merge (`merge_datasets`), with the real and sim normalisation statistics
-checked for disagreement first.
+**Expected outcome.** M0 above S2a, close to S2b; S2c above M0 but at 34 more demonstrations.
+**Falsified if** S2a matches M0.
+**Code to write.** None beyond the shared items.
+
+## Part 2: against what? The alternatives, simplest first
+
+### Plan S3: which weights should change?
+
+**Inquiry.** The simplest test-time training is to fine-tune the policy on the corrections. LoRA
+learns less and forgets less than full fine-tuning [12]; a frozen body with only the last layer
+trained is the classic cheap alternative.
+
+**Hypothesis H-S3.** LoRA with the anchor (M0) matches full fine-tuning on the test layouts and
+forgets less; last-layer-only fixes less. **Null:** full fine-tuning is clearly better.
+
+| # | Trainable, all with the same corrections, steps and anchor |
+|---|---|
+| S3a | everything (encoder, flow net, decoder) |
+| S3b | the whole flow net |
+| S3c | the flow net's last layer only |
+| S3d | LoRA, no anchor ($\lambda = 0$): the simplest LoRA |
+| M0 | LoRA with the anchor |
+
+**Expected outcome.** S3a and S3b at most M0's gain, with more forgetting; S3c below M0; S3d close to
+M0 on gain, worse on forgetting. **Falsified if** S3a or S3b beats M0 beyond noise with no more
+forgetting.
+**Code to write.** Trainable-set option in the update loop.
+
+### Plan S4: retraining with the corrections (DAgger)
+
+**Inquiry.** DAgger [5] aggregates the corrected states into the dataset and retrains from scratch:
+the strongest data-centric baseline, at full training cost.
+
+**Hypothesis H-S4.** Retraining on base plus corrected frames reaches M0's success but costs about
+100 times its compute and forgets no less. **Null:** retraining is clearly better.
+
+| # | Condition |
+|---|---|
+| S4 | the base retrained (30k steps) on episodes 0 to 20 plus M0's corrected frames |
+| M0 | adapter, 200 steps |
+
+**Expected outcome.** S4 within noise of M0 on success, at about 100 times the update compute.
+**Falsified if** S4 is clearly above M0.
+**Code to write.** Corrected frames as a LeRobot dataset (item 3).
+
+### Plan S5: a residual policy
+
+**Inquiry.** Instead of changing the base, learn a small correction added to its actions (residual
+policy learning [27, 28]).
+
+**Hypothesis H-S5.** A residual MLP on the action chunk, trained on the same corrections, fixes less
+than M0, because the failure is in which chunk is chosen, not in its fine shape. **Null:** the residual
+matches M0.
+
+| # | Condition |
+|---|---|
+| S5 | residual MLP (same parameter count as M0's adapter) on the decoded chunk |
+| M0 | adapter in the flow net |
+
+**Expected outcome.** S5 below M0; its gain mostly in grasp precision, not in failures of the wrong
+phase. **Falsified if** S5 matches or beats M0.
+**Code to write.** Residual head and its training on item 3's pairs.
+
+### Plan S6: steering the latent, no weights changed
+
+**Inquiry.** DSRL [21] adapts a frozen diffusion policy by choosing its input noise; VITA has no
+noise, but its starting latent $z_0$ can be offset the same way.
+
+**Hypothesis H-S6.** A learned offset to $z_0$ fixes some failures but less than M0, and forgets
+nothing by construction. **Null:** the offset matches M0.
+
+| # | Condition |
+|---|---|
+| S6 | small network predicting an offset to $z_0$, trained on the corrections |
+| M0 | adapter |
+
+**Expected outcome.** S6 between S0 and M0; forgetting near zero.
+**Falsified if** S6 matches M0.
+**Code to write.** Offset network and its loss through the frozen flow.
+
+### Plan S7: reward instead of corrections
+
+![Test plan 9](figures/test-plan-9.png)
+
+**Inquiry.** Reward-weighted regression [19, 20] with the TTT-Discover temperature [13] learns from the
+policy's own better attempts; RL fine-tuning of diffusion policies (DPPO [26]) optimises reward
+directly. Neither needs an operator; both need attempts.
+
+**Hypothesis H-S7.** At equal attempts, corrections (M0 on-policy, plan S15) reach 40 of 50 test
+successes first; reward-weighted regression gets there with about three times the attempts; policy
+gradient needs many more. **Null:** reward is as fast or faster.
+
+| # | Condition |
+|---|---|
+| S7a | reward-weighted LoRA update: $K = 8$ seeded latent offsets per round, success plus progress reward |
+| S7b | DPPO-style policy gradient on the adapter, same reward |
+| S15 | on-policy corrections |
+
+**Expected outcome.** Attempts to 40 of 50: S15 < S7a < S7b. **Falsified if** S7a needs no more
+attempts than S15.
+**Code to write.** The real plan's design B items, and a policy-gradient update on the adapter.
+
+## Part 3: what in the method matters?
+
+Each plan changes one component of M0.
+
+### Plan S8: where the adapter sits
+
+**Hypothesis H-S8.** The flow net (M0) is the right place: the failure is in which action the latent
+flows to, not in perception. **Null:** the encoder or decoder does as well.
+
+| # | Adapter on |
+|---|---|
+| S8a | the observation encoder |
+| M0 | the flow net |
+| S8b | the action decoder |
+| S8c | all three |
+
+**Expected outcome.** S8a and S8b below M0; S8c within noise of M0, forgetting more.
+**Falsified if** S8a or S8b matches M0.
+
+### Plan S9: how much capacity
+
+![Test plan 5](figures/test-plan-5.png)
+
+The real test plan 5, closed loop.
+
+| # | Rank |
+|---|---|
+| S9a | 1 |
+| S9b | 4 |
+| M0 | 16 |
+| S9c | 64 |
+
+**Hypothesis H-S9.** Ranks 4 to 64 within noise of each other; rank 1 below. **Null:** gain keeps
+rising with rank. **Falsified if** S9c beats M0 beyond noise.
+
+### Plan S10: replay against forgetting
+
+![Test plan 2](figures/test-plan-2.png)
+
+The real test plan 2, closed loop, with forgetting measured on layouts the base solved.
+
+| # | Anchor $\lambda$ |
+|---|---|
+| S10a | 0 |
+| S10b | 0.25 |
+| M0 | 0.5 |
+| S10c | 0.75 |
+
+**Hypothesis H-S10.** Forgetting falls as $\lambda$ rises, gain falls only above 0.5. **Null:** no
+effect of $\lambda$ on forgetting. **Falsified if** S10a forgets no more than M0.
+
+### Plan S11: the negative
+
+![Test plan 6](figures/test-plan-6.png)
+
+The real test plan 6 (the base's own answer as the rejected sample [14, 15]), closed loop.
+
+| # | Loss |
+|---|---|
+| M0 | $\mathcal{L}_1$ |
+| S11 | $\mathcal{L}_1 + \mathcal{L}_\text{pref}$, $\beta$ chosen on the adaptation layouts |
+
+**Hypothesis H-S11.** The negative adds a small gain. **Null:** none. **Falsified if** the interval
+includes zero.
+
+### Plan S12: which frames to train on
+
+![Test plan 3](figures/test-plan-3.png)
+
+The real test plan 3, plus the gate's threshold.
+
+| # | Frames |
+|---|---|
+| S12a | every frame of the 4 episodes |
+| S12b | off by more than 1 cm |
+| M0 | off by more than 3 cm |
+| S12c | off by more than 6 cm |
+
+**Hypothesis H-S12.** Gated frames beat all frames; 3 cm is near the best gate. **Null:** all frames
+as good. **Falsified if** S12a matches or beats M0.
+
+### Plan S13: how long to update
+
+| # | Steps | Learning rate |
+|---|---|---|
+| S13a | 50 | 1e-4 |
+| M0 | 200 | 1e-4 |
+| S13b | 800 | 1e-4 |
+| S13c | 200 | 1e-3 |
+
+**Hypothesis H-S13.** Gain saturates by 200 steps; 800 steps or a 10 times rate forget more without
+more gain. **Null:** gain keeps rising to 800. **Falsified if** S13b beats M0 beyond noise without
+more forgetting.
+
+### Plan S14: the blend dial
+
+![Test plan 7](figures/test-plan-7.png)
+
+The real test plan 7, closed loop: M0's adapter at $\alpha$ = 0, 0.25, 0.5, 0.75, 1. **Hypothesis
+H-S14.** Success and forgetting change monotonically with $\alpha$; $\alpha = 0$ reproduces S0.
+**Falsified if** an intermediate $\alpha$ is worse than both ends.
+
+## Part 4: the correction signal
+
+### Plan S15: corrections on the policy's own states
+
+**Inquiry.** The real plan's corrector labels states the demonstrations visited; the base fails in
+states they did not. DAgger [5] and HG-DAgger [6] label the learner's own states.
+
+**Hypothesis H-S15.** On-policy corrections, collected by running S0 on the adaptation layouts with
+the planner gating at 3 cm, beat M0's offline corrections at the same number of corrected frames.
+**Null:** no difference.
+
+| # | Corrections |
+|---|---|
+| M0 | offline, from pool demonstrations |
+| S15 | on-policy, the planner on S0's own attempts, the same frame count |
+
+**Expected outcome.** S15 above M0, mostly fewer stalled attempts.
+**Falsified if** the interval includes zero.
+
+### Plan S16: how good must a correction be?
+
+**Inquiry.** A person corrects late, partly and imprecisely; the sim's planner can be degraded on
+purpose to measure what that costs.
+
+| # | S15's corrections, degraded |
+|---|---|
+| S15 | exact |
+| S16a | 0.5 s late |
+| S16b | the first half of each chunk only |
+| S16c | 2 cm Gaussian noise per waypoint |
+| S16d | 30% of the gated frames dropped (the operator misses some) |
+
+**Hypothesis H-S16.** Late corrections keep most of the gain; partial and noisy ones lose more but stay
+above S0. **Null:** no degradation loses more than the noise floor.
+**Falsified if** every degradation is within noise of S15.
+
+### Plan S17: how many corrections?
+
+![Test plan 4](figures/test-plan-4.png)
+
+The real test plan 4, on-policy and closed loop: corrections from 1, 2, 4, 8 and 16 failing attempts.
+**Hypothesis H-S17.** Most of the gain by 4 attempts. **Null:** gain rises steadily to 16.
+**Falsified if** the gain from 4 to 16 exceeds the gain from 1 to 4. Plotted against S2's
+demonstration curve at equal operator minutes.
+
+### Plan S18: update once, or after every attempt?
+
+**Inquiry.** On the robot, corrections arrive one attempt at a time; updating between attempts lets
+the next attempt fail differently.
+
+| # | Schedule, 8 attempts in all |
+|---|---|
+| S18a | one update after all 8 |
+| S18b | an update after every attempt, on all corrections so far |
+
+**Hypothesis H-S18.** Updating after every attempt reaches the same success with fewer corrected
+frames. **Null:** no difference. **Falsified if** S18b needs as many frames as S18a.
+
+## Part 5: does it generalise?
+
+### Plan S19: to conditions the corrections never saw
+
+**Inquiry.** A fix that only holds on the layouts it was corrected on is memorisation.
+
+**Hypothesis H-S19.** Corrections collected only on cups at x below 0.65 m improve test layouts beyond
+0.65 m about as much as below; corrections under the lab's lighting hold under random lighting.
+**Null:** gain only where corrected.
+
+| # | Corrections from | Scored on |
+|---|---|---|
+| S19a | adaptation layouts with cups below 0.65 m | test cups below / beyond 0.65 m |
+| S19b | adaptation layouts under the lab's lighting | test under random lighting |
+
+**Expected outcome.** Gain beyond 0.65 m at least half the gain below. **Falsified if** the beyond
+0.65 m gain is within noise of zero.
+
+### Plan S20: other bases
+
+![Multi-Task DiT](figures/dit.png)
+
+**Inquiry.** A recipe tied to one architecture is a trick. The 278 M Multi-Task DiT is a diffusion
+policy [25] with different internals.
+
+| # | Base | Adapter |
+|---|---|---|
+| S0 / M0 | VITA | LoRA on the flow net |
+| S20 / S20-M | Multi-Task DiT | LoRA on the denoiser's attention and MLP layers, same rank, loss, steps |
+
+**Hypothesis H-S20.** The same recipe gives the DiT a gain within half of VITA's. **Null:** no gain on
+the DiT. **Falsified if** S20-M's interval against S20 includes zero.
+
+### Plan S21: weak and strong bases
+
+**Inquiry.** Does test-time training rescue a weak policy, or only polish a good one?
+
+| # | Base demonstrations | Then |
+|---|---|---|
+| S21a / S21a-M | 5 | M0's recipe |
+| S0 / M0 | 21 | M0's recipe |
+| S21b / S21b-M | 55 | M0's recipe |
+
+**Hypothesis H-S21.** The absolute gain is largest for the middle base: the weak one fails in too
+many ways, the strong one in too few. **Null:** the gain shrinks steadily with base strength.
+**Falsified if** S21a-M gains more than M0.
+
+### Plan S22: adapting again and again
+
+**Inquiry.** Deployed, a policy is corrected repeatedly. Gains could add up, or the adapter could
+drift.
+
+| # | Condition |
+|---|---|
+| S22 | 5 rounds: each round 4 on-policy attempts on new adaptation layouts, corrected, update on all corrections so far |
+
+**Hypothesis H-S22.** Success rises over the rounds and forgetting stays within the noise floor.
+**Null:** success plateaus after round 1 or falls. **Falsified if** round 5 is below round 2.
+
+### Plan S23: how much of each chunk to run
+
+**Inquiry.** Running a long chunk ignores new observations; a correction can only act at the next
+re-plan. The adapter's effect may depend on how often the policy re-plans.
+
+| # | Chunk run of 32, base and adapted |
+|---|---|
+| S23a / S23a-M | 8 |
+| S0 / M0 | 16 |
+| S23b / S23b-M | 32 |
+
+**Hypothesis H-S23.** The adapter's gain is larger when the policy re-plans more often (8). **Null:**
+the gain does not depend on the chunk run. **Falsified if** the gain at 8 is within noise of the gain
+at 16.
+
+## Part 6: does the sim predict the robot?
+
+### Plan S24: the same ranking on the robot
+
+**Inquiry.** Sim results are only worth reporting if the order of methods holds on the robot.
+
+**Hypothesis H-S24.** The robot ranks S0, M0, S15 and the best of part 2 in the sim's order (test plan
+9's protocol, 10 attempts each, the same 3 layouts). **Null:** the orders disagree.
+
+| # | On the robot |
+|---|---|
+| R0 | the real base |
+| R-M0 | M0's recipe on real corrections |
+| R-S15 | on-policy corrections from the operator |
+| R-best | the strongest alternative from part 2 |
+
+**Expected outcome.** The same order; absolute success lower than in the sim.
+**Falsified if** any adjacent pair swaps beyond noise.
+**Code to write.** The real plan's test plan 9 items.
 
 ## Results
 
-Closed loop, 50 test layouts; success difference against S0 with its 95% interval in brackets.
+Closed loop, 50 test layouts; success difference against S0 (part 1) or M0 (parts 2 to 5) with its
+95% interval in brackets.
 
-| # | Success of 50 | Difference | Time to success (s) | Main failure mode |
+| # | Success of 50 | Difference | Forgetting | Time to success (s) | Corrected frames | Update compute (s) | Main failure mode |
+|---|---|---|---|---|---|---|---|
+| S0 | | | | | | | |
+| S0b | | | | | | | |
+| S0c | | | | | | | |
+| S2a | | | | | | | |
+| S2b | | | | | | | |
+| S2c | | | | | | | |
+| M0 | | | | | | | |
+| S3a | | | | | | | |
+| S3b | | | | | | | |
+| S3c | | | | | | | |
+| S3d | | | | | | | |
+| S4 | | | | | | | |
+| S5 | | | | | | | |
+| S6 | | | | | | | |
+| S7a | | | | | | | |
+| S7b | | | | | | | |
+| S8a | | | | | | | |
+| S8b | | | | | | | |
+| S8c | | | | | | | |
+| S9a | | | | | | | |
+| S9b | | | | | | | |
+| S9c | | | | | | | |
+| S10a | | | | | | | |
+| S10b | | | | | | | |
+| S10c | | | | | | | |
+| S11 | | | | | | | |
+| S12a | | | | | | | |
+| S12b | | | | | | | |
+| S12c | | | | | | | |
+| S13a | | | | | | | |
+| S13b | | | | | | | |
+| S13c | | | | | | | |
+| S14 | | | | | | | |
+| S15 | | | | | | | |
+| S16a | | | | | | | |
+| S16b | | | | | | | |
+| S16c | | | | | | | |
+| S16d | | | | | | | |
+| S17 | | | | | | | |
+| S18a | | | | | | | |
+| S18b | | | | | | | |
+| S19a | | | | | | | |
+| S19b | | | | | | | |
+| S20 | | | | | | | |
+| S20-M | | | | | | | |
+| S21a | | | | | | | |
+| S21a-M | | | | | | | |
+| S21b | | | | | | | |
+| S21b-M | | | | | | | |
+| S22 | | | | | | | |
+| S23a | | | | | | | |
+| S23a-M | | | | | | | |
+| S23b | | | | | | | |
+| S23b-M | | | | | | | |
+
+Robot (S24), test plan 9's format.
+
+| # | Successes of 10 | Robot minutes to 8 of 10 | Operator minutes | Takeovers |
 |---|---|---|---|---|
-| S0 | | | | |
-| S0b | | | | |
-| S0c | | | | |
-| S1a | | | | |
-| S1b | | | | |
-| S1c | | | | |
-| S1d | | | | |
-| S2 | | | | |
-| S2-lab | | | | |
-| S3 | | | | |
-| S4 | | | | |
-| S5 | | | | |
-| S5-turn | | | | |
-| S6 | | | | |
-| S6g | | | | |
-| S7h | | | | |
-| S7t | | | | |
-| S8a | | | | |
-| S8b | | | | |
-| S9a | | | | |
-| S9b | | | | |
-| S10 | | | | |
-| S10m | | | | |
-| S11a | | | | |
-| S11b | | | | |
-| S12a | | | | |
-| S12b | | | | |
-| S12c | | | | |
-| S13a | | | | |
-| S13b | | | | |
-| S14 | | | | |
-| S15 | | | | |
-| S16a | | | | |
-| S16b | | | | |
-| S16c | | | | |
-| S17a | | | | |
-| S17b | | | | |
-
-Real, open loop (S18), the real plan's format.
-
-| # | Progress error | Path error (mm) | Transfer-phase error (mm) |
-|---|---|---|---|
-| R-base | | | |
-| S18 | | | |
+| R0 | | | | |
+| R-M0 | | | | |
+| R-S15 | | | | |
+| R-best | | | | |
 
 ## Threats to validity
 
 - **The sim is not the robot.** Shorter fingers, a higher wall grasp, rendered images, a scripted
-  demonstrator. Sim results rank mechanisms; the robot sizes them (test plan 9, S18).
-- **A scripted demonstrator is consistent.** Human demonstrations vary in timing and path; a policy
-  trained on scripted data faces an easier imitation problem, which may hide effects (S1, S4) that
-  matter with people. S4 and S16 add controlled imperfection.
-- **One task.** Every sim plan is the cup task; the sweep's shortcut has no sim counterpart yet.
-- **Reach.** Layouts are capped at the sim arm's reach (0.87 m): the far edge of the real table is
-  untested.
-- **Evaluation layouts are one draw.** The 50 seeds are fixed for pairing; a second set of 50 checks
-  any result that is close to the noise floor.
+  demonstrator; part 6 is what licenses the sim's rankings.
+- **A scripted expert is a perfect corrector.** S16 measures imperfection on purpose, but human
+  corrections differ in ways a degraded planner may not capture.
+- **One task in the sim.** The cup task has no shortcut like the sweep's; generality across tasks
+  rests on the real plan's two tasks and on new sim tasks if part 5 is promising.
+- **Reach.** Layouts are capped at the sim arm's reach (0.87 m).
+- **One draw of test layouts.** Any result close to the noise floor is rechecked on a second set of 50.
 
 ## References
 
 Numbers 1 to 24 are those of [training_experiments.md](training_experiments.md).
 
-[25] A. Mandlekar et al., "What Matters in Learning from Offline Human Demonstrations for Robot Manipulation," CoRL 2021. [arXiv:2108.03298](https://arxiv.org/abs/2108.03298)
+[25] C. Chi et al., "Diffusion Policy: Visuomotor Policy Learning via Action Diffusion," RSS 2023.
+[arXiv:2303.04137](https://arxiv.org/abs/2303.04137)
 
-[26] J. Tobin et al., "Domain Randomization for Transferring Deep Neural Networks from Simulation to the Real World," IROS 2017. [arXiv:1703.06907](https://arxiv.org/abs/1703.06907)
+[26] A. Z. Ren et al., "Diffusion Policy Policy Optimization," ICLR 2025.
+[arXiv:2409.00588](https://arxiv.org/abs/2409.00588)
 
-[27] M. Laskey et al., "DART: Noise Injection for Robust Imitation Learning," CoRL 2017. [arXiv:1703.09327](https://arxiv.org/abs/1703.09327)
+[27] T. Silver, K. Allen, J. Tenenbaum, L. Kaelbling, "Residual Policy Learning," 2018.
+[arXiv:1812.06298](https://arxiv.org/abs/1812.06298)
 
-[28] P. de Haan, D. Jayaraman, S. Levine, "Causal Confusion in Imitation Learning," NeurIPS 2019. [arXiv:1905.11979](https://arxiv.org/abs/1905.11979)
-
-[29] C. Wen et al., "Fighting Copycat Agents in Behavioral Cloning from Observation Histories," NeurIPS 2020. [arXiv:2010.14876](https://arxiv.org/abs/2010.14876)
-
-[30] R. Geirhos et al., "Shortcut Learning in Deep Neural Networks," Nature Machine Intelligence 2020. [arXiv:2004.07780](https://arxiv.org/abs/2004.07780)
-
-[31] A. Maddukuri et al., "Sim-and-Real Co-Training: A Simple Recipe for Vision-Based Robotic Manipulation," RSS 2025. [arXiv:2503.24361](https://arxiv.org/abs/2503.24361)
+[28] T. Johannink et al., "Residual Reinforcement Learning for Robot Control," ICRA 2019.
+[arXiv:1812.03201](https://arxiv.org/abs/1812.03201)
