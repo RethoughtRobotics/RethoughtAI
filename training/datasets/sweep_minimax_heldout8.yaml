@@ -1,0 +1,8 @@
+---
+# SweepTrash_Kin-Full_inpainted_minimax_heldout8
+#   evaluation-only copy of SweepTrash_Kin-Full_inpainted_minimax (training_experiments.md, step 0).
+# Keeps only the 8 evaluation episodes, renumbered from 0. Original indices: 3 10 17 24 31 38 45 52.
+# Not for training: runs read it as their dataset.eval_repo_id.
+repo_id: andnetdeboer/SweepTrash_Kin-Full_inpainted_minimax_heldout8
+short_name: SweepTrash_Kin-Full_inpainted_minimax_heldout8
+episodes:

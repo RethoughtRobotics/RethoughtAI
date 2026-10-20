@@ -1,0 +1,22 @@
+---
+# Multi-Task DiT with lerobot-train on the SweepTrash train-only copies (training_experiments.md, M2).
+# Reproduces the recipe of multi_task_dit_SweepTrash_Kin-Full_inpainted_minimax_lead640ms_aug_30k_r1:
+# bf16, batch 64, LeRobot's default image augmentation, 240x320 resize then a random 224x224 crop.
+# The dataset config's eval_repo_id holds the evaluation episodes, so no training episode is split off.
+name: multi_task_dit
+wandb_name: multi-task-dit
+backend: lerobot
+dataset: sweep_minimax_lead640ms_train48
+steps: 30000
+batch_size: 64
+save_freq: 5000
+gpu_mem_mib: 40000  # rough estimate, not measured
+retry_batch_sizes: [48]
+args:
+  policy.type: multi_task_dit
+  policy.image_resize_shape: [240, 320]
+  policy.image_crop_shape: [224, 224]
+  policy.image_crop_is_random: true
+  accelerator.mixed_precision: bf16
+  dataset.image_transforms.resize_shape: [240, 320]
+  dataset.image_transforms.resize_antialias: true
