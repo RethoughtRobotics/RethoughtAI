@@ -201,5 +201,4 @@ Fill in from the evaluation script; median over the 8 held-out episodes (range i
 - The dataset copies recompute normalization statistics without the held-out episodes, as they should;
   the original checkpoints did not, so they are not comparable to these runs.
 
-Figure sources: `~/FinalProject/diagrams/` (Typst; see its README). The VITA trace that fills M1's
-figure is `diagrams/assets/vita_trace.py`.
+Figure sources and the data they read: [`figures/src/`](figures/src/README.md).
