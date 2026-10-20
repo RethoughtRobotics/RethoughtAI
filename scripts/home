@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# Send the arm home, as the controller's B button: the teleop opens the gripper and moves slowly to
-# the untuck pose; the runtime clears the policy's chunks. If scripts/start is on, the policy resumes
-# fresh once the arm is home (scripts/stop first to stay there).
+# Send the arm home, as the controller's B button (gripper open, untuck pose).
+# Usage: scripts/home
+
+# The runtime clears the policy's chunks. If scripts/start is on, the policy resumes fresh once the
+# arm is home (scripts/stop first to stay there).
+
+if [[ " $* " =~ \ (-h|--help)\  ]]; then sed -n '2,/^$/{/^#/s/^# \{0,1\}//p}' "$0"; exit 0; fi
 cd "$(dirname "$0")/.." && source launch/env.sh
 # Two-arm homing releases the shared run FIRST and stays stopped throughout homing.
 if [[ -n "$HOME_TOPIC_OTHER" ]]; then

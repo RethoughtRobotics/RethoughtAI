@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Connect the policy to the arm (scripts/stop holds it where it is).
+# Connect the running policy to the arm.
+# Usage: scripts/start   (scripts/stop holds the arm where it is)
+
+if [[ " $* " =~ \ (-h|--help)\  ]]; then sed -n '2,/^$/{/^#/s/^# \{0,1\}//p}' "$0"; exit 0; fi
 cd "$(dirname "$0")/.." && source launch/env.sh
 timeout 10 ros2 service call "$ENGAGE" std_srvs/srv/SetBool "{data: true}" >/dev/null \
     && echo "Policy requested on $ENGAGE. scripts/stop to hold; both-arm mode waits for both TCP streams." \
