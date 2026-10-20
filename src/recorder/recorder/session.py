@@ -12,6 +12,18 @@ import click
 from recorder.images import compressed_recording, recording_topic
 
 
+def provenance(*args, timeout=30):
+    """Run BaxterSDK's baxter_tools.provenance (what was running: commits, patches, processes); its
+    stdout, or '' when the BaxterSDK workspace is not sourced. Never fails a recording."""
+    try:
+        out = subprocess.run(
+            ['python3', '-m', 'baxter_tools.provenance', *args], capture_output=True, text=True, timeout=timeout
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ''
+    return out.stdout.strip() if out.returncode == 0 else ''
+
+
 def make_session_dir(output: str, config_path: Path, name: str | None = None) -> Path:
     """Create the session directory (output/<name>, or a timestamped one) and copy the config into it.
     A named session that already exists is reused: its new episodes continue the numbering."""
@@ -27,9 +39,11 @@ class EpisodeBag:
 
     SIGTERM triggers a clean shutdown (cache flush + metadata write).
     A 5-second timeout followed by SIGKILL guards against hung processes.
+    custom_data (key=value strings) goes into the bag's metadata.yaml; provenance.yaml, with the
+    command lines running now, is written into the episode folder in the background.
     """
 
-    def __init__(self, episode_dir: Path, topics: list[str]) -> None:
+    def __init__(self, episode_dir: Path, topics: list[str], custom_data: list[str] = ()) -> None:
         self._dir = episode_dir
         # Lossless MCAP compression for all messages; colour images can already be JPEG
         # (recording.image_transport). Raw-image compression ratios do not apply to JPEG.
@@ -43,9 +57,19 @@ class EpisodeBag:
             'zstd_fast',
             '--output',
             str(episode_dir),
+            *(['--custom-data', *custom_data] if custom_data else []),
             '--topics',
             *topics,
         ])
+        self._provenance = threading.Thread(target=self._write_provenance, daemon=True)
+        self._provenance.start()
+
+    def _write_provenance(self):
+        for _ in range(150):  # the recorder creates the folder within a second or two
+            if self._dir.exists():
+                provenance('write', str(self._dir))
+                return
+            time.sleep(0.2)
 
     def _terminate(self):
         """SIGTERM with 5 s timeout, then SIGKILL."""
@@ -62,6 +86,7 @@ class EpisodeBag:
     def discard(self):
         """Stop recording (if still running) and delete the bag directory."""
         self._terminate()
+        self._provenance.join(timeout=40)  # not while it still writes into the folder
         if self._dir.exists():
             shutil.rmtree(self._dir)
 
@@ -98,6 +123,10 @@ def run_session(session_dir: Path, config: dict, topics: list[str], viz: bool) -
         image_topic = recording_topic(config, image_topic)
     start_evt, stop_evt, success_evt, discard_evt = (threading.Event() for _ in range(4))
 
+    # The short form (commits, host, containers) is the same for the whole session: once, not per episode.
+    custom_data = provenance('custom-data').split()
+    if not custom_data:
+        click.echo('Note: no provenance (source the BaxterSDK workspace): bags will not record what ran.')
     ros_started, trigger, screen = _setup(
         trig, config, start_evt, stop_evt, success_evt, discard_evt, viz, session_dir.name
     )
@@ -120,7 +149,7 @@ def run_session(session_dir: Path, config: dict, topics: list[str], viz: bool) -
             start_evt.clear()
 
             episode = _next_episode(session_dir)  # rescan: episodes may have been removed or renumbered
-            bag = EpisodeBag(session_dir / f'episode_{episode:03d}', topics)
+            bag = EpisodeBag(session_dir / f'episode_{episode:03d}', topics, custom_data)
             started = time.monotonic()
             if screen:
                 screen.episode = episode
