@@ -1,0 +1,7 @@
+---
+# BlueCupRedContainer_sim_heldout5
+#   evaluation-only copy of BlueCupRedContainer_sim. Keeps only its 5 evaluation episodes, 55 to 59,
+#   renumbered from 0. Not for training: runs read it as their dataset.eval_repo_id.
+repo_id: andnetdeboer/BlueCupRedContainer_sim_heldout5
+short_name: BlueCupRedContainer_sim_heldout5
+episodes:
