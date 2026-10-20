@@ -5,8 +5,6 @@ from pathlib import Path
 
 import numpy as np
 
-from adapter.labels import chunk_actions, load_episode, model_state, relative_actions
-
 # Policies whose predict_action_chunk reads the last n_obs_steps observations from queues that only
 # select_action fills: LeRobotPolicy fills them itself from the observations it is given.
 OBS_HISTORY = {'multi_task_dit'}
@@ -59,6 +57,8 @@ class ReplayPolicy:
     demonstration tests all of it."""
 
     def __init__(self, episode, arm, fps, chunk_size):
+        from adapter.labels import load_episode
+
         self.episode = load_episode(episode, arm, fps)
         self.chunk_size = chunk_size
 
@@ -72,6 +72,8 @@ class ReplayPolicy:
         return len(self.episode)
 
     def __call__(self, observation):
+        from adapter.labels import chunk_actions
+
         return chunk_actions(self.episode, observation['step'], self.chunk_size)
 
 
@@ -196,8 +198,8 @@ class LeRobotPolicy:
 
     With `rtc` (RTCConfig fields): `prev`, the unexecuted actions of the current chunk, is inpainted
     over the first `delay` steps (Real-Time Chunking).
-    With `adapter` (a lora.save directory), VITA's flow net runs with that LoRA adapter at `alpha` (0: the
-    base exactly).
+    With `adapter` (a lora.save directory), VITA runs with that LoRA adapter at `alpha` (0: the base
+    exactly), on the flow net or the modules its adapter.json names as root.
     """
 
     def __init__(self, model, device, task='', rtc=None, revision=None, overrides=None, adapter=None, alpha=1.0):
@@ -249,7 +251,7 @@ class LeRobotPolicy:
 
             if cfg.type != 'vita':
                 raise ValueError(f'LoRA adapters are for VITA checkpoints, not {cfg.type}')
-            lora.load(lora.flow_net(self.policy), adapter, alpha)
+            lora.load_policy(self.policy, adapter, alpha)
 
         if (path / 'policy_preprocessor.json').exists():
             overrides = {'device_processor': {'device': device}}
@@ -284,7 +286,11 @@ class LeRobotPolicy:
             # Dataset order is [left pose, left joints, right pose, right joints].
             # Signs are made continuous at TCP reception, not forced to qy >= 0.
             return np.concatenate([np.r_[tcp_p[a], tcp_q[a], joints[a]] for a in ('left', 'right')]).astype(np.float32)
-        return (raw_state if self.absolute else model_state)(tcp_p, tcp_q, gripper, joints)
+        if self.absolute:
+            return raw_state(tcp_p, tcp_q, gripper, joints)
+        from adapter.labels import model_state
+
+        return model_state(tcp_p, tcp_q, gripper, joints)
 
     def __call__(self, observation, delay=0, prev=None, tcp=None, history=()):
         """`tcp` (position, quaternion), the TCP observed: absolute goals are made relative to it.
@@ -335,6 +341,8 @@ class LeRobotPolicy:
             actions = self.post(actions)[0].float().cpu().numpy().astype(np.float64)
         if self.absolute and not getattr(self, 'bimanual', False):
             from scipy.spatial.transform import Rotation
+
+            from adapter.labels import relative_actions
 
             actions = relative_actions(actions[:, :3], Rotation.from_quat(actions[:, 3:7]), actions[:, 7], *tcp)
         return actions
