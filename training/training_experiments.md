@@ -1,230 +1,456 @@
-# Training experiments: few-shot shortcuts and test-time correction
+# Test-time training experiments
 
-Planned 2026-10-19; first runs tonight, results to read 2026-10-20.
+Plan, 2026-10-19. Every prediction below is written before any result exists.
 
-## Context
+## The question
 
-Trained on hand-guided demonstrations of the dustpan task (place the pan with the right arm, sweep
-the trash in with the left, carry it to the bin, empty it, return), policies take a **shortcut**: they
-position the pan, skip the sweep or make one token stroke, and go straight to carrying an empty pan.
-The policies that did this were trained on 21 to 56 demonstrations, so "too few demos" is only one of
-several explanations. The others: a single-frame policy cannot tell "before the sweep" from "after it",
-the operator visible in the demonstrations gives the phase away, and the label lead changes what the
-policy is asked to predict.
+A policy trained on a few demonstrations of a multi-step task takes shortcuts: on the dustpan task it
+places the pan, skips the sweep and carries an empty pan to the bin. **Can it be fixed at test time,
+from a few corrections or its own attempts, by updating a small adapter on the frozen policy, without
+losing what it already does well?** And which signal teaches faster, a human's corrections or reward
+on its own attempts?
 
-These experiments separate those explanations, one change at a time, and set up the baseline that
-test-time correction (methods M5 and M6) will start from.
+## Data
 
-**Rule for every comparison:** two runs differ in exactly one thing. A difference smaller than the
-gap between two seeds of the same run (runs 1 and 2) is not a finding.
+Both tasks use hand-guided demonstrations with **no lead** (labels are the measured pose) and
+**minimax** inpainting (operator removed).
 
-## Ground rules (no cross-contamination)
+| Task | Dataset | Episodes | Labels | Arms | Action / state | Cameras |
+|---|---|---|---|---|---|---|
+| Sweep | `andnetdeboer/SweepTrash_Kin-Full_inpainted_minimax` | 56 | measured; the published copy is shifted 1 sample (40 ms), so it is re-exported with no shift (code item 1) | 2 | 14 / 28 | 3 |
+| Cup | `andnetdeboer/BlueCupRedContainer_kin_pose_inpainted_minimax` | 56 | measured, no lead | 1 | 8 / 15 | 2 |
 
-| Item | Rule | Why |
+The same split for both tasks, fixed now:
+
+| Set | Episodes | Use |
 |---|---|---|
-| Held-out episodes | **3, 10, 17, 24, 31, 38, 45, 52** (8 of 56, spread across sessions) | The same 8 for every run, so every run is tested on the same thing |
-| Training loop | **`lerobot-train` for every run** (`lerobot` backend, configs `vita_sweep` and `dit_sweep`), rethought-lerobot branch `sweep-experiments` | It trained M1 and M2. The `task` backend's script is written for the single-arm cup task (15-D state, 8-D action, its own hardcoded episode split) and cannot read SweepTrash |
-| How they are held out | **Train-only dataset copies** with those 8 removed (step 0 below) | Normalization statistics are recomputed without the held-out episodes |
-| Validation loss | Every frame of the **evaluation-only copy** with the run's own label lead (`dataset.eval_repo_id`), every 2000 steps | `lerobot-train`'s default holds out the last 10% of the training episodes: 1 or 2 of train12's 12 demos, and only the first 2048 frames of them. Validation loss is watched, never used to choose anything |
-| Identical frames | Before launching, check every variant has 56 episodes with identical lengths | The inpainted and lead variants must be the same frames, or the pairs are not pairs |
-| Training | 30k steps, seed 42, M1's and M2's recipes (VITA batch 128 fp32 EMA 0.75, DiT batch 64 bf16; LeRobot's default image augmentation for both) | Only the named change differs |
-| Checkpoint | The final step is the one compared. Every 5k steps is saved, to see when the sweep skip appears | Picking a step by held-out score leaks the test set into the choice |
-| Fewer demos | Nested and fixed: 12 in 24 in 48, spread across sessions | Otherwise "fewer demos" also means "different demos" |
-| Evaluation images | The **inpainted (minimax)** held-out frames, for every model | At deployment no operator is in view; raw frames keep the operator cue in the test set and flatter a model that learned it |
-| Robot tests | No help by hand. A takeover is logged as a correction and the attempt counts as a failure | The 2026-10-15 rollouts mixed policy and operator and cannot be read as policy behaviour |
+| Base | 0 to 20 (21) | trains the base policy; replayed as the anchor; forgetting is measured here |
+| Correction pool | 21 to 37 (17) | the only source of corrections |
+| Test | 38 to 55 (18) | never used to train or to choose anything; every result is measured here |
 
-### Step 0: train-only datasets
+## Shared method
 
-Remove episodes 3, 10, 17, 24, 31, 38, 45, 52 from each source and publish the result as its own
-dataset (for example with LeRobot's dataset editing tool), then add one `datasets/*.yaml` per copy:
-
-| Copy | Source | Episodes |
-|---|---|---|
-| `..._minimax_lead640ms_train48` | `SweepTrash_Kin-Full_inpainted_minimax_lead640ms` | 48 |
-| `..._minimax_lead640ms_train24` | the same | 24, a fixed subset of the 48 |
-| `..._minimax_lead640ms_train12` | the same | 12, a fixed subset of the 24 |
-| `..._minimax_train48` | `SweepTrash_Kin-Full_inpainted_minimax` (lead 0) | 48 |
-| `SweepTrash_Kin-Full_train48` | `SweepTrash_Kin-Full` (raw, lead 0) | 48 |
-| `..._minimax_lead640ms_heldout8` | `SweepTrash_Kin-Full_inpainted_minimax_lead640ms` | the 8 held-out only: validation for lead-640 ms runs |
-| `..._minimax_heldout8` | `SweepTrash_Kin-Full_inpainted_minimax` | the 8 held-out only: validation for lead-0 runs (raw-trained run 5 too) |
-| `SweepTrash_Kin-Full_heldout8` | `SweepTrash_Kin-Full` (raw) | the 8 held-out only: the extra raw-image evaluation of runs 4 and 5 |
-
-The dataset configs are `datasets/sweep_*.yaml`; their comments list the original episode indices each
-copy keeps (train24 = 0 2 5 7 9 12 14 16 19 21 23 26 28 30 33 35 37 40 42 44 47 49 51 54; train12 =
-0 5 9 14 19 23 28 33 37 42 47 51).
-
-## Metrics
-
-One evaluation script, run once over every checkpoint, open-loop on the 8 held-out episodes. Each
-metric is computed per episode and reported as the median and range over episodes: frames within an
-episode are correlated, so the episode is the unit.
-
-1. **Future-pose error (mm).** Each predicted waypoint against the arm's recorded pose at the time
-   that waypoint stands for: a lead-640 ms model's first waypoint is the pose 0.64 s ahead, a lead-0
-   model's is the current pose. Both kinds of model are measured against the real trajectory, never
-   against each other's labels.
-2. **Sweep-skip rate.** On held-out frames in the sweep phase (task progress 0.2 to 0.55), the share
-   whose predicted chunk best matches a demonstration segment past 0.6. The matching (each chunk
-   against every 31-step segment of the training demos, both TCP positions) recovers a held-out
-   demo's own progress to a median error of 0.055 (90th percentile 0.19).
-3. **Error per phase.** Metric 1 split into place, sweep, carry, empty.
-
-Multi-Task DiT samples from noise, so it is evaluated with 5 fixed noise seeds and averaged.
-
-Runs 4 and 5 are also evaluated on the **raw** held-out frames. A raw-trained model tested on inpainted
-frames loses the operator cue and meets inpainting artifacts at once; the 2 x 2 (trained on, tested on)
-separates the two.
-
-## Methods
-
-### M1: VITA (baseline)
+### The base policy: VITA, trained once and frozen
 
 ![VITA](figures/vita.png)
 
-The trained `vita_SweepTrash_Kin-Full_inpainted_minimax_lead640ms_aug_30k_r1` checkpoint, every
-latent and chunk in the figure its own output on episode 0 at t = 20 s.
+VITA [1] flows from an observation latent $z_0$ to an action latent $z_1$ with no noise source (flow
+matching [2], minibatch optimal-transport pairing [3]), then decodes a 32-step chunk of which 16 run.
+One base per task is trained on episodes 0 to 20 with the repository's VITA configuration (30k steps)
+and never changed again. The figure is the no-lead sweep checkpoint (`vita_SweepTrash_Kin-Full_inpainted_aug_30k_r1`) traced on one frame.
 
-- **31.9 M parameters.** One ResNet-18 shared by the three cameras; each camera's 512 x 7 x 10 feature
-  map is **averaged over its 70 positions** into one vector. The policy never sees where things are.
-- Flows **without noise** from the observation latent $z_0$ to an action latent in 6 Euler steps;
-  the decoder turns that into 32 x 14 and the first 16 steps run. The same observation always gives
-  the same chunk.
-- On this one frame the flowed latent reaches cosine 0.971 with the demonstration's encoded latent
-  (0.51 at the start of the flow), and the left TCP lands 13.9 mm from the demonstration on average.
-  One frame of a training episode, raw where training was inpainted: an illustration, not a result.
-
-### M2: Multi-Task DiT
-
-![Multi-Task DiT](figures/dit.png)
-
-The trained `multi_task_dit_SweepTrash_Kin-Full_inpainted_minimax_lead640ms_aug_30k_r1`, drawn from its
-config and weights, with a real chunk noised at step 50 of 100.
-
-- **278 M parameters**, about 215 M trained (CLIP vision at a tenth of the learning rate, CLIP text
-  frozen).
-- Each image becomes **one 768-D CLS vector**; all 196 patch tokens are dropped. Two observation steps
-  of 3 cameras + state + text are flattened into one 5944-D vector.
-- That vector enters each of the 6 blocks only through adaLN, `Linear(5944, 3072)`: **85% of the DiT's
-  parameters** (109.6 M of 128.7 M) are these layers, against 3.2 M per block for attention and MLP.
-- DDPM, epsilon prediction, 100 sampling steps; 24 of 32 steps run.
-
-### M3: DiT + BIND (needs code and camera calibration)
-
-![DiT + BIND](figures/dit_bind.png)
-
-The DiT unchanged plus one path (orange): each noisy waypoint is projected into each camera and reads
-the CLIP patch features at that pixel, added to its token. As denoising moves the waypoints, the
-features they read move with them. 1.2 M added parameters. It tests whether **local image features at
-the action's own location** help, with the objective held fixed. Needs the third-eye camera's
-intrinsics and extrinsics, which nothing in the repo has yet.
-
-### M4: Energy potential V (needs code and camera calibration)
-
-![Energy potential V](figures/model.png)
-
-One network that both acts and scores: a frozen DINOv3 encoder, the candidate chunk projected into
-each camera (BIND), a small transformer, and one number $V_\theta(o, a)$. Its gradient generates
-chunks (Energy Matching); its value ranks them. Trained with flow matching on demonstrations plus a
-contrastive term on corrections: energy down on the human's chunk, up on the policy's own. With M3
-it completes a 2 x 2: {global, projected features} x {diffusion, energy}.
-
-### M5 and M6: test-time training on VITA
+### What learns at test time: a LoRA adapter
 
 ![TTT designs](figures/ttt.png)
 
 ![TTT at tensor level](figures/ttt_lora.png)
 
-Shared by both: VITA frozen; the **correcting model is a LoRA adapter** (rank 16) on the flow net's 8
-linear layers, 0.33 M parameters, 2.6% of the flow net; the **blend is the adapter's scale**
-$\alpha$ ($\alpha = 0$ the original policy, $\alpha = 1$ fully corrected), so undo is free. ResNet
-features and $z_0$ are cached, so an update is MLP arithmetic on 512-D vectors. Half of every update
-batch is cached demonstration pairs with the usual flow loss, so the adapter cannot drift from the
-demonstrations.
+LoRA [4] adds a trainable low-rank product $BA$ to a frozen weight $W$: the layer computes
+$(W + \alpha BA)x$. Here it sits on the flow net's 8 linear layers (rank 16: 0.33 M parameters, 2.6%
+of the flow net). Everything else in VITA stays frozen, so $z_0$ and the action encoder's latents are
+computed once per frame and cached. $\alpha$ blends: 0 is the base policy, 1 the adapted one.
 
-- **M5, corrective loop.** The operator takes over (cuff or VR) and lets go. Each held frame gives a
-  pair ($z_0$, $z_\text{human}$), $z_\text{human}$ from VITA's own frozen action encoder; the adapter
-  learns the flow from $z_0$ to $z_\text{human}$. Dense signal, the operator's time. Closest prior
-  work: HG-DAgger.
-- **M6, reward-weighted RL.** VITA has no noise, so each of $K = 8$ attempts runs with a fixed latent
-  offset $z_0 + \sigma \epsilon_i$. Reward: the operator's success press plus 0.5 x motion progress
-  without jumping the sweep. Weights $w = \mathrm{softmax}(\beta r)$ with $\beta$ set so
-  $\mathrm{KL}(w \| U) = \ln 2$ (TTT-Discover's rule). The adapter learns to reach, without the offset,
-  the latents the good attempts reached with it. Sparse signal, robot time. Closest prior work: DSRL.
+**Notation used by every loss.** For a pair $(z_0, z_1)$ and $t \sim \mathcal{U}(0, 1)$, let
+$z_t = (1 - t)\, z_0 + t\, z_1$ and
 
-M5 and M6 share everything but the target the adapter learns, so a difference between them is the
-signal, not the machinery.
+$$\ell_\phi(z_0, z_1) = \mathbb{E}_t \left\| f_\phi(z_t, t) - (z_1 - z_0) \right\|^2,$$
 
-**What one correction is:**
+the flow-matching error of the flow net $f_\phi$ with weights $\phi = \theta + \alpha BA$ ($\theta$
+frozen). The **anchor** replays base pairs $(z_0, z_\text{demo})$ from episodes 0 to 20 with the same
+$\ell$.
+
+### What one correction is
 
 ![One correction](figures/correction-2.png)
 
-![The correction loop](figures/correction-1.png)
+**The simulated corrector (offline).** On the robot a human takes over when the policy goes wrong.
+Offline, the demonstration plays the human: a frame of a correction-pool episode is corrected when the
+base's planned executed waypoints are on average more than **3 cm** from where the demonstration went
+(both arms for sweep). Its target $z_\text{h}$ is the frozen action encoder's latent of the
+demonstration's chunk at that frame. This follows the interactive-imitation setting of DAgger [5] and
+its human-gated form, HG-DAgger [6], where the expert labels the states the learner itself reaches.
 
-## Tonight's runs
+### Metrics (open loop, on the 18 test episodes)
 
-Baseline **B** = M1 (VITA), `..._minimax_lead640ms_train48`, 1 observation frame, seed 42. Each run
-differs from the run in "compare with" in exactly the named change. Run `<N>` is
-`train.py <vita_sweep|dit_sweep> --dataset sweep_<copy> --name <vita|multi_task_dit>_exp<N> --set hub_suffix=_exp<N>`
-plus its change as `--set`.
+1. **Sweep-skip rate** (sweep only, primary). Among test frames in the sweep phase (task progress 0.2
+   to 0.55), the share whose predicted chunk best matches a demonstration segment past progress 0.6.
+   Matching each chunk against every 31-step segment of the base episodes recovered a held-out
+   demonstration's own progress to a median error of 0.055 (90th percentile 0.19).
+2. **Progress error** (both tasks). The absolute difference between a chunk's matched progress and
+   the frame's true progress.
+3. **Path error (mm).** Mean distance between predicted and demonstrated executed waypoints; overall
+   and per phase.
+4. **Forgetting (mm).** Path error on base episodes 0 to 20, adapted minus base.
 
-| # | Method | Dataset copy | Change | Compare with | Question |
-|---|---|---|---|---|---|
-| 1 | M1 | `minimax_lead640ms_train48` | none (B) | | baseline |
-| 2 | M1 | `minimax_lead640ms_train48` | `seed=7` | 1 | noise floor: smaller gaps are not findings |
-| 2b | M1 | `minimax_lead640ms_train48` | `seed=123` | 1, 2 | noise floor from three seeds instead of one gap |
-| 3 | M1 | `minimax_lead640ms_train48` | `args.policy.n_obs_steps=2` (frames t-1, t: 40 ms apart) | 1 | does a second frame stop the sweep skip? |
-| 3b | M1 | `minimax_lead640ms_train48` | as 3 plus `args.policy.obs_stride=38` (frames t-38, t: 1.52 s apart) | 3 | does a frame from before the current motion help where the frame 40 ms back cannot? |
-| 4 | M1 | `minimax_train48` | label lead 0 | 1 | do lead-640 ms labels matter? |
-| 5 | M1 | `SweepTrash_Kin-Full_train48` | raw frames (no inpainting) | 4 | does the operator in view create a shortcut? (the raw set has only lead 0, so its pair is 4) |
-| 6 | M1 | `minimax_lead640ms_train24` | 24 demos | 1 | few-shot curve |
-| 7 | M1 | `minimax_lead640ms_train12` | 12 demos | 6, 1 | few-shot curve |
-| 8 | M2 | `minimax_lead640ms_train48` | architecture | 1 | VITA against DiT at 48 demos |
-| 8b | M2 | `minimax_lead640ms_train24` | 24 demos | 8 | DiT's few-shot curve, so run 9 is read along a curve |
-| 9 | M2 | `minimax_lead640ms_train12` | architecture at 12 demos | 8b, 7 | does DiT fall off faster with fewer demos? |
+### Statistics
 
-Measured cost on an RTX 6000 Ada: VITA 4.8 steps/s (about 1.7 h for 30k), DiT 1.4 steps/s (about
-6 h): 9 VITA and 3 DiT runs, about 33 GPU hours. Runs 6, 7 against 1 and 8b, 9 against 8 give one
-few-shot curve per architecture; 7 against 9 compares them at 12 demos.
+The unit is the **test episode** (18), not the frame: frames within an episode are correlated.
+Comparisons are paired (same episodes), reported as the median difference with a 95% bootstrap
+interval [7] over episodes, following the interval-first reporting of [8]. **An effect counts** only
+if its interval excludes zero **and** it is larger than the spread of the three T1 draws (test plan
+1). Nothing is tuned on test episodes; a setting chosen later is chosen on the correction pool and
+reported as such.
 
-## Next runs (need code first)
+### Code to write (shared by test plans 1 to 8)
 
-| # | Method | Change from | Question |
-|---|---|---|---|
-| 10 | M5 on run 1 | offline: 4 held-out episodes' sweep frames as corrections, scored on the other 4 | do a few corrections remove the skip without forgetting the rest? |
-| 11 | M3 | run 8, plus projected features | do local features help the DiT? |
-| 12 | M4 | run 11's projected features, energy instead of diffusion | does the objective matter once features are local? |
-| 13 | M6 on run 1 | robot, $K = 8$, 3 updates | does reward-weighted RL fix what M5 fixes, per minute of robot time? |
+What exists: VITA training and inference, the LeRobot datasets, the progress matching (prototype from
+the stopped rollout analysis). What does not:
+
+1. **No-lead sweep labels.** The published sweep copy labels each frame with the pose one sample
+   later (`lead_steps: 1`). Re-export it with `lead_steps: 0` so the label is the measured pose itself,
+   as the cup data already is. The velocity feedforward replaces any lead in the controller.
+2. **Base training data.** Train-only copies holding episodes 0 to 20 (`..._minimax_ep0-20`, both
+   tasks), so normalisation statistics never see the pool or test episodes, plus a `datasets/*.yaml`
+   each, as the existing `datasets/sweep_*.yaml` copies are made.
+3. **Two base runs** (sweep, cup) through `lerobot-train` (the `lerobot` backend): the `vita_sweep`
+   config for SweepTrash, since the `task` backend's script is written for the single-arm cup task and
+   cannot read it. No new code once items 1 and 2 exist.
+4. **Latent cache.** Run each frozen base over every frame of episodes 0 to 55 once and store $z_0$,
+   the base's flowed latent $z_\pi$ and its decoded chunk, and $z_\text{demo}$ (action encoder of the
+   demonstration's chunk).
+5. **LoRA wrapper** on the flow net's `fc1` and `fc2` layers, with rank and $\alpha$ as parameters.
+6. **Simulated corrector:** the 3 cm rule over the cache.
+7. **Update loop** over cached latents: the flow loss, the anchor mix, the preference loss of test plan
+   6, the full fine-tune option of test plan 5; 200 steps, batch 256, learning rate 1e-4, seeded.
+8. **Evaluation:** decode with any $\alpha$; path error overall and per phase; forgetting; progress
+   matching and skip rate; bootstrap intervals; one results table per run.
+9. **Phase labels.** Sweep: progress bands (place 0 to 0.2, sweep 0.2 to 0.55, carry 0.55 to 0.8,
+   empty and return 0.8 to 1), checked on 3 base episodes. Cup: from the gripper channel (reach until
+   it closes, transfer while closed, release after it opens).
+
+## Test plan 1: do corrections fix the shortcut?
+
+![Test plan 1](figures/test-plan-1.png)
+
+**Inquiry.** Imitation learners fail on states their demonstrations never reached, and errors
+compound; DAgger [5] fixes this by having an expert label the learner's own states, and HG-DAgger [6]
+lets the expert take over only when needed. Physical corrections carry information about the task,
+not just noise [9]. LoRA [4] adapts a large frozen model with few parameters. Whether a few corrected
+frames, applied as a LoRA update to a frozen flow policy, remove a learned shortcut on unseen
+episodes has not been shown.
+
+**Hypothesis H1.** A LoRA update on corrections from 4 pool episodes lowers the sweep-skip rate on the
+test episodes. **Null:** no change beyond the noise floor.
+
+**Loss.** With $C$ the corrected pairs and $D$ the anchor pairs, $\lambda = 0.5$:
+
+$$\mathcal{L}_1 = (1 - \lambda)\, \mathbb{E}_{(z_0, z_\text{h}) \in C}\, \ell_\phi(z_0, z_\text{h}) + \lambda\, \mathbb{E}_{(z_0, z_\text{demo}) \in D}\, \ell_\phi(z_0, z_\text{demo})$$
+
+| # | Condition |
+|---|---|
+| T0 | base, no update |
+| T1 | $\mathcal{L}_1$, corrections from pool episodes 21, 25, 29, 33 |
+| T1b | T1 with episodes 22, 26, 30, 34 and 23, 27, 31, 35 (three draws in all) |
+
+**Expected outcome.** T1's sweep-skip rate at most half of T0's, with path error in the sweep phase
+lower and elsewhere unchanged. The three draws agree within a few percentage points.
+**Falsified if** the T1 against T0 interval includes zero or is within the T1b spread.
+
+**Code to write.** Shared items 1 to 9.
+
+## Test plan 2: does replaying the base demonstrations prevent forgetting?
+
+![Test plan 2](figures/test-plan-2.png)
+
+**Inquiry.** Training on new data overwrites what a network learned before (catastrophic forgetting
+[10]). Replaying old data alongside new is a simple, strong defence [11], and LoRA by itself already
+forgets less than full fine-tuning [12]. Whether a LoRA update on a few corrections still needs replay
+is the question.
+
+**Hypothesis H2.** Without the anchor, forgetting on episodes 0 to 20 rises while the test gain stays
+similar. **Null:** forgetting is the same with and without it.
+
+**Loss.** $\mathcal{L}_1$ with $\lambda = 0.5$ (T1) against $\lambda = 0$ (T2).
+
+| # | Condition |
+|---|---|
+| T1 | $\lambda = 0.5$ |
+| T2 | $\lambda = 0$ |
+
+**Expected outcome.** T2's forgetting clearly above T1's; test gains within noise of each other.
+**Falsified if** T2's forgetting interval overlaps T1's.
+
+**Code to write.** None beyond the shared items ($\lambda$ is a parameter of item 7).
+
+## Test plan 3: targeted corrections, or simply more demonstrations?
+
+![Test plan 3](figures/test-plan-3.png)
+
+**Inquiry.** DAgger's argument [5] is that labels on the learner's own mistakes are worth more than
+labels on states it already handles. If that holds, training only on the frames where the base was
+wrong should beat training on whole episodes, which are mostly frames it already gets right.
+
+**Hypothesis H3.** At the same 4 episodes, corrected frames only (T1) lower the sweep-skip rate more
+than all frames (T5). **Null:** T5 is as good or better.
+
+**Loss.** $\mathcal{L}_1$; T5 replaces $C$ with every frame of the same 4 episodes.
+
+| # | Condition |
+|---|---|
+| T1 | frames off by more than 3 cm |
+| T5 | every frame of episodes 21, 25, 29, 33 |
+
+**Expected outcome.** T1 lower skip rate than T5; T5 lower overall path error (more data on the easy
+phases). **Falsified if** T5's skip rate is at or below T1's.
+
+**Code to write.** A frame-selection switch in item 6.
+
+## Test plan 4: how many corrections are enough?
+
+![Test plan 4](figures/test-plan-4.png)
+
+**Inquiry.** Test-time training on single problem instances improves quickly from few gradient steps
+[13]; human-gated correction [6] is valued because it needs few interventions. The shape of the gain
+against the number of corrected episodes says whether a handful is enough or whether this is just
+more data.
+
+**Hypothesis H4.** Most of the gain comes from the first 1 to 4 corrected episodes. **Null:** the gain
+keeps rising steadily up to 16.
+
+**Loss.** $\mathcal{L}_1$, with $C$ drawn from a growing set of pool episodes.
+
+| # | Pool episodes |
+|---|---|
+| T3 | 1 (21) |
+| T1 | 4 (21, 25, 29, 33) |
+| T4 | 16 (21 to 36) |
+
+**Expected outcome.** T3 reaches at least half of T1's gain; T4 adds less than T1 added over T3.
+**Falsified if** the gain from 4 to 16 is larger than from 1 to 4.
+
+**Code to write.** None beyond the shared items.
+
+## Test plan 5: how much capacity does a fix need?
+
+![Test plan 5](figures/test-plan-5.png)
+
+**Inquiry.** LoRA [4] assumes the needed weight change is low rank. Compared with full fine-tuning it
+learns less and forgets less [12]. A correction that only changes when the policy sweeps may need very
+little capacity.
+
+**Hypothesis H5.** Rank 16 matches full fine-tuning of the flow net on the test episodes and forgets
+less. **Null:** full fine-tuning is clearly better on the test episodes.
+
+**Loss.** $\mathcal{L}_1$; only the trainable set changes.
+
+| # | Trainable |
+|---|---|
+| T6 | LoRA rank 4 |
+| T1 | LoRA rank 16 |
+| T7 | LoRA rank 64 |
+| T8 | the whole flow net (12.6 M) |
+
+**Expected outcome.** T6, T1 and T7 within noise on the test episodes; T8 no better and with more
+forgetting. **Falsified if** T8 beats T1 on the skip rate beyond the noise floor.
+
+**Code to write.** Full fine-tune option in item 7.
+
+## Test plan 6: does a negative help?
+
+![Test plan 6](figures/test-plan-6.png)
+
+**Inquiry.** A correction says what to do **and** what not to: the base's own answer at that frame is
+a natural negative. Direct preference optimisation [14] trains on such pairs without a reward model,
+and Diffusion-DPO [15] carries it to diffusion models by comparing denoising errors against a frozen
+reference. Implicit policies [16] and intervention-as-reward methods [17] also learn from negatives.
+Whether the negative adds anything over the positive alone, for a flow policy, is open.
+
+**Hypothesis H6a.** Adding the preference term lowers the sweep-skip rate further than T1. **Null:** no
+difference.
+
+**Loss.** With $z_\pi$ the base's own flowed latent at the corrected frame, $\ell_\text{ref}$ the frozen
+base's error and $\beta$ a scale:
+
+$$\mathcal{L}_\text{pref} = -\,\mathbb{E}_{C} \log \sigma\!\left(-\beta \left[ \left(\ell_\phi(z_0, z_\text{h}) - \ell_\text{ref}(z_0, z_\text{h})\right) - \left(\ell_\phi(z_0, z_\pi) - \ell_\text{ref}(z_0, z_\pi)\right) \right]\right)$$
+
+$$\mathcal{L}_6 = \mathcal{L}_1 + \mathcal{L}_\text{pref}$$
+
+$\beta$ is chosen on the correction pool (largest value with a stable update), never on the test
+episodes.
+
+| # | Loss |
+|---|---|
+| T1 | $\mathcal{L}_1$ |
+| T9 | $\mathcal{L}_6$ |
+
+**Expected outcome.** A small extra drop in the skip rate and in sweep-phase error.
+**Falsified if** the T9 against T1 interval includes zero.
+
+**Code to write.** The preference loss in item 7, and $z_\pi$ in the cache (item 4).
+
+## Test plan 7: does the blend dial interpolate?
+
+![Test plan 7](figures/test-plan-7.png)
+
+**Inquiry.** Interpolating between a pretrained and a fine-tuned model's weights (WiSE-FT [18]) trades
+target performance against robustness smoothly. Here $\alpha$ does the same between the base and the
+adapted policy, which would make the adapter safe to deploy partially.
+
+**Hypothesis H7.** Error and skip rate change smoothly and monotonically with $\alpha$, and
+$\alpha = 0$ reproduces the base exactly. **Null:** non-monotone or abrupt.
+
+**Loss.** None: T1's adapter evaluated at different $\alpha$.
+
+| # | $\alpha$ |
+|---|---|
+| T10 | 0, 0.25, 0.5, 0.75, 1 |
+
+**Expected outcome.** Monotone curves; $\alpha = 0$ identical to T0 to numerical precision.
+**Falsified if** any intermediate $\alpha$ is worse than both ends.
+
+**Code to write.** None beyond the shared items.
+
+## Test plan 8: does it carry over to a second task?
+
+![Test plan 8](figures/test-plan-8.png)
+
+**Inquiry.** A result on one task is a case study. The cup task differs in arm count (one), cameras
+(two), action (with the gripper) and phase structure (reach, grasp, transfer, release); if test plan 1
+holds there too, the effect is not specific to sweeping.
+
+**Hypothesis H8.** T1's improvement on progress error and path error replicates on the cup task.
+**Null:** no improvement on the cup task.
+
+**Loss.** $\mathcal{L}_1$, unchanged.
+
+| # | Condition |
+|---|---|
+| T0-cup | cup base, no update |
+| T1-cup | $\mathcal{L}_1$, corrections from cup pool episodes 21, 25, 29, 33 |
+
+**Expected outcome.** Lower progress error and transfer-phase error on the cup test episodes.
+**Falsified if** the T1-cup against T0-cup interval includes zero.
+
+**Code to write.** Cup phase labels from the gripper channel (shared item 9); the cup base (items 2
+and 3).
+
+## Test plan 9: corrections against reward, on the robot
+
+![Test plan 9](figures/test-plan-9.png)
+
+**Inquiry.** Reward-weighted regression [19] and advantage-weighted regression [20] turn RL into
+weighted imitation of the agent's own better attempts. TTT-Discover [13] sets the weighting's
+temperature per problem so the weights stay a fixed distance ($\ln 2$) from uniform. DSRL [21] adapts a
+frozen diffusion policy by searching its input noise. RLIF [17] and HIL-SERL [22] show real-robot RL
+with human interventions. Whether a human's corrections or reward on attempts improve a frozen VITA
+faster, per minute of robot and operator time, is the question.
+
+**Hypothesis H9.** Design A (corrections) reaches 8 of 10 successes in fewer robot minutes than
+design B (reward). **Null:** B is as fast or faster.
+
+**Losses.**
+
+- **A:** $\mathcal{L}_1$, with $z_\text{h}$ from the operator's held chunk (cuff or VR) at each corrected frame.
+- **B:** $K = 8$ attempts, attempt $i$ run from $z_0 + \sigma\epsilon_i$ with $\epsilon_i$ fixed per attempt; reward $r_i$ = success (0 or 1) + 0.5 x progress reached without skipping the sweep; $w = \mathrm{softmax}(\beta r)$ with $\beta$ solving $\mathrm{KL}(w \| U) = \ln 2$ [13];
+
+$$\mathcal{L}_B = (1 - \lambda) \sum_i w_i\, \mathbb{E}_{z_0 \in \text{attempt } i}\, \ell_\phi(z_0, \hat{z}_{1, i}) + \lambda\, \mathbb{E}_D\, \ell_\phi(z_0, z_\text{demo})$$
+
+| # | Condition |
+|---|---|
+| R0 | base, no update: 10 attempts |
+| R1 | A: corrections during attempts, update between attempts, 3 rounds, then 10 attempts |
+| R2 | B: 3 rounds of $K = 8$, then 10 attempts |
+
+**Rules.** The same 3 object layouts, in the same order, for every condition. A success is all trash
+in the bin with no help; a takeover is logged as a correction and the attempt counts as a failure.
+Every attempt is recorded, takeovers marked.
+
+**Expected outcome.** R1 reaches 8 of 10 within its 3 rounds; R2 needs more robot minutes, but no
+operator motion. **Falsified if** R2 reaches 8 of 10 in fewer robot minutes than R1.
+
+**Code to write.**
+
+1. **Velocity feedforward** (precondition): the runtime publishes the merged trajectory's velocity
+   (`TwistStamped`) and the teleop's policy input passes it to `servo_twist`, so labels with no lead run
+   without lag. Through the bounded IK as now.
+2. Adapter loading and $\alpha$ in the policy node.
+3. Correction extraction from rollout bags: cuff and VR takeover segments into $(z_0, z_\text{h})$ pairs.
+4. An update step between attempts (the offline update loop, on the robot computer).
+5. Design B: a seeded latent offset per attempt, a reward input (navigator button), the group update.
 
 ## Results
 
-Fill in from the evaluation script; median over the 8 held-out episodes (range in brackets).
+Sweep, median over the 18 test episodes, 95% interval in brackets.
 
-| # | Future-pose error (mm) | Sweep-skip rate | Sweep-phase error (mm) | Notes |
+| # | Sweep-skip rate | Progress error | Path error (mm) | Sweep-phase error (mm) | Forgetting (mm) |
+|---|---|---|---|---|---|
+| T0 | | | | | |
+| T1 | | | | | |
+| T1b | | | | | |
+| T2 | | | | | |
+| T3 | | | | | |
+| T4 | | | | | |
+| T5 | | | | | |
+| T6 | | | | | |
+| T7 | | | | | |
+| T8 | | | | | |
+| T9 | | | | | |
+| T10 | | | | | |
+
+Cup, same format.
+
+| # | Progress error | Path error (mm) | Transfer-phase error (mm) | Forgetting (mm) |
 |---|---|---|---|---|
-| 1 | | | | |
-| 2 | | | | |
-| 2b | | | | |
-| 3 | | | | |
-| 3b | | | | |
-| 4 | | | | |
-| 5 | | | | |
-| 6 | | | | |
-| 7 | | | | |
-| 8 | | | | |
-| 8b | | | | |
-| 9 | | | | |
+| T0-cup | | | | |
+| T1-cup | | | | |
 
-## Limits
+Robot.
 
-- **Label lead and the servo.** The lead-640 ms datasets were labelled for the servo's 0.6 s lag. Since
-  2026-10-16 the lag is 0.15 s, so on the robot a lead-640 ms model now over-leads. The planned
-  feedforward (the runtime passes the chunk's velocity to `servo_twist`) makes lead 0 the label to train
-  on. Open-loop metrics compare against the recorded trajectory and are unaffected; robot tests of
-  lead-640 ms models with today's servo are not.
+| # | Successes of 10 | Robot minutes to 8 of 10 | Operator minutes | Takeovers |
+|---|---|---|---|---|
+| R0 | | | | |
+| R1 | | | | |
+| R2 | | | | |
 
-- Open-loop metrics screen; they do not measure task success. The best two runs and B go to the robot.
-- One task, one operator, one robot.
-- The dataset copies recompute normalization statistics without the held-out episodes, as they should;
-  the original checkpoints did not, so they are not comparable to these runs.
+## Threats to validity
+
+- **The simulated corrector is too clean.** A demonstration corrects perfectly and instantly; a person
+  corrects late, partly and from another pose. Test plans 1 to 8 bound what corrections can do;
+  test plan 9 measures it.
+- **Open loop is not success.** A lower skip rate on recorded frames does not show the robot sweeps;
+  in closed loop the policy reaches states no demonstration did.
+- **Same sessions.** Pool and test episodes share recording sessions and operator: unseen episodes,
+  not unseen conditions.
+- **Progress is approximate.** Phases come from normalised time; the skip rate is as good as the
+  progress matching (median error 0.055).
+- **One base per task.** Differences between bases are not tested; the noise floor covers correction
+  draws, not base training seeds.
+
+## Later bases (drawn, not yet tested)
+
+The same test plans can run on other base policies once they exist.
+
+| Base | Why |
+|---|---|
+| ![Multi-Task DiT](figures/dit.png) | **Multi-Task DiT** (278 M, 85% of its blocks is adaLN): is test-time training harder on a large diffusion base? |
+| ![DiT + BIND](figures/dit_bind.png) | **DiT + BIND** [23]: image features read where each waypoint lands; do local features make corrections generalise? |
+| ![Energy potential V](figures/model.png) | **Energy potential V** (Energy Matching [24] with BIND [23]): one network that acts and scores; corrections train it contrastively by construction |
+
+## References
+
+1. D. Gao et al., "VITA: Vision-to-Action Flow Matching Policy," ICLR 2026. [arXiv:2507.13231](https://arxiv.org/abs/2507.13231)
+2. Y. Lipman et al., "Flow Matching for Generative Modeling," ICLR 2023. [arXiv:2210.02747](https://arxiv.org/abs/2210.02747)
+3. A. Tong et al., "Improving and Generalizing Flow-Based Generative Models with Minibatch Optimal Transport," TMLR 2024. [arXiv:2302.00482](https://arxiv.org/abs/2302.00482)
+4. E. J. Hu et al., "LoRA: Low-Rank Adaptation of Large Language Models," ICLR 2022. [arXiv:2106.09685](https://arxiv.org/abs/2106.09685)
+5. S. Ross, G. Gordon, J. A. Bagnell, "A Reduction of Imitation Learning and Structured Prediction to No-Regret Online Learning" (DAgger), AISTATS 2011. [arXiv:1011.0686](https://arxiv.org/abs/1011.0686)
+6. M. Kelly et al., "HG-DAgger: Interactive Imitation Learning with Human Experts," ICRA 2019. [arXiv:1810.02890](https://arxiv.org/abs/1810.02890)
+7. B. Efron, "Bootstrap Methods: Another Look at the Jackknife," Annals of Statistics, 1979. [doi:10.1214/aos/1176344552](https://doi.org/10.1214/aos/1176344552)
+8. R. Agarwal et al., "Deep Reinforcement Learning at the Edge of the Statistical Precipice," NeurIPS 2021. [arXiv:2108.13264](https://arxiv.org/abs/2108.13264)
+9. A. Bajcsy, D. P. Losey, M. K. O'Malley, A. D. Dragan, "Learning Robot Objectives from Physical Human Interaction," CoRL 2017, PMLR 78. [proceedings](https://proceedings.mlr.press/v78/bajcsy17a.html)
+10. J. Kirkpatrick et al., "Overcoming Catastrophic Forgetting in Neural Networks," PNAS 2017. [arXiv:1612.00796](https://arxiv.org/abs/1612.00796)
+11. D. Rolnick et al., "Experience Replay for Continual Learning," NeurIPS 2019. [arXiv:1811.11682](https://arxiv.org/abs/1811.11682)
+12. D. Biderman et al., "LoRA Learns Less and Forgets Less," TMLR 2024. [arXiv:2405.09673](https://arxiv.org/abs/2405.09673)
+13. "Learning to Discover at Test Time" (TTT-Discover), 2026. [arXiv:2601.16175](https://arxiv.org/abs/2601.16175)
+14. R. Rafailov et al., "Direct Preference Optimization: Your Language Model is Secretly a Reward Model," NeurIPS 2023. [arXiv:2305.18290](https://arxiv.org/abs/2305.18290)
+15. B. Wallace et al., "Diffusion Model Alignment Using Direct Preference Optimization," CVPR 2024. [arXiv:2311.12908](https://arxiv.org/abs/2311.12908)
+16. P. Florence et al., "Implicit Behavioral Cloning," CoRL 2021. [arXiv:2109.00137](https://arxiv.org/abs/2109.00137)
+17. J. Luo, P. Dong, Y. Zhai, Y. Ma, S. Levine, "RLIF: Interactive Imitation Learning as Reinforcement Learning," ICLR 2024. [arXiv:2311.12996](https://arxiv.org/abs/2311.12996)
+18. M. Wortsman et al., "Robust Fine-Tuning of Zero-Shot Models" (WiSE-FT), CVPR 2022. [arXiv:2109.01903](https://arxiv.org/abs/2109.01903)
+19. J. Peters, S. Schaal, "Reinforcement Learning by Reward-Weighted Regression for Operational Space Control," ICML 2007. [doi:10.1145/1273496.1273590](https://doi.org/10.1145/1273496.1273590)
+20. X. B. Peng et al., "Advantage-Weighted Regression: Simple and Scalable Off-Policy Reinforcement Learning," 2019. [arXiv:1910.00177](https://arxiv.org/abs/1910.00177)
+21. A. Wagenmaker et al., "Steering Your Diffusion Policy with Latent Space Reinforcement Learning" (DSRL), CoRL 2025, PMLR 305. [arXiv:2506.15799](https://arxiv.org/abs/2506.15799)
+22. J. Luo et al., "Precise and Dexterous Robotic Manipulation via Human-in-the-Loop Reinforcement Learning" (HIL-SERL), 2024. [arXiv:2410.21845](https://arxiv.org/abs/2410.21845)
+23. C. Smith et al., "BIND: Binding 3D Robot Actions to 2D Image Features," in submission, 2026. [arXiv:2609.38443](https://arxiv.org/abs/2609.38443)
+24. M. Balcerak et al., "Energy Matching: Unifying Flow Matching and Energy-Based Models for Generative Modeling," NeurIPS 2025. [arXiv:2504.10612](https://arxiv.org/abs/2504.10612)
 
 Figure sources and the data they read: [`figures/src/`](figures/src/README.md).

@@ -22,7 +22,7 @@ sys.path.insert(0, 'src/inference')
 from inference.policies import LeRobotPolicy  # noqa: E402
 
 ROOT = 'datasets/SweepTrash_Kin-Full'
-MODEL = 'models/vita_SweepTrash_Kin-Full_inpainted_minimax_lead640ms_aug_30k_r1/step-030000'
+MODEL = 'models/vita_SweepTrash_Kin-Full_inpainted_aug_30k_r1/step-030000'
 T, FPS = 20.0, 25
 OUT = Path(__file__).resolve().parent / 'vita.json'
 
@@ -55,9 +55,8 @@ data = pd.read_parquet(sorted(glob.glob(f'{ROOT}/data/*/*.parquet'))[0])
 ep = data[data.episode_index == 0]
 i = int(T * FPS)
 state = np.asarray(ep['observation.state'].values[i], np.float32)
-# This checkpoint's labels lead the measured pose by 0.64 s (16 frames): its chunk at i is the
-# recorded pose over [i + 16, i + 48).
-demo = np.stack(ep['action'].values[i + 16 : i + 48]).astype(np.float32)
+# The checkpoint predicts the dataset's own labels: the chunk at i is the action column over [i, i + 32).
+demo = np.stack(ep['action'].values[i : i + 32]).astype(np.float32)
 
 policy = LeRobotPolicy(MODEL, 'cuda')
 vita = policy.policy.vita
