@@ -18,7 +18,7 @@ from safetensors import safe_open
 
 HERE = Path(__file__).resolve().parent
 ROOT = 'datasets/SweepTrash_Kin-Full'
-DIT = 'models/multi_task_dit_SweepTrash_Kin-Full_inpainted_minimax_lead640ms_aug_30k_r1/step-030000'
+DIT = 'models/multi_task_dit_SweepTrash_Kin-Full_inpainted_aug_30k_r1/step-030000'
 T, FPS = 20.0, 25  # episode 0, the moment every figure shows
 
 # Frames at t and one step earlier (the DiT sees two), 320 px wide.

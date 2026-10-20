@@ -1,4 +1,4 @@
-// VITA as trained on SweepTrash (vita_SweepTrash_Kin-Full_inpainted_minimax_lead640ms_aug_30k_r1,
+// VITA as trained on SweepTrash with no label lead (vita_SweepTrash_Kin-Full_inpainted_aug_30k_r1,
 // step 30000), run on episode 0 at t = 20 s. Every latent and chunk drawn here is the checkpoint's
 // own output, traced by assets/vita_trace.py into assets/vita.json.
 #import "lib.typ": *
@@ -77,7 +77,7 @@
   let ref = v.pred + v.demo.slice(0, 16)
   content((25.65, 10.65), small[VITA, steps 1 to 16])
   heat-table(24.3, 10.2, v.pred, cw: 0.2, ch: 0.16, ref: ref)
-  content((28.85, 10.65), small[demo (lead 0.64 s)])
+  content((28.85, 10.65), small[demo])
   heat-table(27.5, 10.2, v.demo.slice(0, 16), cw: 0.2, ch: 0.16, ref: ref)
   for x in (24.3, 27.5) {
     content((x + 0.7, 10.35), dim[left])

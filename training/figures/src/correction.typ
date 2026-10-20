@@ -61,7 +61,7 @@
   content((-1.3, 0.6), [*drives*])
   content((-1.3, -0.7), [*trains*])
   seg(0, 4.4, model, [pre: 1 to 3 s\ policy, cause of the mistake], [weak negatives,\ weight rises to the grab])
-  seg(4.4, 11.9, human, [hold: any length\ human, labels lead 0.64 s / 0.28 s], [positives $a_"human"$ vs. negatives $a_pi$\ (frames where they disagree)])
+  seg(4.4, 11.9, human, [hold: any length\ human; labels: the measured pose, no lead], [positives $a_"human"$ vs. negatives $a_pi$\ (frames where they disagree)])
   seg(11.9, 16.3, model, [post: 2 to 5 s\ policy, did it work?], [trust weight\ for the correction])
   for (x, label) in ((4.4, [cuff squeezed]), (11.9, [released])) {
     line((x, 1.2), (x, 1.7), stroke: (dash: "dashed", thickness: 0.6pt, paint: ink))

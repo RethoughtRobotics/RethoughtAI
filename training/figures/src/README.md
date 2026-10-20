@@ -14,6 +14,7 @@ packages on first build.
 | `ttt.typ` | test-time training on VITA: frozen policy, LoRA as the correcting model, its scale as the blend; designs A and B |
 | `ttt_lora.typ` | the same at tensor level: LoRA matrices to scale, A's latent pair, B's group and its ln 2 weights |
 | `correction.typ` | 1: the correction loop, 2: one correction on the timeline, 3: the scoring model (overview) |
+| `test_plans.typ` | one diagram per test plan (9 pages); the varied part outlined in orange |
 | `lib.typ` | shared primitives: `tensor`, `vector`, `heat-table`, `strip`, `grid-cells`, `stacked`, `block`, `arrow` |
 
 ## Data
@@ -34,6 +35,7 @@ Write the PNGs the document shows, from this folder:
 ```bash
 for f in vita dit dit_bind model ttt ttt_lora; do typst compile $f.typ ../$f.png --ppi 200; done
 typst compile correction.typ "../correction-{p}.png" --ppi 200
+typst compile test_plans.typ "../test-plan-{p}.png" --ppi 180
 ```
 
 `.pdf` or `.svg` instead of `.png` for papers and slides.

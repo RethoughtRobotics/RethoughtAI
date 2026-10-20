@@ -1,5 +1,5 @@
-// Multi-Task DiT as trained on SweepTrash (multi_task_dit_SweepTrash_Kin-Full_inpainted_minimax_
-// lead640ms_aug_30k_r1, step 30000), drawn from its config.json and model.safetensors.
+// Multi-Task DiT as trained on SweepTrash with no label lead (multi_task_dit_SweepTrash_Kin-Full_
+// inpainted_aug_30k_r1, step 30000), drawn from its config.json and model.safetensors.
 // Data: SweepTrash_Kin-Full episode 0 at t = 20 s. The noised chunk is one noise draw at
 // diffusion step 50 of 100 under the checkpoint's squaredcos_cap_v2 schedule.
 #import "lib.typ": *
