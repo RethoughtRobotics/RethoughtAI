@@ -10,26 +10,24 @@ reuses; read that first.
 attempts, by updating a small adapter, without losing what it already does, and faster per minute of
 robot time than collecting more demonstrations, fine-tuning or reinforcement learning?**
 
-A method paper that claims this has to show five things, in order, and this plan is built as those
-five parts:
+A method paper that claims this has to show these things, in order, and this plan is built as those
+parts (the base's own failures, and more demonstrations as the alternative, are left out for now):
 
-1. **The problem is real**: the base fails systematically, and more demonstrations alone do not fix
-   it as cheaply (part 1).
-2. **It beats the obvious alternatives**, the simplest first: fine-tuning, retraining with the
-   corrections (DAgger), a residual policy, steering the latent, reward (part 2).
-3. **Every component earns its place**: each part of the method removed or changed on its own
-   (part 3).
-4. **The correction signal is understood**: where corrections come from, how many, how good they
-   must be, when to update (part 4).
-5. **It generalises and transfers**: unseen conditions, other base policies and base strengths,
-   repeated adaptation, and the sim's ranking confirmed on the robot (parts 5 and 6).
+1. **It beats the obvious alternatives**, the simplest first: fine-tuning, retraining with the
+   corrections (DAgger), a residual policy, steering the latent, reward (part 1).
+2. **Every component earns its place**: each part of the method removed or changed on its own
+   (part 2).
+3. **The correction signal is understood**: where corrections come from, how many, how good they
+   must be, when to update (part 3).
+4. **It generalises and transfers**: unseen conditions, other base policies and base strengths,
+   repeated adaptation, and the sim's ranking confirmed on the robot (parts 4 and 5).
 
 The real plan scores open loop on 18 recorded test episodes with a demonstration as the corrector.
 The MuJoCo sim (BaxterSDK `baxter_mujoco`) runs the policy through the robot's own runtime, teleop,
 IK and gripper, scores success itself, and supplies an expert that can correct any state the policy
 reaches, so each question is answered closed loop, one factor at a time, with paired layouts and
 several training seeds. Its fingers are shorter, it grasps the cup's wall higher and its images are
-rendered: sim results rank methods; the robot sizes them (part 6).
+rendered: sim results rank methods; the robot sizes them (part 5).
 
 ## Data
 
@@ -120,46 +118,7 @@ adaptation layouts, never on the 50 test layouts.
    extended by the variants each plan below names.
 5. **Adapter loading** and $\alpha$ in the policy runtime, so an adapted policy runs closed loop.
 
-## Part 1: is there a problem worth fixing?
-
-### Plan S1: how and where does the base fail?
-
-**Inquiry.** Test-time correction is only interesting if the base's failures are systematic (the
-same states, every time), not noise; a correction cannot teach a random failure.
-
-**Hypothesis H-S1.** The three S0 bases fail on largely the same test layouts, in the same modes
-(more than half of each base's failures shared by all three). **Null:** failures are independent
-across seeds.
-
-| # | Condition |
-|---|---|
-| S0, S0b, S0c | the base, training seeds 0, 1, 2, on the 50 test layouts |
-
-**Expected outcome.** 40 to 70% success; failures concentrated in one or two modes and in shared
-layouts. **Falsified if** the overlap of failed layouts across seeds is no larger than chance.
-**Code to write.** Items 1 and 5.
-
-### Plan S2: is it just a lack of data?
-
-**Inquiry.** The cheapest fix is more demonstrations. A correction method has to beat that at equal
-human effort, or it is a slower way to collect data (DAgger's argument [5]; the real test plan 3).
-
-**Hypothesis H-S2.** Adapting S0 with corrections from 4 episodes raises success more than retraining
-the base with those 4 episodes as whole demonstrations, and as much as retraining with 16 more.
-**Null:** extra demonstrations match or beat corrections at equal episodes.
-
-| # | Condition |
-|---|---|
-| S2a | base trained on 25 demonstrations (0 to 20 plus 21, 25, 29, 33) |
-| S2b | base trained on 37 demonstrations (0 to 36) |
-| S2c | base trained on 55 demonstrations |
-| M0 | S0 plus corrections from 21, 25, 29, 33 |
-
-**Expected outcome.** M0 above S2a, close to S2b; S2c above M0 but at 34 more demonstrations.
-**Falsified if** S2a matches M0.
-**Code to write.** None beyond the shared items.
-
-## Part 2: against what? The alternatives, simplest first
+## Part 1: against what? The alternatives, simplest first
 
 ### Plan S3: which weights should change?
 
@@ -257,7 +216,7 @@ gradient needs many more. **Null:** reward is as fast or faster.
 attempts than S15.
 **Code to write.** The real plan's design B items, and a policy-gradient update on the adapter.
 
-## Part 3: what in the method matters?
+## Part 2: what in the method matters?
 
 Each plan changes one component of M0.
 
@@ -359,7 +318,7 @@ The real test plan 7, closed loop: M0's adapter at $\alpha$ = 0, 0.25, 0.5, 0.75
 H-S14.** Success and forgetting change monotonically with $\alpha$; $\alpha = 0$ reproduces S0.
 **Falsified if** an intermediate $\alpha$ is worse than both ends.
 
-## Part 4: the correction signal
+## Part 3: the correction signal
 
 ### Plan S15: corrections on the policy's own states
 
@@ -401,8 +360,7 @@ above S0. **Null:** no degradation loses more than the noise floor.
 
 The real test plan 4, on-policy and closed loop: corrections from 1, 2, 4, 8 and 16 failing attempts.
 **Hypothesis H-S17.** Most of the gain by 4 attempts. **Null:** gain rises steadily to 16.
-**Falsified if** the gain from 4 to 16 exceeds the gain from 1 to 4. Plotted against S2's
-demonstration curve at equal operator minutes.
+**Falsified if** the gain from 4 to 16 exceeds the gain from 1 to 4.
 
 ### Plan S18: update once, or after every attempt?
 
@@ -417,7 +375,7 @@ the next attempt fail differently.
 **Hypothesis H-S18.** Updating after every attempt reaches the same success with fewer corrected
 frames. **Null:** no difference. **Falsified if** S18b needs as many frames as S18a.
 
-## Part 5: does it generalise?
+## Part 4: does it generalise?
 
 ### Plan S19: to conditions the corrections never saw
 
@@ -491,13 +449,13 @@ re-plan. The adapter's effect may depend on how often the policy re-plans.
 the gain does not depend on the chunk run. **Falsified if** the gain at 8 is within noise of the gain
 at 16.
 
-## Part 6: does the sim predict the robot?
+## Part 5: does the sim predict the robot?
 
 ### Plan S24: the same ranking on the robot
 
 **Inquiry.** Sim results are only worth reporting if the order of methods holds on the robot.
 
-**Hypothesis H-S24.** The robot ranks S0, M0, S15 and the best of part 2 in the sim's order (test plan
+**Hypothesis H-S24.** The robot ranks S0, M0, S15 and the best of part 1 in the sim's order (test plan
 9's protocol, 10 attempts each, the same 3 layouts). **Null:** the orders disagree.
 
 | # | On the robot |
@@ -505,7 +463,7 @@ at 16.
 | R0 | the real base |
 | R-M0 | M0's recipe on real corrections |
 | R-S15 | on-policy corrections from the operator |
-| R-best | the strongest alternative from part 2 |
+| R-best | the strongest alternative from part 1 |
 
 **Expected outcome.** The same order; absolute success lower than in the sim.
 **Falsified if** any adjacent pair swaps beyond noise.
@@ -513,7 +471,7 @@ at 16.
 
 ## Results
 
-Closed loop, 50 test layouts; success difference against S0 (part 1) or M0 (parts 2 to 5) with its
+Closed loop, 50 test layouts; success difference against S0 (the bases) or M0 (parts 1 to 4) with its
 95% interval in brackets.
 
 | # | Success of 50 | Difference | Forgetting | Time to success (s) | Corrected frames | Update compute (s) | Main failure mode |
@@ -521,9 +479,6 @@ Closed loop, 50 test layouts; success difference against S0 (part 1) or M0 (part
 | S0 | | | | | | | |
 | S0b | | | | | | | |
 | S0c | | | | | | | |
-| S2a | | | | | | | |
-| S2b | | | | | | | |
-| S2c | | | | | | | |
 | M0 | | | | | | | |
 | S3a | | | | | | | |
 | S3b | | | | | | | |
@@ -585,11 +540,11 @@ Robot (S24), test plan 9's format.
 ## Threats to validity
 
 - **The sim is not the robot.** Shorter fingers, a higher wall grasp, rendered images, a scripted
-  demonstrator; part 6 is what licenses the sim's rankings.
+  demonstrator; part 5 is what licenses the sim's rankings.
 - **A scripted expert is a perfect corrector.** S16 measures imperfection on purpose, but human
   corrections differ in ways a degraded planner may not capture.
 - **One task in the sim.** The cup task has no shortcut like the sweep's; generality across tasks
-  rests on the real plan's two tasks and on new sim tasks if part 5 is promising.
+  rests on the real plan's two tasks and on new sim tasks if part 4 is promising.
 - **Reach.** Layouts are capped at the sim arm's reach (0.87 m).
 - **One draw of test layouts.** Any result close to the noise floor is rechecked on a second set of 50.
 
