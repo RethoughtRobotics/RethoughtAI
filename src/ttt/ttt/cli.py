@@ -114,8 +114,11 @@ def corrections(cache_path, pool, gate_):
     show_default=True,
     type=click.Choice(['lora', 'flow', 'flow_last', 'all', 'lora_obs', 'lora_dec', 'lora_all']),
 )
-@click.option('--pool', default=','.join(map(str, M0_POOL)), show_default=True)
+@click.option(
+    '--pool', default=None, help='Episodes to correct, or all (default: 21,25,29,33; all with --corrections).'
+)
 @click.option('--gate', 'gate_', default='3', show_default=True, help='cm, or all.')
+@click.option('--corrections', 'corrections_', default=None, help='On-policy cache (ttt onpolicy) of the corrections.')
 @click.option('--anchor', default=span(BASE), show_default=True)
 @click.option('--lam', default=0.5, show_default=True, help='Anchor weight lambda.')
 @click.option('--steps', default=200, show_default=True)
@@ -135,6 +138,7 @@ def update(
     trainable,
     pool,
     gate_,
+    corrections_,
     anchor,
     lam,
     steps,
@@ -151,6 +155,8 @@ def update(
     """Update the base on corrected frames, with the anchor; save an adapter or a checkpoint."""
     from . import update as update_mod
 
+    if pool is None:
+        pool = 'all' if corrections_ else ','.join(map(str, M0_POOL))
     s = update_mod.Settings(
         trainable=trainable,
         rank=rank,
@@ -163,8 +169,9 @@ def update(
         beta=beta,
         objective=objective,
         gate=gate(gate_),
-        pool=tuple(episodes(pool)),
+        pool=None if pool == 'all' else tuple(episodes(pool)),
         anchor=tuple(episodes(anchor)),
+        corrections=corrections_,
     )
     record = update_mod.run(model, cache_path, out, s, device or default_device(), workers=workers)
     click.echo(

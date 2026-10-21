@@ -417,6 +417,19 @@ def test_onpolicy_cache_from_evaluator_bags(model, attempts):
     assert torch.allclose(tensors['z0'][row].float(), expected['z0'][0].float(), atol=2e-2)
 
 
+def test_update_on_onpolicy_corrections(model, built, attempts, tmp_path):
+    _, onp = attempts
+    record = update.run(model, built, tmp_path / 'a', settings(corrections=str(onp), pool=None, steps=5))
+    assert record['corrected_frames'] == len(SEEDS) * (FRAMES - 1) and record['settings']['pool'] == list(SEEDS)
+    assert record['anchor_frames'] == EPISODES[0] + EPISODES[1]
+    record = update.run(model, built, tmp_path / 'b', settings(corrections=str(onp), pool=(1001,), steps=5))
+    assert record['corrected_per_episode'] == {1001: FRAMES - 1}
+    with pytest.raises(ValueError, match='not an on-policy cache'):
+        update.run(model, built, tmp_path / 'c', settings(corrections=str(built)))
+    with pytest.raises(ValueError, match='trainable all'):
+        update.run(model, built, tmp_path / 'd', settings(corrections=str(onp), trainable='all'))
+
+
 def test_corrected_frames_export_as_a_lerobot_dataset(built, attempts, tmp_path):
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
