@@ -61,3 +61,5 @@ inference:
       every: 16
       merge: {type: ramp, ramp: 10}
       overrides: {num_inference_steps: 10, n_action_steps: 31}  # 31: its plan starts at the older of its 2 observations
+      # inpaint: each chunk continues the one playing (inference/inpaint.py), for the teleop's plan input
+      inpaint: true

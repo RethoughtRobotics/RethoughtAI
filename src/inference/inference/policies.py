@@ -295,6 +295,28 @@ class LeRobotPolicy:
         self.pre.reset()
         self.post.reset()
 
+    def _inpainted(self, batch, known, weights):
+        """The DiT's predict_action_chunk with its first len(weights) actions inpainted toward `known`.
+        The sample's steps before the first action (its older observations) take the first known value."""
+        from lerobot.processor import TransitionKey, create_transition
+
+        from inference import inpaint
+
+        policy, torch = self.policy, self.torch
+        if self.type != 'multi_task_dit' or not hasattr(policy.objective, 'noise_scheduler'):
+            raise ValueError(f'inpainting is for diffusion MultiTask DiT checkpoints, not {self.type}')
+        for k in batch:  # as predict_action_chunk: the observation history from the queues
+            if k in policy._queues:
+                batch[k] = torch.stack(list(policy._queues[k]), dim=1)
+        start = policy.config.n_obs_steps - 1
+        known = torch.as_tensor(np.asarray(known), dtype=torch.float32, device=self.device)
+        known = self.normalizer(create_transition(action=known))[TransitionKey.ACTION]
+        known = torch.cat([known[:1].expand(start, -1), known])
+        weights = np.r_[np.full(start, weights[0]), weights]
+        conditioning = policy.observation_encoder.encode(batch)
+        x = inpaint.sample(policy.objective, policy.noise_predictor, conditioning, known, weights)
+        return x[:, start : start + policy.config.n_action_steps]
+
     def state(self, tcp_p, tcp_q, gripper, joints):
         """observation.state for this checkpoint's layout."""
         if getattr(self, 'bimanual', False):
@@ -306,7 +328,9 @@ class LeRobotPolicy:
     def __call__(self, observation, delay=0, prev=None, tcp=None, history=()):
         """`tcp` (position, quaternion), the TCP observed: absolute goals are made relative to it.
         `history`: for a policy that sees past steps (n_obs_steps), the observations one step apart
-        before this one, oldest first; fewer repeat the oldest given, as LeRobot starts an episode."""
+        before this one, oldest first; fewer repeat the oldest given, as LeRobot starts an episode.
+        `prev` with a diffusion MultiTask DiT and no `rtc`: (known (P, action_dim) unnormalized,
+        weights (P,)) for the chunk's first P steps, inpainted as it is denoised (inpaint.py)."""
         from lerobot.policies.utils import populate_queues, prepare_observation_for_inference
         from lerobot.processor import TransitionKey, create_transition
 
@@ -348,7 +372,10 @@ class LeRobotPolicy:
                     pad[: min(horizon, len(prev))] = prev[:horizon]
                     prev = pad
                 kwargs = {'inference_delay': delay, 'prev_chunk_left_over': prev}
-            actions = self.policy.predict_action_chunk(batch, **kwargs)
+            if prev is not None and not self.rtc:
+                actions = self._inpainted(batch, *prev)
+            else:
+                actions = self.policy.predict_action_chunk(batch, **kwargs)
             actions = self.post(actions)[0].float().cpu().numpy().astype(np.float64)
         if self.absolute and not getattr(self, 'bimanual', False):
             from scipy.spatial.transform import Rotation

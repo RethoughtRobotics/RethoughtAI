@@ -197,7 +197,16 @@ def serve(config, model, device, revision, adapter, alpha):
         if policy.bimanual:
             from inference.bimanual_policy_node import BimanualPolicyNode
 
-            servers.append(BimanualPolicyNode(node, cfg, full['topics']['images'], policy, settings.get('every', 1)))
+            servers.append(
+                BimanualPolicyNode(
+                    node,
+                    cfg,
+                    full['topics']['images'],
+                    policy,
+                    settings.get('every', 1),
+                    settings.get('inpaint', False),
+                )
+            )
         else:
             PolicyNode(node, cfg, full['topics']['images'], policy, settings.get('every', 1))
         if full.get('trigger', {}).get('light'):  # lit as in every recorded frame

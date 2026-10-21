@@ -4,11 +4,16 @@ Receive times (ROS clock), not potentially unsynchronized message headers, gate
 freshness and TCP skew. Quaternion hemispheres are tracked on *every* valid TCP
 input, independently for each arm, starting with the first incoming sign.
 Only the worker calls/reset the model; callbacks never wait for inference.
+
+With `inpaint`, each chunk continues the last one published (inpaint.py): its steps due while it is
+computed (the last inference time, plus a step) are frozen to the last chunk and the rest of their
+overlap is pulled toward it, so a new chunk does not disagree with the one being played.
 """
 
 import os
 import threading
 import time
+from collections import deque
 
 import numpy as np
 from baxter_core_msgs.msg import DigitalIOState
@@ -22,6 +27,7 @@ from std_msgs.msg import Bool, Empty
 from trajectory_msgs.msg import MultiDOFJointTrajectoryPoint
 
 from adapter.lerobot_export import JOINTS, image_rgb
+from inference.inpaint import soft_mask
 
 STALE = 0.5
 MAX_TCP_SKEW = 0.1
@@ -44,7 +50,7 @@ class BimanualPolicyNode:
     release/re-engage pair entirely inside one model call.
     """
 
-    def __init__(self, node, cfg, images, policy, every=1):
+    def __init__(self, node, cfg, images, policy, every=1, inpaint=False):
         if set(cfg['arms']) != set(ARMS):
             raise ValueError('bimanual policy requires left/right arms')
         if not getattr(policy, 'bimanual', False) or policy.rtc is not None:
@@ -64,6 +70,11 @@ class BimanualPolicyNode:
         if missing:
             raise ValueError(f'no camera topic configured for {", ".join(missing)}')
         self.node, self.policy = node, policy
+        self.inpaint = bool(inpaint)
+        self.last = None  # (observation time, actions) of the last chunk published, for inpaint
+        self.latency = 0.0  # s from observation to publication of the last chunk
+        self.n_obs_steps = int(getattr(policy, 'n_obs_steps', 1))
+        self.samples = deque(maxlen=2 * self.n_obs_steps + 2)  # (time, observation), every half step
         self.dt = 1.0 / self.fps
         self.joint_names = {arm: [f'{arm}_{j}' for j in JOINTS] for arm in ARMS}
         self.latest = {}
@@ -93,6 +104,8 @@ class BimanualPolicyNode:
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         node.create_subscription(Bool, cfg['engaged'], self._on_engaged, latched)
         self.chunk_pub = node.create_publisher(RobotTrajectory, cfg['chunk'], 10)
+        if self.n_obs_steps > 1:  # the frames before each observation, as the policy was trained on
+            node.create_timer(self.dt / 2, self._sample)
         self.worker = threading.Thread(target=self._run, daemon=True, name='bimanual-policy')
         self.worker.start()
 
@@ -215,6 +228,7 @@ class BimanualPolicyNode:
         if self._reset_generation != generation:
             self.policy.reset()
             self._reset_generation = generation
+            self.last = None
         observed = self._observation()
         if observed is None:
             return False
@@ -226,8 +240,45 @@ class BimanualPolicyNode:
                 or not self._ready_locked(self._now())
             ):
                 return False
-        actions = self.policy(obs)  # RAW absolute [left p3,q4, right p3,q4]. No RTC.
-        return self._publish(t, actions, generation)
+        known = self._known(t) if self.inpaint else None
+        history = self._history(t) if self.n_obs_steps > 1 else ()
+        actions = self.policy(obs, prev=known, history=history)  # RAW absolute [left p3,q4, right p3,q4]
+        published = self._publish(t, actions, generation)
+        if published:
+            self.last, self.latency = (t, np.asarray(actions, dtype=float)), self._now() - t
+        return published
+
+    def _sample(self):
+        observed = self._observation()
+        if observed is not None:
+            with self.lock:
+                self.samples.append(observed[:2])
+
+    def _history(self, t):
+        """The observations 1 .. n_obs_steps - 1 steps before t, oldest first: the sample nearest each,
+        if one is within half a step of it (none yet after a pause: the policy repeats the oldest)."""
+        with self.lock:
+            samples = list(self.samples)
+        history = []
+        for j in range(self.n_obs_steps - 1, 0, -1):
+            nearest = min(samples, key=lambda s: abs(s[0] - (t - j * self.dt)), default=None)
+            if nearest is not None and abs(nearest[0] - (t - j * self.dt)) <= self.dt / 2:
+                history.append(nearest[1])
+        return history
+
+    def _known(self, t):
+        """(known, weights) for a chunk observed at t: the last chunk at t, t + dt, ... while it lasts,
+        frozen over the steps due before this one can be published, None without a last chunk."""
+        if self.last is None:
+            return None
+        t0, last = self.last
+        steps = (t - t0) / self.dt + np.arange(len(last))
+        steps = steps[steps <= len(last) - 1]
+        if len(steps) == 0:
+            return None
+        known = np.stack([np.interp(steps, np.arange(len(last)), last[:, j]) for j in range(last.shape[1])], axis=1)
+        frozen = int(np.ceil(self.latency / self.dt)) + 1
+        return known, soft_mask(len(known), frozen, len(known))
 
     def _run(self):
         next_start = 0.0

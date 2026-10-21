@@ -69,7 +69,7 @@ class FakePolicy:
     def reset(self):
         self.resets += 1
 
-    def __call__(self, obs):
+    def __call__(self, obs, prev=None, history=()):
         self.calls.append(deepcopy(obs))
         if self.hook:
             self.hook()
