@@ -292,7 +292,9 @@ def serve(config, model, device, revision, adapter, alpha, explore_sigma, explor
                 )
             )
         else:
-            PolicyNode(node, cfg, full['topics']['images'], policy, settings.get('every', 1))
+            PolicyNode(
+                node, cfg, full['topics']['images'], policy, settings.get('every', 1), settings.get('inpaint', False)
+            )
         if full.get('trigger', {}).get('light'):  # lit as in every recorded frame
             lights.append(RecordingLight(node, full['trigger']['light']))
 

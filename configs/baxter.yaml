@@ -221,13 +221,17 @@ inference:
       merge: {type: ensemble, coeff: -0.05}
     multi_task_dit_absolute:
       # Kinesthetic cup DiTs: raw 15-D state, 8-D absolute pose + gripper. 10 DDPM steps (~130 ms on
-      # the laptop GPU; its 100 gave the same offline error at 12x the time). A new plan every 4 frames
-      # (0.16 s), every step the average of the plans covering it (ACT's temporal ensembling, newest
-      # weighted most): no single plan moves the arm, so a plan's disagreement with the last is averaged
-      # out rather than played. No lead: the teleop's plan input plays the plan on its own timing
-      # (BaxterSDK --input plan), so goals are not sent ahead of when they are due.
-      every: 4
-      merge: {type: ensemble, coeff: -0.05}
+      # the laptop GPU; its 100 gave the same offline error at 12x the time). Receding horizon, as
+      # Diffusion Policy and ABC execute (Chi et al., RSS 2023: 6 or 8 of 16; ABC: 15 of 30): a plan
+      # every 16 frames, each crossfaded in over 10 steps, each continuing the plan playing
+      # (inpaint, Black et al. 2025). No lead: the teleop's plan input plays each plan on its own
+      # timing. A plan every 4 frames played only each plan's start and livelocked wherever the
+      # demonstrations hold still (sim, the expert's 1 s hold after closing the gripper: stalled at
+      # the grasp every time). Sim, 21-demonstration DiT, its training layout: smoothest attempt
+      # joint acc rms 1.26 rad/s^2 and jerk 20 against the expert's 0.8 to 1.5 and 12 to 17.
+      every: 16
+      merge: {type: ramp, ramp: 10}
+      inpaint: true
       overrides: {num_inference_steps: 10, n_action_steps: 31}  # 31: its plan starts at the older of its 2 observations
     groot:
       # GR00T N1.7 3B: absolute goals in chunks of 16 (no RTC: it continues TCP-relative chunks).

@@ -35,6 +35,7 @@ from trajectory_msgs.msg import JointTrajectoryPoint, MultiDOFJointTrajectoryPoi
 
 from adapter.labels import apply_actions, relative_actions
 from adapter.lerobot_export import JOINTS, image_rgb
+from inference.inpaint import soft_mask
 from inference.runtime import Chunk
 
 STALE = 0.5  # s: older inputs pause inference (camera stopped, bag paused)
@@ -47,9 +48,10 @@ MAX_LEAD = 0.25
 
 
 class PolicyNode:
-    def __init__(self, node, cfg, images, policy, every=1):
-        """`images`: the config's topics.images; the policy's cameras are used."""
-        self.node, self.policy = node, policy
+    def __init__(self, node, cfg, images, policy, every=1, inpaint=False):
+        """`images`: the config's topics.images; the policy's cameras are used. `inpaint` (an absolute
+        diffusion MultiTask DiT): each chunk continues the last one published, as _known gives it."""
+        self.node, self.policy, self.inpaint = node, policy, bool(inpaint)
         self.fps, self.every = float(cfg['fps']), int(every)
         self.dt = 1.0 / self.fps
         self.arm = cfg['arm']
@@ -143,6 +145,21 @@ class PolicyNode:
                 history.append(nearest[1])
         return history
 
+    def _known(self, t):
+        """(known, weights) for a chunk observed at t (inference.inpaint, Black et al. 2025 eq. 5): the
+        last chunk's raw absolute actions [p3, q4, trigger] at t, t + dt, ... while it lasts, frozen over
+        the steps due before this one is published and pulled toward it over the rest; None without
+        one. Its quaternions take the sign with qy >= 0, as the recorded labels (model_state)."""
+        if self.last is None or self.last.end < t:
+            return None
+        ts = t + self.dt * np.arange(int((self.last.end - t) * self.fps + 1e-6) + 1)  # 1e-6: 0.24 * 25 is 5.999..
+        samples = [self.last.at(x) for x in ts]
+        q = Rotation.concatenate([s[1] for s in samples]).as_quat()
+        q[q[:, 1] < 0] *= -1
+        known = np.c_[[s[0] for s in samples], q, [s[2] for s in samples]]
+        delay = math.ceil(self.latency.percentile(0.9) / self.dt) if len(self.latency) else 0
+        return known, soft_mask(len(known), delay + 1, len(known))
+
     def _rtc_args(self, t, tcp):
         """(delay steps, the last chunk's actions from t on, relative to `tcp`) for Real-Time Chunking;
         no last chunk (a fresh one from this observation) when RTC can't continue it safely:
@@ -205,6 +222,8 @@ class PolicyNode:
             t, obs, (tcp_p, tcp_q) = observed
             started = time.perf_counter()
             delay, prev = self._rtc_args(t, (tcp_p, tcp_q)) if self.policy.rtc else (0, None)
+            if self.inpaint and not self.policy.rtc:
+                prev = self._known(t)
             history = self._history(t) if self.policy.n_obs_steps > 1 else ()
             actions = self.policy(obs, delay, prev, tcp=(tcp_p, tcp_q), history=history)
             latency = time.perf_counter() - started
