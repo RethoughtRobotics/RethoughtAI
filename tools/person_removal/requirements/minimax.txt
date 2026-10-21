@@ -1,0 +1,14 @@
+# MiniMax-Remover (step 2, --method minimax). Python 3.12, an NVIDIA GPU (7 GB at 640 x 480, 81 frames).
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.7.1
+torchvision==0.22.1
+diffusers==0.33.1
+transformers==4.51.3
+accelerate==1.15.0
+huggingface_hub==0.36.2
+einops==0.8.2
+decord==0.6.0
+numpy==1.26.4
+pandas==2.2.3
+scipy
+opencv-python-headless==4.11.0.86

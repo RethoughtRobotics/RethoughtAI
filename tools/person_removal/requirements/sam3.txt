@@ -1,0 +1,11 @@
+# SAM3 masks (step 1) and Telea removal. Python 3.12, an NVIDIA GPU for SAM3.
+# SAM3 is in transformers >= 5, which the video methods' environments cannot have: keep this one separate.
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0
+transformers==5.19.0
+accelerate==1.15.0
+huggingface_hub
+numpy
+pandas
+pillow
+opencv-python-headless
