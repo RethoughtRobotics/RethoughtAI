@@ -158,6 +158,8 @@ class BimanualPolicyNode:
         try:
             names = list(msg.name)
             required = [name for arm in ARMS for name in self.joint_names[arm]]
+            if not set(required) & set(names):
+                return  # another publisher on the topic (each gripper's finger joint at 20 Hz)
             if any(names.count(name) != 1 for name in required):
                 raise ValueError('all fourteen joints required exactly once')
             joints = {
