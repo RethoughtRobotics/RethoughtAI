@@ -24,6 +24,24 @@ frames, wall time of the update and the device it ran on.
 Corrections come from the cache's own `pool` episodes (the demonstration as the corrector), or with
 `corrections` from an on-policy cache (ttt.onpolicy: the base's attempts, the planner as the corrector),
 its `pool` attempts (all if None) gated the same way; the anchor is always the cache's.
+
+The gated frames can be capped and the corrector degraded (plans S15 and S16), in this order, every
+draw seeded by the update seed, on cached latents only (not trainable `all`, which reads frames):
+  max_frames     a random `max_frames` of the gated frames (S15: M0's corrected frame count)
+  drop           that fraction of them left out, the operator missing some (S16d: 0.3)
+  late           s; each frame's target the corrector's chunk from the frame round(late * fps) later
+                 of the same episode or attempt (S16a: 0.5, 12 frames at 25 fps; expert.npz has a row
+                 per frame at the dataset's rate, the cache's `frame`), the gate still on the frame's
+                 own chunk; frames with no plan that late (the attempt ended or the cup fell) are lost
+  chunk_fraction the first round(chunk_fraction * horizon) steps of each target chunk kept and the rest
+                 held at the last kept waypoint, marked padded, as training pads a chunk past an
+                 episode's end (S16b: 0.5, the 16 executed steps of 32); z_h encodes the whole chunk,
+                 so the flow loss cannot mask steps: the truncated chunk is re-encoded instead
+  noise_cm       Gaussian noise of this standard deviation (cm) on each waypoint's x, y and z, every step
+                 of the chunk on its own (S16c: 2); orientation and gripper unchanged
+Truncated or noisy chunks go through the frozen action encoder again for their z_h, and the `vita`
+objective reconstructs them; a late target is the later frame's cached chunk and latent. Applied to
+S15's capped frames, each S16 variant degrades the frames S15 trains on.
 """
 
 import copy
@@ -75,7 +93,16 @@ class Settings:
     pool: tuple | None = M0_POOL
     anchor: tuple = tuple(BASE)
     corrections: str | None = None
+    max_frames: int | None = None
+    drop: float = 0.0
+    late: float = 0.0
+    chunk_fraction: float = 1.0
+    noise_cm: float = 0.0
     log_every: int = 10
+
+    def degraded(self):
+        """Whether the corrector's chunks change (late, truncated or noisy), not only which frames."""
+        return self.late > 0 or self.chunk_fraction < 1 or self.noise_cm > 0
 
     def resolved_objective(self):
         if self.objective != 'auto':
@@ -202,6 +229,7 @@ def run(model, cache_path, out, settings=None, device='cpu', frames=None, worker
     objective = s.resolved_objective()
     if s.beta is not None and s.trainable == 'all':
         raise ValueError('the preference loss needs cached latents; not available with trainable all')
+    check(s)
     started = time.time()
     tensors, meta = cache_mod.load(cache_path)
     model = model or meta['model']
@@ -213,11 +241,14 @@ def run(model, cache_path, out, settings=None, device='cpu', frames=None, worker
     policy.eval()  # dropout off, the inference crop
 
     steps = meta['n_action_steps']
-    c_tensors, pool = corrections(s, tensors, meta)
+    c_tensors, pool, c_meta = corrections(s, tensors, meta)
     c_rows = torch.nonzero(corrector.corrected(c_tensors, pool, s.gate, steps)).flatten()
+    gated = len(c_rows)
+    c_rows = selected(s, c_rows)
+    c_tensors, c_rows, late_lost = degrade(lp, c_tensors, c_rows, s, fps_of(c_meta) if s.late > 0 else None)
     d_rows = torch.nonzero(corrector.in_episodes(tensors, s.anchor)).flatten()
     if len(c_rows) == 0:
-        raise ValueError(f'no corrected frame in episodes {list(pool)} at gate {s.gate} cm')
+        raise ValueError(f'no corrected frame in episodes {list(pool)} at gate {s.gate} cm ({gated} gated)')
     if s.lam > 0 and len(d_rows) == 0:
         raise ValueError(f'no anchor frame in episodes {list(s.anchor)}')
     if s.trainable == 'all':
@@ -280,8 +311,10 @@ def run(model, cache_path, out, settings=None, device='cpu', frames=None, worker
         'cache': str(Path(cache_path).resolve()),
         'output': 'adapter' if adapter is not None else 'checkpoint',
         'corrections': str(Path(s.corrections).resolve()) if s.corrections else None,
+        'gated_frames': gated,
         'corrected_frames': len(c_rows),
-        'corrected_per_episode': corrector.summary(c_tensors, pool, s.gate, steps)['per_episode'],
+        'late_lost_frames': late_lost,
+        'corrected_per_episode': {int(e): int((c_tensors['episode'][c_rows] == e).sum()) for e in pool},
         'anchor_frames': len(d_rows) if use_anchor else 0,
         'trainable_parameters': sum(p.numel() for p in params),
         'update_s': round(update_s, 3),
@@ -293,13 +326,91 @@ def run(model, cache_path, out, settings=None, device='cpu', frames=None, worker
     return record
 
 
+def check(s):
+    """The cap and the degradations in range, and on cached latents."""
+    if s.max_frames is not None and s.max_frames < 1:
+        raise ValueError(f'max_frames {s.max_frames}: at least 1')
+    if not 0 <= s.drop < 1 or not 0 < s.chunk_fraction <= 1 or s.late < 0 or s.noise_cm < 0:
+        raise ValueError(
+            f'drop {s.drop} in [0, 1), chunk_fraction {s.chunk_fraction} in (0, 1], late {s.late} and '
+            f'noise_cm {s.noise_cm} at least 0'
+        )
+    if s.degraded() and s.trainable == 'all':
+        raise ValueError('degraded chunks are re-encoded from cached rows; not available with trainable all')
+
+
+def stream(seed, k):
+    """A generator for draw `k` of the update seed, apart from the update's own batches."""
+    return torch.Generator().manual_seed(1000 * seed + k)
+
+
+def selected(s, rows):
+    """The gated `rows` capped at `s.max_frames`, then with the fraction `s.drop` left out, at random
+    (seeded) and in their order."""
+    if s.max_frames is not None and len(rows) > s.max_frames:
+        rows = rows[torch.randperm(len(rows), generator=stream(s.seed, 1))[: s.max_frames]].sort().values
+    if s.drop > 0:
+        keep = len(rows) - round(s.drop * len(rows))
+        rows = rows[torch.randperm(len(rows), generator=stream(s.seed, 2))[:keep]].sort().values
+    return rows
+
+
+def later(tensors, rows, shift):
+    """Per row of `rows`, the row of its episode `shift` frames later, -1 where there is none."""
+    where = {k: i for i, k in enumerate(zip(tensors['episode'].tolist(), tensors['frame'].tolist(), strict=True))}
+    keys = zip(tensors['episode'][rows].tolist(), tensors['frame'][rows].tolist(), strict=True)
+    return torch.tensor([where.get((e, f + shift), -1) for e, f in keys], dtype=torch.long)
+
+
+def fps_of(meta):
+    """A cache's frame rate: its own (on-policy caches and caches built since), else its dataset's."""
+    if meta.get('fps'):
+        return meta['fps']
+    from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
+
+    return LeRobotDatasetMetadata(meta['repo_id'], revision=meta['revision']).fps
+
+
+def degrade(lp, tensors, rows, s, fps):
+    """The corrector's chunks at `rows` as plan S16 degrades them (see the module docstring):
+    (tensors with chunk_demo, z_demo and pad replaced at the kept rows, the kept rows, the rows lost to
+    lateness). The tensors are returned as they are when nothing is degraded."""
+    if not s.degraded() or len(rows) == 0:
+        return tensors, rows, 0
+    out = {**tensors, **{k: tensors[k].clone() for k in ('chunk_demo', 'z_demo', 'pad')}}
+    lost = 0
+    if s.late > 0:
+        src = later(tensors, rows, round(s.late * fps))
+        lost = int((src < 0).sum())
+        rows, src = rows[src >= 0], src[src >= 0]
+        for k in ('chunk_demo', 'z_demo', 'pad'):
+            out[k][rows] = tensors[k][src]
+    if s.chunk_fraction < 1 or s.noise_cm > 0:
+        chunk, pad = out['chunk_demo'][rows].clone(), out['pad'][rows].clone()
+        horizon = chunk.shape[1]
+        if s.chunk_fraction < 1:
+            keep = max(1, round(s.chunk_fraction * horizon))
+            chunk[:, keep:] = chunk[:, keep - 1 : keep]
+            pad[:, keep:] = True
+        if s.noise_cm > 0:
+            noise = torch.randn(chunk[..., :3].shape, generator=stream(s.seed, 3))
+            chunk[..., :3] += noise * s.noise_cm / 100
+        vita = lp.policy.vita
+        device = next(vita.parameters()).device
+        with torch.no_grad():
+            z = vita.action_encoder(normalised_actions(lp, chunk.to(device)))
+        out['chunk_demo'][rows], out['pad'][rows] = chunk, pad
+        out['z_demo'][rows] = z.cpu().to(out['z_demo'].dtype)
+    return out, rows, lost
+
+
 def corrections(s, tensors, meta):
-    """(tensors, pool) the corrected frames are gated from: the cache's own, or the on-policy cache
-    `s.corrections`, which must come from the same base."""
+    """(tensors, pool, meta) the corrected frames are gated from: the cache's own, or the on-policy
+    cache `s.corrections`, which must come from the same base."""
     if s.corrections is None:
         if s.pool is None:
             raise ValueError('pool: the episodes to correct (all only with an on-policy corrections cache)')
-        return tensors, tuple(s.pool)
+        return tensors, tuple(s.pool), meta
     if s.trainable == 'all':
         raise ValueError('on-policy corrections have no dataset frames; trainable all needs them')
     c_tensors, c_meta = cache_mod.load(s.corrections)
@@ -308,7 +419,7 @@ def corrections(s, tensors, meta):
     for k in ('model', 'horizon', 'n_action_steps'):
         if c_meta[k] != meta[k]:
             raise ValueError(f"{s.corrections}: {k} {c_meta[k]}, the cache's {meta[k]}")
-    return c_tensors, tuple(c_meta['episodes'] if s.pool is None else s.pool)
+    return c_tensors, tuple(c_meta['episodes'] if s.pool is None else s.pool), c_meta
 
 
 def preference(vita, ref, pairs, batch, t, objective, beta):

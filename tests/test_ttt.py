@@ -55,6 +55,8 @@ class Frames(torch.utils.data.Dataset):
     """Episodes of EPISODES' lengths: random images and states, a straight demonstrated path whose
     gripper closes in the middle, chunks padded with the last action as LeRobot pads them."""
 
+    fps = 25
+
     def __init__(self):
         g = torch.Generator().manual_seed(3)
         self.items = []
@@ -493,3 +495,130 @@ def test_onpolicy_cli_from_the_evaluator_rows(model, attempts, tmp_path):
     result = CliRunner().invoke(main, ['corrections', '--cache', str(out), '--gate', 'all'])
     assert result.exit_code == 0 and json.loads(result.output)['per_episode'] == {str(SEEDS[0]): FRAMES - 1}
     assert CliRunner().invoke(main, args).exit_code != 0
+
+
+# The corrected frames capped and the corrector degraded (plans S15 and S16)
+
+
+def test_the_cap_and_the_drop_are_seeded_subsets():
+    rows = torch.arange(100, 120)
+    capped = update.selected(settings(max_frames=7), rows)
+    assert len(capped) == 7 and torch.equal(capped, capped.sort().values) and set(capped.tolist()) <= set(rows.tolist())
+    assert torch.equal(capped, update.selected(settings(max_frames=7), rows))
+    assert not torch.equal(capped, update.selected(settings(max_frames=7, seed=1), rows))
+    assert torch.equal(update.selected(settings(max_frames=50), rows), rows)
+    assert len(update.selected(settings(drop=0.3), rows)) == 14
+    both = update.selected(settings(max_frames=10, drop=0.3), rows)
+    assert len(both) == 7 and set(both.tolist()) <= set(update.selected(settings(max_frames=10), rows).tolist())
+
+
+def test_update_caps_the_corrected_frames(model, built, attempts, tmp_path):
+    _, onp = attempts
+    record = update.run(model, built, tmp_path / 'a', settings(corrections=str(onp), pool=None, steps=2, max_frames=5))
+    assert record['gated_frames'] == len(SEEDS) * (FRAMES - 1) and record['corrected_frames'] == 5
+    assert sum(record['corrected_per_episode'].values()) == 5
+    saved = json.loads((tmp_path / 'a' / 'update.json').read_text())
+    assert saved['settings']['max_frames'] == 5 and saved['corrected_frames'] == 5
+    record = update.run(model, built, tmp_path / 'b', settings(corrections=str(onp), pool=None, steps=2, drop=0.3))
+    assert record['corrected_frames'] == 18 - round(0.3 * 18)
+    record = update.run(model, built, tmp_path / 'c', settings(steps=2, max_frames=3))
+    assert record['gated_frames'] == EPISODES[21] + EPISODES[25] and record['corrected_frames'] == 3
+
+
+def test_late_corrections_take_the_chunk_of_a_later_frame(model, built, attempts, tmp_path):
+    _, onp = attempts
+    tensors, meta = cache.load(onp)
+    lp = cache.load_policy(model)
+    rows = torch.arange(len(tensors['episode']))
+    s = settings(late=2 / meta['fps'])  # two frames
+    out, kept, lost = update.degrade(lp, tensors, rows, s, meta['fps'])
+    # frames 1 (frame 3 has no plan), 8 and 9 (past the attempt) of each attempt have no target that late
+    frames = tensors['frame'][kept].tolist()
+    assert frames == [0, 2, 4, 5, 6, 7] * len(SEEDS) and lost == 3 * len(SEEDS)
+    where = {(int(e), int(f)): i for i, (e, f) in enumerate(zip(tensors['episode'], tensors['frame'], strict=True))}
+    for r in kept.tolist():
+        src = where[(int(tensors['episode'][r]), int(tensors['frame'][r]) + 2)]
+        assert torch.equal(out['chunk_demo'][r], tensors['chunk_demo'][src])
+        assert torch.equal(out['z_demo'][r], tensors['z_demo'][src])
+    assert torch.equal(tensors['chunk_demo'], cache.load(onp)[0]['chunk_demo'])  # the cache's own unchanged
+
+    record = update.run(model, built, tmp_path / 'a', settings(corrections=str(onp), pool=None, steps=2, late=0.08))
+    assert record['corrected_frames'] == 6 * len(SEEDS) and record['late_lost_frames'] == 3 * len(SEEDS)
+    # the dataset's corrector: the demonstration's chunk one frame (40 ms) later, the last frame lost
+    record = update.run(model, built, tmp_path / 'b', settings(steps=2, late=0.04))
+    assert record['corrected_frames'] == EPISODES[21] + EPISODES[25] - 2 and record['late_lost_frames'] == 2
+
+
+def reencoded(lp, chunk):
+    with torch.no_grad():
+        return lp.policy.vita.action_encoder(update.normalised_actions(lp, chunk))
+
+
+def test_half_chunks_hold_the_last_kept_waypoint(model, attempts):
+    _, onp = attempts
+    tensors, _ = cache.load(onp)
+    lp = cache.load_policy(model)
+    rows = torch.arange(0, len(tensors['episode']), 2)
+    # the cache's z_demo is the action encoder's latent of chunk_demo: re-encoding an unchanged chunk keeps it
+    assert torch.allclose(reencoded(lp, tensors['chunk_demo'][rows]), tensors['z_demo'][rows].float(), atol=2e-2)
+    out, kept, lost = update.degrade(lp, tensors, rows, settings(chunk_fraction=0.5), None)
+    assert torch.equal(kept, rows) and lost == 0
+    chunk, orig = out['chunk_demo'][rows], tensors['chunk_demo'][rows]
+    half = H // 2
+    assert torch.equal(chunk[:, :half], orig[:, :half]) and (chunk[:, half:] == orig[:, half - 1 : half]).all()
+    assert out['pad'][rows][:, half:].all() and not out['pad'][rows][:, :half].any()
+    assert torch.allclose(out['z_demo'][rows].float(), reencoded(lp, chunk), atol=2e-2)
+    assert not torch.allclose(out['z_demo'][rows], tensors['z_demo'][rows], atol=2e-2)
+    others = torch.arange(1, len(tensors['episode']), 2)
+    assert torch.equal(out['z_demo'][others], tensors['z_demo'][others])
+
+
+def test_noisy_chunks_are_seeded(model, attempts):
+    _, onp = attempts
+    tensors, _ = cache.load(onp)
+    lp = cache.load_policy(model)
+    rows = torch.arange(len(tensors['episode']))
+    out = update.degrade(lp, tensors, rows, settings(noise_cm=2.0), None)[0]
+    diff = out['chunk_demo'] - tensors['chunk_demo']
+    assert diff[..., :3].std().item() == pytest.approx(0.02, rel=0.1) and abs(diff[..., :3].mean().item()) < 0.003
+    assert (diff[..., 3:] == 0).all() and not out['pad'].any()
+    assert torch.allclose(out['z_demo'].float(), reencoded(lp, out['chunk_demo']), atol=2e-2)
+    again = update.degrade(lp, tensors, rows, settings(noise_cm=2.0), None)[0]
+    other = update.degrade(lp, tensors, rows, settings(noise_cm=2.0, seed=1), None)[0]
+    assert torch.equal(again['chunk_demo'], out['chunk_demo'])
+    assert not torch.equal(other['chunk_demo'], out['chunk_demo'])
+
+
+def test_degradations_are_checked(model, built, tmp_path):
+    for kw, match in [
+        ({'drop': 1.0}, 'drop'),
+        ({'chunk_fraction': 0.0}, 'chunk_fraction'),
+        ({'max_frames': 0}, 'max_frames'),
+        ({'trainable': 'all', 'noise_cm': 2.0}, 'trainable all'),
+    ]:
+        with pytest.raises(ValueError, match=match):
+            update.run(model, built, tmp_path / 'a', settings(steps=1, **kw))
+
+
+def test_update_cli_degrades_the_onpolicy_corrections(model, built, attempts, tmp_path):
+    from click.testing import CliRunner
+
+    from ttt.cli import main
+
+    _, onp = attempts
+    args = ['update', '--cache', str(built), '--corrections', str(onp), '--out', str(tmp_path / 'a'), '--gate', 'all']
+    args += ['--steps', '2', '--batch', '4', '--anchor', '0,1', '--device', 'cpu', '--seed', '1', '--max-frames', '10']
+    args += ['--drop', '0.3', '--late', '0.08', '--chunk-fraction', '0.5', '--noise-cm', '2']
+    result = CliRunner().invoke(main, args)
+    assert result.exit_code == 0, result.output
+    line = json.loads(next(x for x in result.output.splitlines() if x.startswith('{"output"')))
+    assert line['gated_frames'] == 18 and line['corrected_frames'] <= 7
+    saved = json.loads((tmp_path / 'a' / 'update.json').read_text())['settings']
+    assert {k: saved[k] for k in ('max_frames', 'drop', 'late', 'chunk_fraction', 'noise_cm', 'seed')} == {
+        'max_frames': 10,
+        'drop': 0.3,
+        'late': 0.08,
+        'chunk_fraction': 0.5,
+        'noise_cm': 2.0,
+        'seed': 1,
+    }

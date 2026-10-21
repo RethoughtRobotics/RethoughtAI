@@ -135,6 +135,11 @@ def corrections(cache_path, pool, gate_):
 @click.option('--batch', default=256, show_default=True)
 @click.option('--lr', default=1e-4, show_default=True)
 @click.option('--seed', default=0, show_default=True)
+@click.option('--max-frames', type=int, default=None, help='At most this many corrected frames, by --seed (S15).')
+@click.option('--drop', default=0.0, show_default=True, help='Fraction of the corrected frames left out (S16d).')
+@click.option('--late', default=0.0, show_default=True, help="s; the corrector's chunk this much later (S16a).")
+@click.option('--chunk-fraction', default=1.0, show_default=True, help='Leading part of each chunk kept (S16b).')
+@click.option('--noise-cm', default=0.0, show_default=True, help='Gaussian noise per waypoint, cm (S16c: 2).')
 @click.option('--rank', default=16, show_default=True)
 @click.option('--alpha', default=1.0, show_default=True)
 @click.option('--beta', default=None, type=float, help='Adds the preference loss with this beta.')
@@ -155,6 +160,11 @@ def update(
     batch,
     lr,
     seed,
+    max_frames,
+    drop,
+    late,
+    chunk_fraction,
+    noise_cm,
     rank,
     alpha,
     beta,
@@ -182,12 +192,25 @@ def update(
         pool=None if pool == 'all' else tuple(episodes(pool)),
         anchor=tuple(episodes(anchor)),
         corrections=corrections_,
+        max_frames=max_frames,
+        drop=drop,
+        late=late,
+        chunk_fraction=chunk_fraction,
+        noise_cm=noise_cm,
     )
     record = update_mod.run(model, cache_path, out, s, device or default_device(), workers=workers)
     click.echo(
         json.dumps({
             k: record[k]
-            for k in ('output', 'corrected_frames', 'anchor_frames', 'trainable_parameters', 'update_s', 'device')
+            for k in (
+                'output',
+                'gated_frames',
+                'corrected_frames',
+                'anchor_frames',
+                'trainable_parameters',
+                'update_s',
+                'device',
+            )
         })
     )
     click.echo(json.dumps(record['losses'][-1]))
