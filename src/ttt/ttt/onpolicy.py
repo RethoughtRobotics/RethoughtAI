@@ -37,7 +37,7 @@ from . import cache as cache_mod
 from . import corrector
 
 EXPERT = 'expert.npz'
-# Camera topic: key, as configs/baxter_sim.yaml records them; the policy's are used
+# Camera topic: key, as configs/baxter.yaml records them; the policy's are used
 CAMERAS = {
     '/cameras/left_hand_camera/image': 'left',
     '/cameras/right_hand_camera/image': 'right',
