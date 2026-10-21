@@ -81,8 +81,6 @@ def dataset(repo_id, revision, episodes, horizon, fps=None):
 def build(model, repo_id, revision, out, episodes=None, device='cpu', batch_size=32, workers=4, frames=None):
     """Run the base `model` over the dataset's `episodes` (all if None) and write the cache to the
     directory `out`; `frames`, a dataset to read instead of the Hub's (tests). Returns its path."""
-    from safetensors.torch import save_file
-
     start = time.time()
     lp = load_policy(model, device)
     cfg = lp.policy.config
@@ -91,13 +89,7 @@ def build(model, repo_id, revision, out, episodes=None, device='cpu', batch_size
     parts = []
     for batch in DataLoader(ds, batch_size=batch_size, num_workers=workers, shuffle=False):
         parts.append({k: v.cpu() for k, v in rows(lp, batch).items()})
-    tensors = {k: torch.cat([p[k] for p in parts]) for k in parts[0]}
-    for k in LATENTS:
-        tensors[k] = tensors[k].half()
-    for k in ('chunk_pi', 'chunk_demo', 'state'):
-        tensors[k] = tensors[k].float()
-    for k in ('episode', 'frame'):
-        tensors[k] = tensors[k].int()
+    tensors = typed({k: torch.cat([p[k] for p in parts]) for k in parts[0]})
     done = time.time()
     n = len(tensors['episode'])
     meta = {
@@ -113,6 +105,24 @@ def build(model, repo_id, revision, out, episodes=None, device='cpu', batch_size
         'encode_s': round(done - loaded, 2),
         'per_frame_s': round((done - loaded) / max(n, 1), 5),
     }
+    return save(tensors, meta, out)
+
+
+def typed(tensors):
+    """The rows' tensors in the cache's dtypes."""
+    for k in LATENTS:
+        tensors[k] = tensors[k].half()
+    for k in ('chunk_pi', 'chunk_demo', 'state'):
+        tensors[k] = tensors[k].float()
+    for k in ('episode', 'frame'):
+        tensors[k] = tensors[k].int()
+    return tensors
+
+
+def save(tensors, meta, out):
+    """Write a cache (and its cache.json) to the directory `out`; returns its path."""
+    from safetensors.torch import save_file
+
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     save_file({k: v.contiguous() for k, v in tensors.items()}, str(out / FILE), metadata={'meta': json.dumps(meta)})
