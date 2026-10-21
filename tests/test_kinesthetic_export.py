@@ -69,3 +69,24 @@ def test_a_kinesthetic_bag_replays_as_an_absolute_policy(tmp_path):
     assert np.allclose(actions[:, 1], -0.01)  # relative to the live TCP: back onto the demonstration
     relative = ReplayPolicy(tmp_path / 'ep', 'left', 25.0, 5)
     assert np.allclose(relative({'step': 0})[:, 1], 0.0)  # relative to the recorded TCP
+
+
+def test_measured_labels_are_interpolated_to_each_steps_time(tmp_path):
+    """A TCP recorded at 76 Hz is read at each 25 Hz step's exact time, not the latest sample before it."""
+    writer = rosbag2_py.SequentialWriter()
+    writer.open(
+        rosbag2_py.StorageOptions(uri=str(tmp_path / 'ep'), storage_id='mcap'), rosbag2_py.ConverterOptions('', '')
+    )
+    writer.create_topic(
+        rosbag2_py.TopicMetadata(
+            id=0, name='/teleop/left/tcp', type='geometry_msgs/msg/PoseStamped', serialization_format='cdr'
+        )
+    )
+    for k in range(76):  # 1 s at 76 Hz, 1 m/s along x
+        msg = PoseStamped()
+        msg.pose.position.x = k / 76
+        msg.pose.orientation.w = 1.0
+        writer.write('/teleop/left/tcp', serialize_message(msg), 1_000_000_000 + round(k * 1e9 / 76))
+    del writer
+    left = load_measured(tmp_path / 'ep', ['left'], fps=25)['left']
+    assert np.allclose(np.diff(left.tcp_p[:, 0]), 0.04, atol=1e-6)  # evenly 40 mm per 40 ms step
