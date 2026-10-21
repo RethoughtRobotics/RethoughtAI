@@ -145,6 +145,29 @@ def lerobot(session, config, repo_id, task, output, arms, labels, lead, gripper,
 
 
 @main.command()
+@click.argument('bags', nargs=-1, required=True, type=click.Path(exists=True, path_type=Path))
+@click.option('--out', required=True, type=click.Path(path_type=Path), help='Session directory (created or added to)')
+@click.option('--arm', default='left', show_default=True)
+@click.option('--min-duration', default=2.0, show_default=True, help='s; shorter corrections are left out')
+def corrections(bags, out, arm, min_duration):
+    """Cut each correction (VR takeover, cuff squeeze) of rollout bags into its own episode.
+
+    \b
+    Examples:
+      adapt corrections ../data/rollouts/20261021_165656_real_vr_takeover --out recorder/data/BlueCup_corrections
+      adapt lerobot recorder/data/BlueCup_corrections --labels goal --repo-id ... --task ...
+    """
+    from adapter.corrections import extract
+
+    rows = extract(bags, out, arm, min_duration)
+    for r in rows:
+        click.echo(
+            f'{r["episode"]}  {r["kind"]:8s} {r["start_s"]:7.1f} s  {r["duration_s"]:5.1f} s  {Path(r["bag"]).name}'
+        )
+    click.echo(f'{len(rows)} corrections into {out}')
+
+
+@main.command()
 @click.argument('dataset', type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option('--repo-id', required=True, help='Hub dataset id, e.g. user/CupToContainer')
 @click.option('--private/--public', default=True, show_default=True, help='Visibility if the repo is new')
