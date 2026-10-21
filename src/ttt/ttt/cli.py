@@ -322,5 +322,35 @@ def evaluate(cache_path, out, adapter, checkpoint, plans, model, alphas, test, f
     click.echo(json.dumps(line))
 
 
+@main.command('correction-rows')
+@click.option('--model', required=True, help='Frozen base checkpoint (a relative, 17-D state / 7-D action one).')
+@click.option('--dataset', 'root', required=True, help='Local LeRobot dataset of corrections (adapt lerobot).')
+@click.option('--repo-id', required=True, help="The dataset's Hub id.")
+@click.option('--out', required=True, help='Rows directory.')
+@click.option('--device', default=None)
+def correction_rows(model, root, repo_id, out, device):
+    """The corrector's rows: the base's features and plan, and the person's plan, at every frame."""
+    from . import cache, corrections
+
+    tensors, meta = corrections.build(model, root, repo_id, device or default_device(), log=click.echo)
+    click.echo(cache.save(tensors, meta, out))
+
+
+@main.command('linear')
+@click.option('--rows', required=True, help='Rows directory (ttt correction-rows).')
+def linear(rows):
+    """Ridge on the base's features, each correction held out in turn: plan error in cm / gripper."""
+    from . import cache, corrections
+
+    tensors, _ = cache.load(rows)
+    results = corrections.leave_one_out(tensors)
+    names = ('base', 'constant', 'linear', 'true nudge')
+    click.echo('held out  lambda     ' + ''.join(f'{n:>14s}' for n in names))
+    for r in results:
+        cells = ''.join(f'{r[n]["position_cm"]:8.1f}/{r[n]["gripper"]:.2f}' for n in names)
+        click.echo(f'{r["held_out"]:8d}  {r["lambda"]:9.0f}  {cells}')
+    click.echo(json.dumps(results))
+
+
 if __name__ == '__main__':
     main()
