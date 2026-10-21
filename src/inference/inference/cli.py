@@ -140,15 +140,35 @@ def check(model, config, revision):
         click.echo(f'Warning: {warning}')
 
 
+def adapted(policy, adapter):
+    """What a loaded adapter changes, for the log: its trainable set (ttt update's) and, for LoRA, its
+    layer count per VITA module (flow_net, obs_encoder, action_decoder)."""
+    from collections import Counter
+
+    from inference import lora
+
+    meta = lora.meta(adapter)
+    trainable = meta.get('trainable', 'lora')
+    if meta.get('kind') == 'weights':
+        return f'{trainable}: tuned weights'
+    sites = Counter(name.split('.')[1] for name in lora.adapters(policy.policy))
+    return f'{trainable}: ' + ', '.join(f'{n} LoRA layers on {site}' for site, n in sites.items())
+
+
 @main.command()
 @click.argument('config')
 @click.option('--model', required=True, help='LeRobot checkpoint: Hub repo (user/name) or local directory')
 @click.option('--device', default='cuda', show_default=True)
 @click.option('--revision', default=None, help='Hub branch, tag or commit of --model (e.g. step-005000)')
 @click.option(
-    '--adapter', type=click.Path(exists=True, file_okay=False), default=None, help='VITA LoRA adapter (inference.lora)'
+    '--adapter',
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help='VITA adapter (inference.lora): LoRA or tuned weights',
 )
-@click.option('--alpha', type=float, default=None, help='With --adapter: its weight, 0 the base exactly (default 1)')
+@click.option(
+    '--alpha', type=float, default=None, help='With --adapter: its weight, 0 the base exactly, 1 the adapted (default)'
+)
 def serve(config, model, device, revision, adapter, alpha):
     """Run a policy on the robot's topics, publishing its action chunks for `run`.
 
@@ -174,7 +194,7 @@ def serve(config, model, device, revision, adapter, alpha):
     check_merge(settings['merge'], policy.chunk_size, settings.get('every', 1))
     click.echo(
         f'Serving {model} ({policy.type}, chunks of {policy.chunk_size})'
-        + (f' with adapter {adapter} at alpha {alpha}' if adapter else '')
+        + (f' with adapter {adapter} ({adapted(policy, adapter)}) at alpha {alpha}' if adapter else '')
         + f' on {device}: every '
         f'{settings.get("every", 1)} step(s){", RTC" if policy.rtc else ""}, task {task!r}, chunks on {cfg["chunk"]}'
     )

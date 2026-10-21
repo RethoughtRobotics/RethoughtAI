@@ -59,7 +59,9 @@ def generate_launch_description():
         DeclareLaunchArgument('config', default_value='configs/baxter.yaml'),
         DeclareLaunchArgument('device', default_value='cuda'),
         DeclareLaunchArgument('revision', default_value='', description='Hub branch/tag/commit of the model'),
-        DeclareLaunchArgument('adapter', default_value='', description='VITA LoRA adapter directory (inference.lora)'),
+        DeclareLaunchArgument(
+            'adapter', default_value='', description='VITA adapter directory (inference.lora): LoRA or tuned weights'
+        ),
         DeclareLaunchArgument(
             'alpha', default_value='', description="the adapter's weight: 0 the base, 1 (default) adapted"
         ),

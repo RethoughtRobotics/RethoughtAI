@@ -226,24 +226,37 @@ def test_adapter_without_root_is_on_the_flow_net(model, tmp_path):
     assert len(lora.load_policy(fresh.policy, tmp_path)) == 8
 
 
-@pytest.mark.parametrize('trainable,changed', [('flow', {'flow_net'}), ('flow_last', {'flow_net.out_proj'})])
-def test_full_updates_save_a_runtime_checkpoint(model, built, tmp_path, trainable, changed):
+@pytest.mark.parametrize(
+    'trainable,changed',
+    [
+        ('full', {'obs_encoder', 'flow_net', 'action_decoder'}),
+        ('flow', {'flow_net'}),
+        ('flow_last', {'flow_net.out_proj'}),
+    ],
+)
+def test_fine_tunes_save_a_weights_adapter(model, built, tmp_path, trainable, changed):
     from inference.policies import LeRobotPolicy
 
-    update.run(model, built, tmp_path / 'c', settings(trainable=trainable, steps=10))
-    assert {f.name for f in (tmp_path / 'c').iterdir()} >= {'config.json', 'model.safetensors', 'update.json'}
-    base, new = cache.load_policy(model).policy.state_dict(), LeRobotPolicy(str(tmp_path / 'c'), 'cpu')
-    diff = {k for k, v in new.policy.state_dict().items() if not torch.equal(v, base[k])}
-    assert diff and all(any(k.startswith(f'vita.{c}.') for c in changed) for k in diff)
-    results = evaluate.run(built, tmp_path / 'r.json', checkpoint=tmp_path / 'c', alphas=(0.0, 1.0), n_boot=200)
+    record = update.run(model, built, tmp_path / 'w', settings(trainable=trainable, steps=10))
+    assert record['output'] == 'weights'
+    assert {f.name for f in (tmp_path / 'w').iterdir()} == {lora.META, lora.WEIGHTS, 'update.json'}
+    held = set(lora.tuned(tmp_path / 'w'))
+    assert held and all(any(k.startswith(f'vita.{c}.') for c in changed) for k in held)
+    assert record['trainable_parameters'] == sum(v.numel() for v in lora.tuned(tmp_path / 'w').values())
+    base = cache.load_policy(model).policy.state_dict()
+    new = LeRobotPolicy(str(model), 'cpu', adapter=tmp_path / 'w').policy.state_dict()
+    diff = {k for k, v in new.items() if not torch.equal(v, base[k])}
+    assert diff and diff <= held
+    results = evaluate.run(built, tmp_path / 'r.json', adapter=tmp_path / 'w', alphas=(0.0, 1.0), n_boot=200)
     assert results['alphas']['0.0']['test'] == results['base']['test']
     assert results['alphas']['1.0']['test'] != results['base']['test']
 
 
 def test_everything_trains_from_frames(model, built, tmp_path):
     update.run(model, built, tmp_path / 'c', settings(trainable='all', steps=3), frames=Frames(), workers=0)
-    with pytest.raises(ValueError, match='observer'):
-        evaluate.run(built, tmp_path / 'r.json', checkpoint=tmp_path / 'c')
+    for kind in ('checkpoint', 'adapter'):
+        with pytest.raises(ValueError, match='observer'):
+            evaluate.run(built, tmp_path / 'r.json', **{kind: tmp_path / 'c'})
     plans = tmp_path / 'plans'
     cache.build(tmp_path / 'c', 'local', None, plans, workers=0, frames=Frames())
     results = evaluate.run(built, tmp_path / 'r.json', plans=plans, n_boot=200)

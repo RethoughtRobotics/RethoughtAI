@@ -116,13 +116,13 @@ def corrections(cache_path, pool, gate_):
 
 @main.command()
 @click.option('--cache', 'cache_path', required=True)
-@click.option('--out', required=True, help='Adapter or checkpoint directory to write.')
+@click.option('--out', required=True, help='Adapter (LoRA or weights) or checkpoint directory to write.')
 @click.option('--model', default=None, help="Base checkpoint (default: the cache's).")
 @click.option(
     '--trainable',
     default='lora',
     show_default=True,
-    type=click.Choice(['lora', 'flow', 'flow_last', 'all', 'lora_obs', 'lora_dec', 'lora_all']),
+    type=click.Choice(['lora', 'lora_obs', 'lora_dec', 'lora_all', 'full', 'flow', 'flow_last', 'all']),
 )
 @click.option(
     '--pool', default=None, help='Episodes to correct, or all (default: 21,25,29,33; all with --corrections).'
@@ -219,7 +219,7 @@ def update(
 @main.command()
 @click.option('--cache', 'cache_path', required=True)
 @click.option('--out', required=True, help='Results json.')
-@click.option('--adapter', default=None, help='LoRA adapter directory.')
+@click.option('--adapter', default=None, help='Adapter directory: LoRA or weights (ttt update).')
 @click.option('--checkpoint', default=None, help='Updated full checkpoint directory.')
 @click.option('--plans', default=None, help='Cache built with the updated checkpoint (an updated observer).')
 @click.option('--model', default=None, help="Base checkpoint (default: the cache's).")

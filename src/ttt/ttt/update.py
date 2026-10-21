@@ -10,16 +10,20 @@ since the flow error alone does not reach the decoder.
 
 Trainable sets (TRAINABLE), named after the plans that use them:
   lora       LoRA on the flow net's fc1 and fc2 (M0); adapter names relative to the flow net
+  full       the observation encoder, the flow net and the action decoder, every weight (S3a): the
+             ResNet and the action encoder stay frozen, so it runs on cached latents as lora_all does
   flow       the whole flow net (S3b)
   flow_last  the flow net's output layer only (S3c)
-  all        everything: ResNet, observation encoder, action encoder, flow net, decoder (S3a); it reads
+  all        everything: ResNet, observation encoder, action encoder, flow net, decoder; it reads
              frames, since z0 and z_demo change with it
   lora_obs   LoRA on the observation encoder, the linear map from the observer's features (S8a)
   lora_dec   LoRA on the action decoder's linear layers (S8b)
   lora_all   LoRA on all three (S8c)
-LoRA sets save an adapter (inference.lora, loadable by the runtime's --adapter); the others a full
-checkpoint directory (the runtime's --model). Every output gets an update.json: settings, corrected
-frames, wall time of the update and the device it ran on.
+LoRA sets save an adapter (inference.lora, loadable by the runtime's --adapter); full, flow and
+flow_last a weights adapter, their tuned weights only (the runtime's --adapter too, alpha blending the
+base's weights and these); all a full checkpoint directory (the runtime's --model) that is also a
+weights adapter. Every adapter.json records its trainable set. Every output gets an update.json:
+settings, corrected frames, wall time of the update and the device it ran on.
 
 Corrections come from the cache's own `pool` episodes (the demonstration as the corrector), or with
 `corrections` from an on-policy cache (ttt.onpolicy: the base's attempts, the planner as the corrector),
@@ -70,6 +74,7 @@ TRAINABLE = {
     'lora_obs': ('obs',),
     'lora_dec': ('dec',),
     'lora_all': ('obs', 'flow', 'dec'),
+    'full': None,
     'flow': None,
     'flow_last': None,
     'all': None,
@@ -127,8 +132,13 @@ def prepare(policy, trainable, rank=16, alpha=1.0):
         patterns = [p for s in sites for p in LORA_SITES[s]]
         lora.wrap(root, lora.targets(root, patterns), rank, alpha)
         return lora.parameters(root), (root, name)
-    module = {'flow': vita.flow_net, 'flow_last': vita.flow_net.out_proj, 'all': vita}[trainable]
-    params = [p for p in module.parameters() if p.dtype.is_floating_point]
+    modules = {
+        'full': (vita.obs_encoder, vita.flow_net, vita.action_decoder),
+        'flow': (vita.flow_net,),
+        'flow_last': (vita.flow_net.out_proj,),
+        'all': (vita,),
+    }[trainable]
+    params = [p for m in modules for p in m.parameters() if p.dtype.is_floating_point]
     for p in params:
         p.requires_grad_(True)
     return params, None
@@ -302,14 +312,21 @@ def run(model, cache_path, out, settings=None, device='cpu', frames=None, worker
 
     out = Path(out)
     if adapter is not None:
-        lora.save(adapter[0], out, name=adapter[1])
-    else:
+        lora.save(adapter[0], out, name=adapter[1], trainable=s.trainable)
+        output = 'adapter'
+    elif s.trainable == 'all':
         save_checkpoint(policy, model, out)
+        lora.save_weights(policy, None, out, s.trainable, weights='model.safetensors')
+        output = 'checkpoint'
+    else:
+        lora.save_weights(policy, [n for n, p in policy.named_parameters() if p.requires_grad], out, s.trainable)
+        output = 'weights'
+
     record = {
         'settings': {**dataclasses.asdict(s), 'objective': objective, 'pool': list(pool)},
         'model': str(model),
         'cache': str(Path(cache_path).resolve()),
-        'output': 'adapter' if adapter is not None else 'checkpoint',
+        'output': output,
         'corrections': str(Path(s.corrections).resolve()) if s.corrections else None,
         'gated_frames': gated,
         'corrected_frames': len(c_rows),
