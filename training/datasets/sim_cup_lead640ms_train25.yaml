@@ -1,0 +1,12 @@
+---
+# BlueCupRedContainer_sim_lead640ms_train25
+#   train-only copy of BlueCupRedContainer_sim_lead640ms: BlueCupRedContainer_sim relabelled with
+#   tools/relabel_lead.py to a 640 ms lead (each action the measured TCP 16 steps later, the gripper not
+#   led), as the robot's lead640ms datasets. The zero-lead sim bases stalled at home: every
+#   demonstration waits about 1.1 s there before moving.
+# Keeps episodes 0 to 20 plus 21, 25, 29, 33 of its 60, renumbered from 0 (sim plan: S2a, 25 demonstrations).
+repo_id: andnetdeboer/BlueCupRedContainer_sim_lead640ms_train25
+short_name: BlueCupRedContainer_sim_lead640ms_train25
+episodes:  # all of the copy
+# Validation loss on every evaluation episode (lerobot-train dataset.eval_repo_id):
+eval_repo_id: andnetdeboer/BlueCupRedContainer_sim_lead640ms_heldout5

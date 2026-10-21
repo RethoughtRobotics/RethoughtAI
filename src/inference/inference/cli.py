@@ -140,16 +140,54 @@ def check(model, config, revision):
         click.echo(f'Warning: {warning}')
 
 
+def adapted(policy, adapter):
+    """What a loaded adapter changes, for the log: its trainable set (ttt update's) and, for LoRA, its
+    layer count per VITA module (flow_net, obs_encoder, action_decoder)."""
+    from collections import Counter
+
+    from inference import lora
+
+    meta = lora.meta(adapter)
+    trainable = meta.get('trainable', 'lora')
+    if meta.get('kind') == 'weights':
+        return f'{trainable}: tuned weights'
+    if meta.get('kind') in lora.HEADS:
+        return f'{trainable}: {meta["kind"]} head, {meta["hidden"]} hidden'
+    sites = Counter(name.split('.')[1] for name in lora.adapters(policy.policy))
+    return f'{trainable}: ' + ', '.join(f'{n} LoRA layers on {site}' for site, n in sites.items())
+
+
 @main.command()
 @click.argument('config')
 @click.option('--model', required=True, help='LeRobot checkpoint: Hub repo (user/name) or local directory')
 @click.option('--device', default='cuda', show_default=True)
 @click.option('--revision', default=None, help='Hub branch, tag or commit of --model (e.g. step-005000)')
 @click.option(
-    '--adapter', type=click.Path(exists=True, file_okay=False), default=None, help='VITA LoRA adapter (inference.lora)'
+    '--adapter',
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help='Adapter (inference.lora): on VITA LoRA, tuned weights or a head; on the Multi-Task DiT LoRA',
 )
-@click.option('--alpha', type=float, default=None, help='With --adapter: its weight, 0 the base exactly (default 1)')
-def serve(config, model, device, revision, adapter, alpha):
+@click.option(
+    '--alpha', type=float, default=None, help='With --adapter: its weight, 0 the base exactly, 1 the adapted (default)'
+)
+@click.option(
+    '--explore-sigma',
+    type=float,
+    default=None,
+    help='VITA: plan from z0 + this times a seeded offset eps, fixed for the run (inference.explore)',
+)
+@click.option('--explore-seed', type=int, default=0, show_default=True, help='With --explore-sigma: the seed of eps')
+@click.option(
+    '--flow-noise', type=float, default=0.0, show_default=True, help='With --explore-sigma: noise per flow step'
+)
+@click.option(
+    '--record',
+    type=click.Path(dir_okay=False),
+    default=None,
+    help='With --explore-sigma: append every plan (latents, log-probabilities) to this file',
+)
+def serve(config, model, device, revision, adapter, alpha, explore_sigma, explore_seed, flow_noise, record):
     """Run a policy on the robot's topics, publishing its action chunks for `run`.
 
     \b
@@ -159,6 +197,11 @@ def serve(config, model, device, revision, adapter, alpha):
     """
     if alpha is not None and not adapter:
         raise click.UsageError('--alpha needs --adapter')
+    if (flow_noise or record) and explore_sigma is None:
+        raise click.UsageError('--flow-noise and --record need --explore-sigma')
+    explore = None
+    if explore_sigma is not None:
+        explore = {'sigma': explore_sigma, 'seed': explore_seed, 'noise': flow_noise, 'record': record}
     full = yaml.safe_load(resolve_config(config).read_text())
     cfg = full['inference']
 
@@ -169,12 +212,26 @@ def serve(config, model, device, revision, adapter, alpha):
     task = deploy_task(cfg.get('task'), trained_tasks(model, revision))
     alpha = 1.0 if alpha is None else alpha
     policy = LeRobotPolicy(
-        model, device, task, settings.get('rtc'), revision, settings.get('overrides'), adapter=adapter, alpha=alpha
+        model,
+        device,
+        task,
+        settings.get('rtc'),
+        revision,
+        settings.get('overrides'),
+        adapter=adapter,
+        alpha=alpha,
+        explore=explore,
     )
     check_merge(settings['merge'], policy.chunk_size, settings.get('every', 1))
     click.echo(
         f'Serving {model} ({policy.type}, chunks of {policy.chunk_size})'
-        + (f' with adapter {adapter} at alpha {alpha}' if adapter else '')
+        + (f' with adapter {adapter} ({adapted(policy, adapter)}) at alpha {alpha}' if adapter else '')
+        + (
+            f', exploring from z0 + {explore_sigma} eps (seed {explore_seed}, flow noise {flow_noise})'
+            + (f', recorded to {record}' if record else '')
+            if explore
+            else ''
+        )
         + f' on {device}: every '
         f'{settings.get("every", 1)} step(s){", RTC" if policy.rtc else ""}, task {task!r}, chunks on {cfg["chunk"]}'
     )

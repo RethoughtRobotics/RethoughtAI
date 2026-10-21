@@ -3,6 +3,7 @@
   ros2 launch launch/policy.launch.py model:=models/act_CupToContainer/step-100000
   ros2 launch launch/policy.launch.py model:=... episode:=recorder/data/CupToContainer/episode_004
   ros2 launch launch/policy.launch.py model:=models/vita_X/step-30000 adapter:=adapters/t1 alpha:=0.5
+  ros2 launch launch/policy.launch.py model:=models/vita_X/step-30000 explore_sigma:=0.05 record:=p.npy
 
 With `episode` (a shadow rollout), the policy watches that episode's recorded cameras: the arm
 first moves to the episode's start pose, then the bag plays from its first step.
@@ -23,8 +24,14 @@ def processes(context):
         LaunchConfiguration(n).perform(context)
         for n in ('model', 'episode', 'config', 'device', 'revision', 'adapter', 'alpha')
     )
+    sigma, seed, noise, record = (
+        LaunchConfiguration(n).perform(context) for n in ('explore_sigma', 'explore_seed', 'flow_noise', 'record')
+    )
     rev = ['--revision', revision] if revision else []
     lora = (['--adapter', adapter] if adapter else []) + (['--alpha', alpha] if alpha else [])
+    if sigma:  # seeded exploration (inference.explore)
+        lora += ['--explore-sigma', sigma, '--explore-seed', seed or '0']
+        lora += (['--flow-noise', noise] if noise else []) + (['--record', record] if record else [])
     shadow = ['--start-at', episode, '--player', '/rosbag2_player'] if episode else []
     actions = [
         # Respawned if it dies (e.g. it exits on a lost GPU context, bimanual_policy_node.device_lost):
@@ -59,10 +66,18 @@ def generate_launch_description():
         DeclareLaunchArgument('config', default_value='configs/baxter.yaml'),
         DeclareLaunchArgument('device', default_value='cuda'),
         DeclareLaunchArgument('revision', default_value='', description='Hub branch/tag/commit of the model'),
-        DeclareLaunchArgument('adapter', default_value='', description='VITA LoRA adapter directory (inference.lora)'),
+        DeclareLaunchArgument(
+            'adapter', default_value='', description='VITA adapter directory (inference.lora): LoRA or tuned weights'
+        ),
         DeclareLaunchArgument(
             'alpha', default_value='', description="the adapter's weight: 0 the base, 1 (default) adapted"
         ),
+        DeclareLaunchArgument(
+            'explore_sigma', default_value='', description='VITA: plan from z0 + sigma eps (inference.explore)'
+        ),
+        DeclareLaunchArgument('explore_seed', default_value='0', description='with explore_sigma: the seed of eps'),
+        DeclareLaunchArgument('flow_noise', default_value='', description='with explore_sigma: noise per flow step'),
+        DeclareLaunchArgument('record', default_value='', description='with explore_sigma: file every plan goes to'),
         # the robot stack's middleware, unless the shell sets one
         SetEnvironmentVariable(
             'RMW_IMPLEMENTATION', EnvironmentVariable('RMW_IMPLEMENTATION', default_value='rmw_zenoh_cpp')

@@ -79,7 +79,7 @@ class PolicyNode:
         )
         if cfg.get('engaged'):
             latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
-            node.create_subscription(Bool, cfg['engaged'], lambda m: self.fresh.set(), latched)
+            node.create_subscription(Bool, cfg['engaged'], self._on_engaged, latched)
         if cfg.get('cuff'):
             node.create_subscription(
                 DigitalIOState, cfg['cuff'], lambda m: setattr(self, 'squeezed', bool(m.state)), 10
@@ -97,6 +97,12 @@ class PolicyNode:
     def _store(self, name, value):
         with self.lock:
             self.latest[name] = (value, self._now())
+
+    def _on_engaged(self, msg):
+        self.fresh.set()
+        explorer = getattr(self.policy, 'explorer', None)
+        if explorer is not None:  # its record marks the plans of the attempt
+            explorer.engaged = bool(msg.data)
 
     def _on_tcp(self, msg):
         p, o = msg.pose.position, msg.pose.orientation
