@@ -73,9 +73,9 @@ class ReplayPolicy:
 
     @property
     def start(self):
-        """The demonstration's first TCP pose (position, quaternion): its actions are relative to the
-        TCP, so the replay reproduces it only from where it began."""
-        return self.episode.tcp_p[0], self.episode.tcp_q[0]
+        """The demonstration's first TCP pose (position, quaternion): relative actions reproduce it only
+        from where it began. None for absolute goals, which start where the arm is, as a policy does."""
+        return None if self.absolute else (self.episode.tcp_p[0], self.episode.tcp_q[0])
 
     def __len__(self):
         return len(self.episode)
