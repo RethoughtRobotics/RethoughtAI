@@ -53,3 +53,18 @@ def test_measured_labels_are_where_the_hand_took_each_arm(tmp_path):
     assert np.allclose(chunk_actions(right, 0, 2)[:, 1], [0.02, 0.04])
     assert np.allclose(left.target_p[-1], left.tcp_p[-1])  # the last step holds
     assert np.isclose(left.trigger[-1], 1 - (100 - 96) / 100) and (right.trigger == 0).all()  # no right gripper topic
+
+
+def test_a_kinesthetic_bag_replays_as_an_absolute_policy(tmp_path):
+    """No teleop goal: labels are the measured TCP; absolute chunks pull a displaced arm back onto it."""
+    from inference.policies import ReplayPolicy
+
+    _bag(tmp_path / 'ep')
+    policy = ReplayPolicy(tmp_path / 'ep', 'left', 25.0, 5, absolute=True)
+    assert np.allclose(policy.start[0], [0, 0, 0])
+    live = np.array([0.0, 0.01, 0.0])  # the arm 1 cm off the demonstration
+    actions = policy({'step': 0, 'tcp_position': live, 'tcp_orientation': np.array([0, 0, 0, 1.0])})
+    assert np.allclose(actions[:, 0], [0.0, 0.04, 0.08, 0.12, 0.16])  # the measured TCP, same step on
+    assert np.allclose(actions[:, 1], -0.01)  # relative to the live TCP: back onto the demonstration
+    relative = ReplayPolicy(tmp_path / 'ep', 'left', 25.0, 5)
+    assert np.allclose(relative({'step': 0})[:, 1], 0.0)  # relative to the recorded TCP

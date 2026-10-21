@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from adapter.labels import chunk_actions, load_episode, model_state, relative_actions
+from adapter.labels import NoTeleopGoal, chunk_actions, load_episode, load_measured, model_state, relative_actions
 
 # Policies whose predict_action_chunk reads the last n_obs_steps observations from queues that only
 # select_action fills: LeRobotPolicy fills them itself from the observations it is given.
@@ -56,11 +56,20 @@ class ReplayPolicy:
     """A recorded episode played back as a policy: at step t, the chunk labelled at step t of the
     recording, ignoring the observation. Everything around it (anchoring on the live TCP, chunk
     execution, the teleop) is what a trained policy runs through, so a replay that reproduces the
-    demonstration tests all of it."""
+    demonstration tests all of it.
 
-    def __init__(self, episode, arm, fps, chunk_size):
-        self.episode = load_episode(episode, arm, fps)
-        self.chunk_size = chunk_size
+    A teleop recording's labels are its goals (load_episode); a kinesthetic one's, the measured TCP
+    at the same step (load_measured, lead 0), as the kinesthetic datasets are exported. `absolute`:
+    the labels are absolute goals made relative to the live TCP, as an absolute-goal checkpoint's
+    chunks are (LeRobotPolicy), so the arm is drawn back onto the demonstration; otherwise they are
+    relative to the recorded TCP, as a relative checkpoint's."""
+
+    def __init__(self, episode, arm, fps, chunk_size, absolute=False):
+        try:
+            self.episode = load_episode(episode, arm, fps)
+        except NoTeleopGoal:
+            self.episode = load_measured(episode, (arm,), fps, lead=0)[arm]
+        self.chunk_size, self.absolute = chunk_size, bool(absolute)
 
     @property
     def start(self):
@@ -72,7 +81,15 @@ class ReplayPolicy:
         return len(self.episode)
 
     def __call__(self, observation):
-        return chunk_actions(self.episode, observation['step'], self.chunk_size)
+        step = observation['step']
+        if not self.absolute:
+            return chunk_actions(self.episode, step, self.chunk_size)
+        from scipy.spatial.transform import Rotation
+
+        k = np.minimum(np.arange(step, step + self.chunk_size), len(self.episode) - 1)
+        e = self.episode
+        tcp = (np.asarray(observation['tcp_position']), np.asarray(observation['tcp_orientation']))
+        return relative_actions(e.target_p[k], Rotation.from_quat(e.target_q[k]), e.trigger[k], *tcp)
 
 
 def model_dir(model, revision=None):

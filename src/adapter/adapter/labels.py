@@ -52,6 +52,10 @@ def _gripper_trigger(msg):
     return 1.0 - float(json.loads(msg.args)['position']) / 100.0
 
 
+class NoTeleopGoal(ValueError):
+    """The recording has no teleop goal: the arm was guided by hand (load_measured reads it)."""
+
+
 def load_episode(path, arm='left', fps=25.0) -> Episode:
     topics = {
         'tcp': f'/teleop/{arm}/tcp',
@@ -61,11 +65,10 @@ def load_episode(path, arm='left', fps=25.0) -> Episode:
     reader = rosbag2_py.SequentialReader()
     reader.open(rosbag2_py.StorageOptions(uri=str(Path(path)), storage_id='mcap'), rosbag2_py.ConverterOptions('', ''))
     types = {t.name: t.type for t in reader.get_all_topics_and_types()}
-    missing = [n for n in ('tcp', 'goal') if topics[n] not in types]
-    if missing:
-        raise ValueError(
-            f'{path}: no {", ".join(topics[n] for n in missing)} (recorded before the teleop published it)'
-        )
+    if topics['tcp'] not in types:
+        raise ValueError(f'{path}: no {topics["tcp"]} (recorded before the teleop published it)')
+    if topics['goal'] not in types:
+        raise NoTeleopGoal(f'{path}: no {topics["goal"]}: a kinesthetic recording (load_measured)')
     reader.set_filter(rosbag2_py.StorageFilter(topics=[t for t in topics.values() if t in types]))
     data = {n: [] for n in topics}  # name -> [(time, value)]
     while reader.has_next():
@@ -74,6 +77,8 @@ def load_episode(path, arm='left', fps=25.0) -> Episode:
         msg = deserialize_message(raw, get_message(types[topic]))
         data[name].append((t, _gripper_trigger(msg) if name == 'gripper' else _pose(msg)))
 
+    if not data['goal']:
+        raise NoTeleopGoal(f'{path}: no {topics["goal"]} message: a kinesthetic recording (load_measured)')
     goal_t = np.array([t for t, _ in data['goal']])
     tcp_t = np.array([t for t, _ in data['tcp']])
     t = np.arange(goal_t[0], goal_t[-1] + 1, int(1e9 / fps))
