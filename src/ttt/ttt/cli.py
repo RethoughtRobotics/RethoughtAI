@@ -18,6 +18,11 @@ def gate(text):
     return None if text == 'all' else float(text)
 
 
+def pool_of(text, meta):
+    """--pool: episodes, or all of the cache's."""
+    return list(meta['episodes']) if text == 'all' else episodes(text)
+
+
 def default_device():
     import torch
 
@@ -53,8 +58,41 @@ def cache(model, repo, revision, out, eps, device, batch_size, workers):
 
 
 @main.command()
+@click.option('--model', required=True, help='Base checkpoint directory (pretrained_model).')
+@click.option('--out', required=True, help='Cache directory.')
+@click.option('--device', default=None)
+@click.option('--batch-size', default=32, show_default=True)
+@click.option('--lead', type=int, default=None, help="Steps the labels lead the TCP (default: the checkpoint's).")
+@click.option('--arm', default='left', show_default=True)
+@click.argument('bags', nargs=-1, required=True)
+def onpolicy(model, out, device, batch_size, lead, arm, bags):
+    """Cache the base over evaluator bags (with their expert.npz), the planner's chunks as the targets."""
+    from . import onpolicy as onpolicy_mod
+
+    path = onpolicy_mod.build(model, bags, out, device or default_device(), batch_size, lead, arm)
+    click.echo(path.with_name('cache.json').read_text())
+
+
+@main.command()
+@click.option('--cache', 'cache_path', required=True, help='On-policy cache (ttt onpolicy).')
+@click.option('--root', required=True, help='Dataset directory to write.')
+@click.option('--repo-id', required=True)
+@click.option('--task', required=True, help='Language instruction stored with every frame.')
+@click.option('--pool', default='all', show_default=True, help='Seeds, e.g. 1000-1019, or all.')
+@click.option('--gate', 'gate_', default='3', show_default=True, help='cm, or all.')
+def export(cache_path, root, repo_id, task, pool, gate_):
+    """The corrected frames of an on-policy cache as a LeRobot dataset (plan S4)."""
+    from . import cache as cache_mod
+    from . import onpolicy as onpolicy_mod
+
+    _, meta = cache_mod.load(cache_path)
+    n = onpolicy_mod.export(cache_path, root, repo_id, task, gate(gate_), pool_of(pool, meta))
+    click.echo(f'{n} episodes in {root}')
+
+
+@main.command()
 @click.option('--cache', 'cache_path', required=True)
-@click.option('--pool', default=','.join(map(str, M0_POOL)), show_default=True)
+@click.option('--pool', default=','.join(map(str, M0_POOL)), show_default=True, help='Episodes, or all.')
 @click.option('--gate', 'gate_', default='3', show_default=True, help='cm, or all.')
 def corrections(cache_path, pool, gate_):
     """Count the frames the offline corrector takes over (the cost column)."""
@@ -62,7 +100,8 @@ def corrections(cache_path, pool, gate_):
     from . import corrector
 
     tensors, meta = cache_mod.load(cache_path)
-    click.echo(json.dumps(corrector.summary(tensors, episodes(pool), gate(gate_), meta['n_action_steps']), indent=2))
+    summary = corrector.summary(tensors, pool_of(pool, meta), gate(gate_), meta['n_action_steps'])
+    click.echo(json.dumps(summary, indent=2))
 
 
 @main.command()
