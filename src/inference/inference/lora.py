@@ -10,6 +10,12 @@ An adapter on disk is a directory: adapter.safetensors (each target's A and B) a
 (rank, target names and, if saved with one, `root`: the module of the policy the names are relative
 to, e.g. 'vita' for adapters on the observation encoder or action decoder too). An adapter without
 a root is on the flow net.
+
+A weights adapter (adapter.json's `kind` 'weights', saved by save_weights) holds tuned weights instead
+of A and B: a fine-tuned part of the policy (ttt update's flow, flow_last, full) or, with `weights`
+naming another file, a whole policy's state dict. Loaded, each held tensor is the base's interpolated
+toward the tuned one, alpha 0 the base and 1 the tuned weights exactly. Either kind may record the
+`trainable` set it was trained as.
 """
 
 import fnmatch
@@ -96,9 +102,10 @@ def parameters(root):
     return [p for m in adapters(root).values() for p in (m.A, m.B)]
 
 
-def save(root, path, name=None):
+def save(root, path, name=None, trainable=None):
     """Write root's adapters (A, B, rank, target names) to the directory `path`; `name`, root's
-    module name in the policy (as policy.get_submodule takes it), is stored as the adapter's root."""
+    module name in the policy (as policy.get_submodule takes it), is stored as the adapter's root,
+    and `trainable` as the set it was trained as."""
     from safetensors.torch import save_file
 
     layers = adapters(root)
@@ -114,6 +121,8 @@ def save(root, path, name=None):
     meta = {'rank': ranks.pop(), 'targets': list(layers)}
     if name is not None:
         meta['root'] = name
+    if trainable is not None:
+        meta['trainable'] = trainable
     (path / META).write_text(json.dumps(meta, indent=2) + '\n')
     return path
 
@@ -139,11 +148,64 @@ def load(root, path, alpha=1.0):
     return wrapped
 
 
+def meta(path):
+    """The adapter's adapter.json."""
+    return json.loads((Path(path) / META).read_text())
+
+
 def root_of(policy, path):
     """The module of `policy` that the adapter at `path` is named relative to."""
-    return policy.get_submodule(json.loads((Path(path) / META).read_text()).get('root', FLOW_NET))
+    return policy.get_submodule(meta(path).get('root', FLOW_NET))
+
+
+def save_weights(policy, names, path, trainable, weights=None):
+    """Write the tensors `names` of `policy` (state dict names) as a weights adapter at `path`; with
+    `weights`, a file at `path` already holding them (a whole checkpoint's model.safetensors), only
+    the adapter.json naming it."""
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    if weights is None:
+        from safetensors.torch import save_file
+
+        state = policy.state_dict()
+        save_file({k: state[k].detach().cpu().contiguous() for k in names}, str(path / WEIGHTS))
+    entry = {'kind': 'weights', 'trainable': trainable, **({'weights': weights} if weights else {})}
+    (path / META).write_text(json.dumps(entry, indent=2) + '\n')
+    return path
+
+
+def tuned(path):
+    """A weights adapter's tensors, by state dict name."""
+    from safetensors.torch import load_file
+
+    return load_file(str(Path(path) / meta(path).get('weights', WEIGHTS)))
+
+
+def blend(base, value, alpha):
+    """base toward the tuned value by alpha, 0 and 1 exactly the ends (tensors not floating: the value)."""
+    if not base.dtype.is_floating_point:
+        return value.to(base.device)
+    return torch.lerp(base, value.to(base.device, base.dtype), float(alpha))
+
+
+def load_weights(policy, path, alpha=1.0):
+    """Set each tensor of the weights adapter at `path` in `policy`, blended with the base's by
+    `alpha`; returns the names set."""
+    tensors, state = tuned(path), policy.state_dict()
+    unknown = sorted(set(tensors) - set(state))
+    if unknown:
+        raise ValueError(f'{path}: {unknown[0]} (and {len(unknown) - 1} more) not in the policy')
+    with torch.no_grad():
+        for k, v in tensors.items():
+            if v.shape != state[k].shape:
+                raise ValueError(f'{k}: adapter {tuple(v.shape)}, policy {tuple(state[k].shape)}')
+            state[k].copy_(blend(state[k], v, alpha))
+    return list(tensors)
 
 
 def load_policy(policy, path, alpha=1.0):
-    """load() on the module of `policy` the adapter names as its root (the flow net if none)."""
+    """Load the adapter at `path` into `policy` at `alpha`: a weights adapter by load_weights, a LoRA
+    one by load() on the module it names as its root (the flow net if none)."""
+    if meta(path).get('kind') == 'weights':
+        return load_weights(policy, path, alpha)
     return load(root_of(policy, path), path, alpha)

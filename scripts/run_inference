@@ -6,8 +6,10 @@
 #   STEP         training step (default: newest)
 #   --model M    a checkpoint directory or Hub repo (user/name) instead of a downloaded --NAME
 #   --revision R with a Hub --model: its branch, tag or commit (e.g. step-030000)
-#   --adapter D  VITA LoRA adapter directory (inference.lora), on the checkpoint's flow net
-#   --alpha A    with --adapter: its weight, 0 the base exactly (default 1)
+#   --adapter D  VITA adapter directory (inference.lora): LoRA on the checkpoint's flow net or the
+#                modules its adapter.json names (ttt update's lora_obs, lora_dec, lora_all), or tuned
+#                weights (ttt update's full, flow, flow_last)
+#   --alpha A    with --adapter: its weight, 0 the base exactly, 1 the adapted (default 1)
 #   --episode N  sim: shadow rollout of recorded episode N (default 4); refused with live cameras
 #   --config F   RethoughtAI config (default: configs/baxter.yaml; *SweepTrash*: baxter_bimanual.yaml)
 #   --device D   torch device (default: cuda)

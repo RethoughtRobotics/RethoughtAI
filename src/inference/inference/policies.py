@@ -199,7 +199,9 @@ class LeRobotPolicy:
     With `rtc` (RTCConfig fields): `prev`, the unexecuted actions of the current chunk, is inpainted
     over the first `delay` steps (Real-Time Chunking).
     With `adapter` (a lora.save directory), VITA runs with that LoRA adapter at `alpha` (0: the base
-    exactly), on the flow net or the modules its adapter.json names as root.
+    exactly), on the flow net or the modules its adapter.json names as root; with a weights adapter
+    (lora.save_weights: ttt update's full, flow, flow_last), its weights blended with the base's by
+    `alpha` (0 the base, 1 the tuned weights exactly).
     """
 
     def __init__(self, model, device, task='', rtc=None, revision=None, overrides=None, adapter=None, alpha=1.0):
@@ -250,7 +252,7 @@ class LeRobotPolicy:
             from inference import lora
 
             if cfg.type != 'vita':
-                raise ValueError(f'LoRA adapters are for VITA checkpoints, not {cfg.type}')
+                raise ValueError(f'adapters are for VITA checkpoints, not {cfg.type}')
             lora.load_policy(self.policy, adapter, alpha)
 
         if (path / 'policy_preprocessor.json').exists():

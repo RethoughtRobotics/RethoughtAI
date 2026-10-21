@@ -1,5 +1,5 @@
 """Open-loop evaluation over the cache: decode every frame of the test and base episodes with an
-adapter (or an updated checkpoint) at any alpha, and score path error (mm) against the
+adapter (LoRA or weights) or an updated checkpoint at any alpha, and score path error (mm) against the
 demonstration overall and per cup phase, and forgetting (on the base episodes, adapted minus base),
 paired over episodes with bootstrap intervals.
 
@@ -79,16 +79,19 @@ def compare(adapted, base=None, n_boot=10000):
 
 
 class Blend:
-    """A policy whose weights are the base's plus alpha times an update's (WiSE-FT); alpha 0 is the
-    base exactly."""
+    """A policy whose weights are the base's interpolated toward an update's by alpha (WiSE-FT), as the
+    runtime blends a weights adapter (lora.blend); alpha 0 is the base exactly, 1 the update. `updated`
+    may hold only the tensors it changed."""
 
     def __init__(self, lp, updated):
-        self.lp = lp
+        from inference import lora
+
+        self.lp, self.blend = lp, lora.blend
         self.base = {k: v.clone() for k, v in lp.policy.state_dict().items()}
-        self.delta = {k: updated[k].to(v.device) - v for k, v in self.base.items() if v.dtype.is_floating_point}
+        self.updated = {k: updated[k].to(v.device) for k, v in self.base.items() if k in updated}
 
     def __call__(self, alpha):
-        state = {k: v + alpha * self.delta[k] if k in self.delta else v for k, v in self.base.items()}
+        state = {k: self.blend(v, self.updated[k], alpha) if k in self.updated else v for k, v in self.base.items()}
         self.lp.policy.load_state_dict(state)
 
 
@@ -105,8 +108,8 @@ def run(
     forget=BASE,
     n_boot=10000,
 ):
-    """Score the base and the adapter (a lora.save directory) or checkpoint (an updated full
-    checkpoint) at each alpha, or the plans of another cache's model over the same frames (alpha 1:
+    """Score the base and the adapter (a lora.save or lora.save_weights directory) or checkpoint (an
+    updated full checkpoint) at each alpha, or the plans of another cache's model over the same frames (alpha 1:
     an update that changes the observer, whose cached features no longer hold); write the results
     json to `out` and return it."""
     from inference import lora
@@ -115,16 +118,17 @@ def run(
     model = model or meta['model']
     steps = meta['n_action_steps']
     lp = cache_mod.load_policy(model, device)
-    if adapter is not None:
+    weights = adapter is not None and lora.meta(adapter).get('kind') == 'weights'
+    if adapter is not None and not weights:
         lora.load_policy(lp.policy, adapter, 1.0)
 
         def set_alpha(alpha):
             lora.set_alpha(lp.policy, alpha)
 
-    elif checkpoint is not None:
+    elif weights or checkpoint is not None:
         from safetensors.torch import load_file
 
-        updated = load_file(str(Path(checkpoint) / 'model.safetensors'))
+        updated = lora.tuned(adapter) if weights else load_file(str(Path(checkpoint) / 'model.safetensors'))
         changed = [
             k
             for k, v in lp.policy.state_dict().items()
@@ -132,7 +136,7 @@ def run(
         ]
         if changed:
             raise ValueError(
-                f'{checkpoint} changes the observer ({changed[0]}, ...): the cached features '
+                f'{adapter if weights else checkpoint} changes the observer ({changed[0]}, ...): the cached features '
                 'do not hold for it; build a cache with it as the model and score its plans'
             )
         set_alpha = Blend(lp, updated)
