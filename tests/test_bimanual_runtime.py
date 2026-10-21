@@ -601,3 +601,14 @@ def test_horizon_clips_the_complete_pair_and_direct_publish_suppresses_trigger()
         assert arm.chunks[0].end == pytest.approx(node.time + 0.2)
         arm._publish(arm.tcp[0], arm.tcp[1], 1.0, engaged=True)
     assert set(node.publisher_types.values()) == {Bool, PoseStamped}
+
+
+def test_each_arm_publishes_its_timed_path_when_configured():
+    cfg = deepcopy(CFG)
+    for name in ('left', 'right'):
+        cfg['arms'][name]['path'] = f'/{name}/path'
+    rt, node = make_runtime(cfg)
+    from nav_msgs.msg import Path
+
+    assert all(node.publisher_types[f'/{name}/path'] is Path for name in ('left', 'right'))
+    assert all(rt.arms[name].path_pub is not None for name in ('left', 'right'))

@@ -170,6 +170,7 @@ inference:
   publish_rate: 100  # target stream, Hz
   tcp: /teleop/left/tcp
   target: /policy/left/target
+  path: /policy/left/path  # timed plan per step, for the teleop's --input trajectory (feedforward)
   trigger: /policy/left/trigger
   engage: /policy/left/engage  # std_srvs/SetBool: engage without the deadman (scripts/start, scripts/stop)
   engaged: /policy/left/engaged  # runtime -> policy server: start fresh on every change

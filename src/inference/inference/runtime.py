@@ -34,6 +34,11 @@ is never starts a close, and each new chunk starts again from the open gripper.
 the second and opens only when it falls below the first. Plans that disagree near a grasp otherwise
 flicker the trigger across one threshold, and the gripper starts closing and reopens.
 After a hold, chunks crossfade in over `entry_ramp` s: a policy's first targets lead the TCP.
+With a `path` topic, each policy step also publishes its segment as a timed nav_msgs/Path: the merged
+TCP goal at this step and at the next, each PoseStamped stamped with the time it is due, in the base
+frame. The teleop's trajectory input (BaxterSDK --input trajectory) follows it with the segment's own
+velocity as feedforward, so the arm tracks the plan without the pose servo's 1/gain lag and needs no
+`lead`. It anchors the path at the arm itself, so the poses are the plan's, not mapped.
 With a `start` pose, the arm moves there first, then `on_start` runs.
 """
 
@@ -42,8 +47,10 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 from baxter_core_msgs.msg import DigitalIOState
+from builtin_interfaces.msg import Time
 from geometry_msgs.msg import PoseStamped
 from moveit_msgs.msg import RobotTrajectory
+from nav_msgs.msg import Path
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from scipy.spatial.transform import Rotation, Slerp
 from sensor_msgs.msg import Joy
@@ -215,6 +222,7 @@ class Runtime:
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.engaged_pub = node.create_publisher(Bool, cfg['engaged'], latched) if cfg.get('engaged') else None
         self.target_pub = node.create_publisher(PoseStamped, cfg['target'], 10)
+        self.path_pub = node.create_publisher(Path, cfg['path'], 10) if cfg.get('path') else None
         self.trigger_pub = node.create_publisher(Float32, cfg['trigger'], 10)
         node.create_timer(1.0 / float(cfg['publish_rate']), self._tick)
         self._announce()
@@ -399,8 +407,24 @@ class Runtime:
         following = current if merged is None or merged_next is None else self._entered(t + self.dt, merged_next)
         self.hold = current[:2]
         self.segment = (t, current, following[:2])
+        if self.path_pub is not None:
+            self._publish_path(t, current, following)
         self.step += 1
         return True
+
+    def _publish_path(self, t, current, following):
+        """This step's segment as a timed path: the goal due at t and the one due a step later."""
+        path = Path()
+        path.header.frame_id = 'base'
+        for due, (position, rotation) in ((t, current[:2]), (t + self.dt, following[:2])):
+            pose = PoseStamped()
+            pose.header.frame_id = 'base'
+            pose.header.stamp = Time(sec=int(due), nanosec=int(round((due % 1.0) * 1e9)) % 1_000_000_000)
+            p, o = pose.pose.position, pose.pose.orientation
+            p.x, p.y, p.z = (float(x) for x in position)
+            o.x, o.y, o.z, o.w = (float(x) for x in rotation.as_quat())
+            path.poses.append(pose)
+        self.path_pub.publish(path)
 
     def _entered(self, t, merged):
         """`merged`, crossfaded in from the hold."""

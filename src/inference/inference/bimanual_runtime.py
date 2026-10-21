@@ -9,6 +9,7 @@ import numpy as np
 from baxter_core_msgs.msg import DigitalIOState
 from geometry_msgs.msg import PoseStamped
 from moveit_msgs.msg import RobotTrajectory
+from nav_msgs.msg import Path
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from scipy.spatial.transform import Rotation, Slerp
 from sensor_msgs.msg import Joy
@@ -24,7 +25,7 @@ class _SilentPublisher:
 
 
 class _ArmNode:
-    """Expose only target output and the coordinator's sampled tick clock."""
+    """Expose only target output (the pose stream and the timed path) and the coordinator's sampled tick clock."""
 
     def __init__(self, owner):
         self.owner = owner
@@ -39,7 +40,7 @@ class _ArmNode:
         pass
 
     def create_publisher(self, msg_type, topic, qos):
-        if msg_type is PoseStamped:
+        if msg_type in (PoseStamped, Path):
             return self.owner.node.create_publisher(msg_type, topic, qos)
         return _SilentPublisher()
 
@@ -98,7 +99,7 @@ class BimanualRuntime:
         self.cuffs = {'left': False, 'right': False}
         self.arms = {}
         for name in self.cuffs:
-            topics = {key: cfg['arms'][name].get(key) for key in ('tcp', 'target', 'trigger', 'home', 'cuff')}
+            topics = {key: cfg['arms'][name].get(key) for key in ('tcp', 'target', 'path', 'trigger', 'home', 'cuff')}
             arm_cfg = {**cfg, **topics, 'engaged': None}
             self.arms[name] = _ArmRuntime(self, arm_cfg, merge)
         self.dt = self.arms['left'].dt

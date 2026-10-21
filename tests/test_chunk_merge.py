@@ -368,3 +368,19 @@ def test_gripper_lead_sends_the_planned_close_early_and_leaves_the_pose():
     p, _, trigger = rt._combine(0.2)
     assert p[0] == pytest.approx(0.02) and trigger == 1.0  # pose on time, close sent 0.4 s early
     assert rt._combine(0.1)[2] == 0.0
+
+
+def test_each_step_publishes_its_segment_as_a_timed_path():
+    """The trajectory input's contract: two base-frame goals, due at this step and the next."""
+    rt = runtime({'type': 'latest'})
+    paths = []
+    rt.path_pub = type('Pub', (), {'publish': lambda self, m: paths.append(m)})()
+    rt.hold, rt.tcp = (np.zeros(3), Rotation.identity()), (np.zeros(3), np.array([0, 0, 0, 1.0]), 0.0)
+    rt.entry_ramp = 0.0
+    rt.chunks = [line(10.0, 10.0, 0.5, 0.1)]  # 0.1 m/s along x from 0.5 m
+    rt._policy_step(10.0)
+    rt._policy_step(10.0 + 1 / FPS)
+    stamps = [p.header.stamp.sec + 1e-9 * p.header.stamp.nanosec for p in paths[-1].poses]
+    x = [p.pose.position.x for p in paths[-1].poses]
+    assert stamps == pytest.approx([10.04, 10.08]) and paths[-1].header.frame_id == 'base'
+    assert x == pytest.approx([0.504, 0.508])  # the plan's own poses: velocity (x1 - x0) / dt = 0.1 m/s

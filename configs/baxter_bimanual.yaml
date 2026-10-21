@@ -28,12 +28,14 @@ inference:
     left:
       tcp: /teleop/left/tcp
       target: /policy/left/target
+      path: /policy/left/path  # timed plan per step, for the teleop's --input trajectory (feedforward)
       trigger: /policy/left/trigger  # interface only: no gripper commands published
       home: /vive/right/b_button
       cuff: /robot/digital_io/left_lower_cuff/state
     right:
       tcp: /teleop/right/tcp
       target: /policy/right/target
+      path: /policy/right/path  # timed plan per step, for the teleop's --input trajectory (feedforward)
       trigger: /policy/right/trigger
       home: /vive/left/b_button
       cuff: /robot/digital_io/right_lower_cuff/state
