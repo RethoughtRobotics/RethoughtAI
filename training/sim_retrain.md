@@ -1,85 +1,94 @@
-# Sim retraining: idle-trimmed demonstrations, the robot's control pipeline
+# Sim base and colour corrections: what to generate, train and score
 
-What to retrain for the sim corrector experiments, and how to run and score it. Everything else in
-[sim_experiments.md](sim_experiments.md) (layouts, seeds, scoring, statistics) is unchanged.
+The sim experiment for the corrector plan: a strong base trained on blue cups only, then corrections
+for a cup colour no demonstration shows (red, black), each from 1 to 10 scripted episodes, scored on
+whether the corrected policy picks up the new colour without losing the blue one.
 
-## Why
+## The base: teleop goals, the recipe that works on the robot
 
-Every sim cup demonstration waits 1.32 s at home (median, 1.12 to 1.40 s) before the TCP moves:
-33 frames, longer than the 32-step plan. Nothing in the observation says how long the wait has
-lasted, so at home every plan says wait, the arm does not move, the next observation is the same,
-and the policy stalls. That is the main failure of the sim bases (the DiT: 0 of 50, 38 attempts never
-reaching the cup). The 640 ms label lead only shortened the wait to 0.68 s.
+The real Multitask DiT trained on teleop data with teleop-goal labels (what the servo was commanded,
+`andnetdeboer/multitaskdit_BlueCupToContainer`) runs smoothly and does not hesitate: it reproduces
+the operator's commands and the same servo absorbs the tracking lag at run time as during recording.
+The sim's scripted expert drove the arm the same way (it publishes `/policy/left/target`, the teleop
+servoes onto it), and every recording has the commanded target (`/teleop/left/goal`), so the sim
+data is exported with those labels. Kinesthetic labels (measured pose) and the plan input are a
+separate path, not used here.
 
-The fix is in the data: each episode now starts at its last frame before the TCP first moves 1 mm
-or 1 deg (`adapt lerobot --trim-idle 0.001 1`). Pauses later in an episode are kept; the gripper
-state explains them.
+The expert holds still for fixed times nothing observable measures (1.3 s at the start, 1.0 s after
+closing the gripper, 0.8 s after opening it); a policy replanning there sees the same view and plans
+the same wait. The export cuts every still stretch (TCP, goal and gripper all unchanged) to its first
+frame.
 
-The sim also runs the robot's control pipeline now: the runtime publishes each step's timed plan
-(`/policy/left/path`) and the teleop plays it through tcp_ik and the replay stream (`--input plan`),
-with no servo lag. Labels are therefore not led: a led label would be played 640 ms early.
+| Dataset (blue cup only) | Revision | Episodes | Use |
+|---|---|---|---|
+| `andnetdeboer/BlueCupRedContainer_sim_goal_trimmed` | `4a39e23c5d6e` | 60 | all |
+| `andnetdeboer/BlueCupRedContainer_sim_goal_trimmed_train55` | `4941730b2261` | 0 to 54 (18534 frames) | trains the base |
+| `andnetdeboer/BlueCupRedContainer_sim_goal_trimmed_heldout5` | `5a260bc71ec0` | 55 to 59 | validation loss |
 
-## Datasets
+Made with `adapt lerobot recorder/data/BlueCupRedContainer_sim --labels goal --trim-still 0.001 1`
+(46 to 64 still frames cut per episode, 20221 frames of 24055 kept).
 
-All on the Hub, private, exported from the same 60 recordings as `BlueCupRedContainer_sim`, measured
-TCP labels, lead 0, 25 fps.
+### Train
 
-| Dataset | Episodes | Use |
-|---|---|---|
-| `andnetdeboer/BlueCupRedContainer_sim_idletrim@0ece535665ed` | 0 to 59 | correction pool (21, 25, 29, 33), anchor replay, open-loop test (38 to 55) |
-| `andnetdeboer/BlueCupRedContainer_sim_idletrim_train21@2e306270161d` | 0 to 20 of the above | trains the base |
-| `andnetdeboer/BlueCupRedContainer_sim_idletrim_heldout5@bcb8b9b969af` | 55 to 59 of the above | validation loss |
-
-Episode indices match the untrimmed set: episode k is the same demonstration in both, starting
-`idle_start_frames` recording steps in (`meta/rethoughtai_sources.json`; 27 to 34, median 31). From
-there on, state and action equal the untrimmed episode's exactly; the TCP moves 5 mm within 4 frames
-(median) of the start, against 33 before. 22263 frames in all (24055 untrimmed); train21 7851.
-
-Do not use `*_sim_lead640ms_*` or the untrimmed `*_sim_*` sets or checkpoints for new runs.
-
-## What to train
-
-| Run | Policy | Dataset | Seed | Hub repo |
-|---|---|---|---|---|
-| S0 (required) | Multi-Task DiT | `sim_cup_idletrim_train21` | 0 | `andnetdeboer/multi_task_dit_BlueCupRedContainer_sim_idletrim_train21_s0` |
-| S0b, S0c (noise floor, after S0) | Multi-Task DiT | `sim_cup_idletrim_train21` | 1, 2 | `..._s1`, `..._s2` |
-
-Same configuration as `multi_task_dit_BlueCupRedContainer_sim_lead640ms_train21_s0` apart from the
-dataset: `training/multi_task_dit/config.yaml`, 30k steps, batch 64, n_obs_steps 2, horizon 32,
-24 steps run, DDPM, LeRobot's default image transforms.
+The real teleop DiT's recipe, unchanged (`training/multi_task_dit/config.yaml`, the task backend):
 
 ```bash
-python training/train.py multi_task_dit --dataset sim_cup_idletrim_train21 \
-    --set seed=0 --set batch_size=64 --set hub_name=multi_task_dit --set hub_suffix=_s0 --mode tmux --gpu 0
+python training/train.py multi_task_dit --dataset sim_cup_goal_train55 \
+    --set seed=0 --set hub_name=multi_task_dit --set hub_suffix=_s0 --mode tmux --gpu 0
 ```
 
-Check before launching: the printed command names `andnetdeboer/BlueCupRedContainer_sim_idletrim_train21`
-and the eval set `..._idletrim_heldout5`, and pushes to the repo in the table.
+Hub repo: `andnetdeboer/multi_task_dit_BlueCupRedContainer_sim_goal_trimmed_train55_s0`. Check that its
+`config.json` has the real teleop DiT's layout: `n_obs_steps` 2, `horizon` 32, `n_action_steps` 24, a
+7-D action (TCP-relative goal and trigger). If it trains 8-D absolute actions instead, stop and report.
 
-Check after training, offline, before any closed-loop run: on the first frame of a few training
-episodes, the predicted chunk should move the TCP more than 1 cm within its first 8 steps. If it
-does not, the trim did not take; stop and report.
+### Score the base
 
-## How to evaluate
+The policy runs through the target servo, as the teleop DiT ran on the robot:
 
-The robot's pipeline, nothing sim-specific:
+- BaxterSDK `main`: `scripts/run_sim_teleop.sh --cup --cameras --left --policy-target`
+  (`--policy` now plays a plan through the replay stream, for kinesthetic checkpoints; not this one).
+- RethoughtAI `main`: `scripts/run_inference --model <repo>` with the default `configs/baxter.yaml`:
+  the relative `multi_task_dit` profile, a plan every 4 frames, temporally ensembled.
+- `python -m baxter_mujoco.datagen.evaluate --task cup --seeds 1000-1049 --out <rows>.jsonl`
+  (blue, the default `--cup-color`).
 
-- BaxterSDK `main` (with `feat/replay-tcp`): `scripts/run_sim_teleop.sh --cup --cameras --left --policy`.
-  `--policy` now plays the plan through `--input plan`.
-- RethoughtAI `main` (with `feat/dit-ensemble`): `scripts/run_inference --model <repo>` with the
-  default `configs/baxter.yaml`. `configs/baxter_sim.yaml` (run-time leads for the untrimmed sim
-  checkpoints) is removed; do not recreate it. The DiT runs the `multi_task_dit_absolute` profile:
-  a plan every 4 frames, temporally ensembled, 10 DDPM steps, no lead.
-- `python -m baxter_mujoco.datagen.evaluate --task cup --seeds 1000-1049 --out <rows>.jsonl`, as
-  before.
+S0 on blue twice (repeat noise was 3 to 4 of 50), then S0 on red and on black
+(`--cup-color red`, `--cup-color black`), the same seeds.
 
-Score S0 twice on seeds 1000 to 1049 (closed-loop repeat noise was 3 to 4 of 50 before). Add one
-metric per attempt: the time until the TCP has moved 2 cm from home. It should be close to the
-inference latency; if attempts still sit at home, report it before anything else.
+## Colour corrections: generate
 
-## Then the corrector runs
+Two correction sets, 10 scripted episodes each, on 10 of the base's own training layouts (episodes
+0, 6, .., 54: same cup and container places, container yaw and lighting), only the cup's colour
+changed. The layouts are in BaxterSDK `src/baxter_mujoco/conditions/cup_train10.jsonl`.
 
-Only once S0 solves some layouts (forgetting and gains need solved layouts to measure against):
-E1 (linear), E2 (MLP) and E3 (LoRA on the denoiser, plan S20-M's code), three update seeds each,
-corrections from pool episodes 21, 25, 29, 33 of `BlueCupRedContainer_sim_idletrim`, anchor on
-`..._idletrim_train21`. Each corrector's target is the whole chunk the DiT predicts (its action steps by 8), not one action.
+The sim stack the generator drives must follow the target stream:
+
+```bash
+scripts/run_sim_teleop.sh --cup --cameras --left --policy-target --session <SESSION>   # BaxterSDK
+python -m baxter_mujoco.datagen.generate --task cup --episodes 10 \
+    --cup-color red --conditions src/baxter_mujoco/conditions/cup_train10.jsonl         # baxter_mujoco
+```
+
+Sessions `BlueCupRedContainer_sim_redcup10` and `BlueCupRedContainer_sim_blackcup10`. A failed
+episode is discarded; with `--conditions` there is one attempt per layout, so a set can come out with
+fewer than 10: note which layouts.
+
+Export each as the base was, with the same task string (the policy is text-conditioned; the new
+colour is a visual change only):
+
+```bash
+adapt lerobot recorder/data/BlueCupRedContainer_sim_redcup10 --config recorder/data/BlueCupRedContainer_sim_redcup10/baxter.yaml \
+    --repo-id andnetdeboer/BlueCupRedContainer_sim_goal_trimmed_redcup10 \
+    --task "Pick up the blue cup and place it in the red container" --labels goal --trim-still 0.001 1
+adapt push datasets/BlueCupRedContainer_sim_redcup10 --repo-id andnetdeboer/BlueCupRedContainer_sim_goal_trimmed_redcup10
+```
+
+and the same for black. Before pushing, look at one third_eye frame per set: the cup must be red or
+black, not blue.
+
+## Then
+
+Corrections from 1 or all 10 episodes of a colour, the base frozen: E1 linear and E2 MLP correctors on
+the encoder's observation embedding, E3 LoRA on the denoiser. Each target is the whole chunk the DiT
+predicts, in its native action space. Score on the 50 test layouts in that colour and in blue
+(forgetting). If a colour is learned, add the second colour's corrections on top and score all three.
