@@ -221,11 +221,13 @@ inference:
       merge: {type: ensemble, coeff: -0.05}
     multi_task_dit_absolute:
       # Kinesthetic cup DiTs: raw 15-D state, 8-D absolute pose + gripper. 10 DDPM steps (~130 ms on
-      # the laptop GPU; its 100 gave the same offline error at 12x the time). Replan every 16 frames
-      # (0.64 s), each plan crossfaded in over 10 steps. No lead: the teleop's plan input plays the plan
-      # on its own timing (BaxterSDK --input plan), so goals are not sent ahead of when they are due.
-      every: 16
-      merge: {type: ramp, ramp: 10}
+      # the laptop GPU; its 100 gave the same offline error at 12x the time). A new plan every 4 frames
+      # (0.16 s), every step the average of the plans covering it (ACT's temporal ensembling, newest
+      # weighted most): no single plan moves the arm, so a plan's disagreement with the last is averaged
+      # out rather than played. No lead: the teleop's plan input plays the plan on its own timing
+      # (BaxterSDK --input plan), so goals are not sent ahead of when they are due.
+      every: 4
+      merge: {type: ensemble, coeff: -0.05}
       overrides: {num_inference_steps: 10, n_action_steps: 31}  # 31: its plan starts at the older of its 2 observations
     groot:
       # GR00T N1.7 3B: absolute goals in chunks of 16 (no RTC: it continues TCP-relative chunks).
