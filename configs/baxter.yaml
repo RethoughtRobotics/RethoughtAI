@@ -73,6 +73,7 @@ topics:
     # Policy corrections: the chunks the policy planned and when it drove the arm.
     - /policy/left/chunk
     - /policy/left/engaged
+    - /teleop/left/takeover
     - /policy/right/chunk
     - /policy/right/engaged
     # Log lines from the robot, teleop and policy nodes (homing, cuff control, errors).
@@ -176,6 +177,7 @@ inference:
   engaged: /policy/left/engaged  # runtime -> policy server: start fresh on every change
   home: /vive/right/b_button  # B: clear the policy, resume fresh (swap_hands: right controller drives left arm)
   cuff: /robot/digital_io/left_lower_cuff/state  # squeezed = correcting by hand (zero-g), any policy
+  takeover: /teleop/left/takeover  # BaxterSDK run_teleop.sh --takeover: the operator's VR drives, as a cuff squeeze
   resume_ramp: 0.3  # s, crossfade into the re-anchored chunk after a correction
   chunk: /policy/left/chunk  # serve -> run
   joint_states: /robot/joint_states

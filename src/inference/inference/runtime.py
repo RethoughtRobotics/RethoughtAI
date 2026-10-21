@@ -17,6 +17,7 @@ A cuff squeeze (`cuff`, zero-g) is a physical correction, and the run stays enga
 the target follows the arm (zero-g overrides the teleop, and on release its goal is already where
 the hand left the arm, so nothing springs back), and only the newest chunk is kept. On release that
 chunk, re-anchored on the corrected pose, runs at once, crossfaded in over `resume_ramp` s.
+A VR takeover (`takeover`, the teleop's --takeover: the operator's controller drives) is the same.
 
 A chunk is a trajectory of TCP targets timed from its observation: from a policy called here (a
 replay) or the `chunk` topic (policy_node). Each policy step merges the chunks covering it:
@@ -197,7 +198,7 @@ class Runtime:
         self.entry = None  # (time, (p, R, trigger)) chunks resumed from a hold
         self.entry_ramp = float(cfg.get('entry_ramp', ENTRY_RAMP))
         self.resume_ramp = float(cfg.get('resume_ramp', RESUME_RAMP))
-        self.squeezed = False  # the cuff, now
+        self.squeezed = False  # correcting by hand now: the cuff squeezed or the VR takeover
         self.correcting = False  # a correction under way, as the ticks see it
         self.history = deque(maxlen=500)  # (time, p, R) of the TCP, to re-anchor chunks observed earlier
         self.start = start if start is not None else getattr(policy, 'start', None)  # pose to reach before step 0
@@ -215,10 +216,11 @@ class Runtime:
         node.create_service(SetBool, cfg['engage'], self._on_engage)
         if cfg.get('home'):
             node.create_subscription(Empty, cfg['home'], self._on_home, 10)
+        self.by_hand = {}  # source: correcting by hand now (the cuff squeezed, the teleop's VR takeover)
         if cfg.get('cuff'):
-            node.create_subscription(
-                DigitalIOState, cfg['cuff'], lambda m: setattr(self, 'squeezed', bool(m.state)), 10
-            )
+            node.create_subscription(DigitalIOState, cfg['cuff'], lambda m: self._by_hand('cuff', m.state), 10)
+        if cfg.get('takeover'):
+            node.create_subscription(Bool, cfg['takeover'], lambda m: self._by_hand('takeover', m.data), 10)
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.engaged_pub = node.create_publisher(Bool, cfg['engaged'], latched) if cfg.get('engaged') else None
         self.target_pub = node.create_publisher(PoseStamped, cfg['target'], 10)
@@ -227,6 +229,10 @@ class Runtime:
         self.trigger_pub = node.create_publisher(Float32, cfg['trigger'], 10)
         node.create_timer(1.0 / float(cfg['publish_rate']), self._tick)
         self._announce()
+
+    def _by_hand(self, source, on):
+        self.by_hand[source] = bool(on)
+        self.squeezed = any(self.by_hand.values())
 
     def _now(self):
         return self.node.get_clock().now().nanoseconds * 1e-9
@@ -315,13 +321,13 @@ class Runtime:
         self._publish(p0 + a * (p1 - p0), rotation.as_quat(), trigger, engaged=True)
 
     def _correction(self, now):
-        """A cuff squeeze: follow the arm; on release, resume from the freshest chunk re-anchored on
-        the corrected pose. True while the correction holds the tick."""
+        """A correction by hand (cuff squeeze or VR takeover): follow the arm; when it ends, resume from
+        the freshest chunk re-anchored on the corrected pose. True while the correction holds the tick."""
         p, q, _ = self.tcp
         R = Rotation.from_quat(q)
         if self.squeezed:
             if not self.correcting:
-                self._log('Cuff: correcting by hand')
+                self._log(f'Correcting by hand ({", ".join(k for k, v in self.by_hand.items() if v)})')
                 self.correcting, self.chunks = True, self.chunks[-1:]
             self.segment, self.entry, self.hold = None, None, (p, R)
             self._publish(p, q, None, engaged=True)  # the goal stays on the arm
@@ -331,7 +337,7 @@ class Runtime:
             t_obs, p_obs, R_obs = self._tcp_at(self.chunks[-1].t[0])
             self.chunks = [self.chunks[-1].reanchored(p_obs, R_obs, p, R, arrival=now)]
         self.entry = (now, (p, R, self.trigger), self.resume_ramp)
-        self._log(f'Cuff released: resuming{"" if self.chunks else " (waiting for a chunk)"}')
+        self._log(f'Correction ended: resuming{"" if self.chunks else " (waiting for a chunk)"}')
         return False
 
     def _tcp_at(self, t):

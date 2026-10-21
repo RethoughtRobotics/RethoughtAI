@@ -13,6 +13,7 @@ When the runtime engages or releases (`engaged`), the policy starts fresh: no ch
 A cuff squeeze (`cuff`) is a correction by hand, for any policy: it restarts when one starts and
 ends; plans during it follow the hand (no previous chunk is continued), and on release the newest is
 re-anchored on the corrected pose, as the runtime executes it, so the next one continues from there.
+A VR takeover (`takeover`, the teleop's --takeover) is the same correction.
 """
 
 import math
@@ -64,7 +65,7 @@ class PolicyNode:
         self.warned = False
         self.fresh = threading.Event()  # set: drop the last chunk and the policy's state
         self.anchor = None  # TCP (p, R) the last chunk was planned from
-        self.squeezed = self.correcting = False  # the cuff now; a correction as the worker sees it
+        self.squeezed = self.correcting = False  # by hand now (cuff, VR takeover); as the worker sees it
 
         self.cameras = {c['key']: c['topic'] for c in images if c['key'] in policy.features}
         missing = [k for k in policy.features if k.startswith('observation.images.') and k not in self.cameras]
@@ -80,16 +81,21 @@ class PolicyNode:
         if cfg.get('engaged'):
             latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
             node.create_subscription(Bool, cfg['engaged'], self._on_engaged, latched)
+        self.by_hand = {}  # source: correcting by hand now (the cuff squeezed, the teleop's VR takeover)
         if cfg.get('cuff'):
-            node.create_subscription(
-                DigitalIOState, cfg['cuff'], lambda m: setattr(self, 'squeezed', bool(m.state)), 10
-            )
+            node.create_subscription(DigitalIOState, cfg['cuff'], lambda m: self._by_hand('cuff', m.state), 10)
+        if cfg.get('takeover'):
+            node.create_subscription(Bool, cfg['takeover'], lambda m: self._by_hand('takeover', m.data), 10)
         self.chunk_pub = node.create_publisher(RobotTrajectory, cfg['chunk'], 10)
         self.path_pub = node.create_publisher(Path, cfg['chunk'] + '_path', 10)
         self.samples = deque(maxlen=2 * policy.n_obs_steps + 2)  # (time, observation), every half step
         if policy.n_obs_steps > 1:
             node.create_timer(self.dt / 2, self._sample)
         threading.Thread(target=self._run, daemon=True, name='policy').start()
+
+    def _by_hand(self, source, on):
+        self.by_hand[source] = bool(on)
+        self.squeezed = any(self.by_hand.values())
 
     def _now(self):
         return self.node.get_clock().now().nanoseconds * 1e-9
