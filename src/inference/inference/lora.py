@@ -16,11 +16,20 @@ of A and B: a fine-tuned part of the policy (ttt update's flow, flow_last, full)
 naming another file, a whole policy's state dict. Loaded, each held tensor is the base's interpolated
 toward the tuned one, alpha 0 the base and 1 the tuned weights exactly. Either kind may record the
 `trainable` set it was trained as.
+
+A head adapter (`kind` 'residual' or 'latent_offset', saved by save_head) holds a small MLP added to the
+frozen policy, its output layer starting at zero and its output scaled by alpha (0 the base exactly):
+  residual       a correction to the decoded chunk from the chunk and z0 (plan S5), the policy's plan
+                 the base's chunk plus it (vita.residual, see plan())
+  latent_offset  an offset to z0 from z0 (plan S6), the observation encoder wrapped so that every z0
+                 it gives is offset (OffsetEncoder)
+adapter.json records the MLP's inputs, hidden width and outputs.
 """
 
 import fnmatch
 import json
 import math
+import types
 from pathlib import Path
 
 import torch
@@ -93,7 +102,7 @@ def adapters(root):
 
 
 def set_alpha(root, alpha):
-    for m in adapters(root).values():
+    for m in [*adapters(root).values(), *heads(root)]:
         m.alpha = float(alpha)
 
 
@@ -203,9 +212,125 @@ def load_weights(policy, path, alpha=1.0):
     return list(tensors)
 
 
+HEADS = ('residual', 'latent_offset')
+
+
+class Head(nn.Module):
+    """A two-layer MLP times alpha, its output layer zero at the start: a new head adds nothing."""
+
+    def __init__(self, inputs, hidden, outputs, alpha=1.0):
+        super().__init__()
+        self.alpha = alpha
+        self.fc1, self.fc2 = nn.Linear(inputs, hidden), nn.Linear(hidden, outputs)
+        nn.init.zeros_(self.fc2.weight)
+        nn.init.zeros_(self.fc2.bias)
+
+    def forward(self, x):
+        return self.alpha * self.fc2(F.gelu(self.fc1(x)))
+
+
+class Residual(Head):
+    """A correction to the (normalised) chunk from the chunk and z0."""
+
+    def forward(self, chunk, z0):
+        return super().forward(torch.cat([chunk.flatten(1), z0], -1)).view_as(chunk)
+
+
+class OffsetEncoder(nn.Module):
+    """The frozen observation encoder plus the head's offset to its z0."""
+
+    def __init__(self, base, head):
+        super().__init__()
+        self.base, self.head = base, head
+        base.requires_grad_(False)
+
+    def forward(self, x):
+        z0 = self.base(x)
+        return z0 + self.head(z0)
+
+
+def heads(root):
+    """The head adapters (Head) in root."""
+    return [m for m in root.modules() if isinstance(m, Head)]
+
+
+def head_size(policy, kind):
+    """(inputs, outputs) of a `kind` head on a VITA policy."""
+    cfg = policy.config
+    chunk, latent = cfg.horizon * cfg.action_feature.shape[0], cfg.latent_dim
+    if kind == 'residual':
+        return chunk + latent, chunk
+    if kind == 'latent_offset':
+        return latent, latent
+    raise ValueError(f'head {kind!r}: one of {", ".join(HEADS)}')
+
+
+def plan(vita, z0):
+    """The flowed latent and the normalised chunk VITA plans from z0, with its residual if it has one."""
+    z = vita.flow_matcher.sample(vita.flow_net, start=z0)
+    chunk = vita.action_decoder(z)
+    residual = getattr(vita, 'residual', None)
+    return z, chunk if residual is None else chunk + residual(chunk, z0)
+
+
+def _generate(vita, batch):
+    return plan(vita, vita.encode_observations(batch))[1]
+
+
+def add_head(policy, kind, hidden, alpha=1.0):
+    """A new `kind` head of `hidden` units on the VITA `policy`, in place; returns it."""
+    inputs, outputs = head_size(policy, kind)
+    vita, w = policy.vita, next(policy.parameters())
+    if heads(vita):
+        raise ValueError('the policy has a head adapter already')
+    if kind == 'residual':
+        head = Residual(inputs, hidden, outputs, alpha).to(w.device, w.dtype)
+        vita.residual = head
+        vita.generate_actions = types.MethodType(_generate, vita)  # the runtime's path through plan()
+    else:
+        head = Head(inputs, hidden, outputs, alpha).to(w.device, w.dtype)
+        vita.obs_encoder = OffsetEncoder(vita.obs_encoder, head)
+    return head
+
+
+def save_head(policy, path, kind, trainable=None):
+    """Write the policy's `kind` head as a head adapter at `path`."""
+    from safetensors.torch import save_file
+
+    (head,) = heads(policy.vita)
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    save_file({k: v.detach().cpu().contiguous() for k, v in head.state_dict().items()}, str(path / WEIGHTS))
+    entry = {
+        'kind': kind,
+        'trainable': trainable or kind,
+        'inputs': head.fc1.in_features,
+        'hidden': head.fc1.out_features,
+        'outputs': head.fc2.out_features,
+    }
+    (path / META).write_text(json.dumps(entry, indent=2) + '\n')
+    return path
+
+
+def load_head(policy, path, alpha=1.0):
+    """Add the head adapter at `path` to `policy` at `alpha`; returns the head."""
+    from safetensors.torch import load_file
+
+    m = meta(path)
+    size = head_size(policy, m['kind'])
+    if (m['inputs'], m['outputs']) != size:
+        raise ValueError(f"{path}: a head of {m['inputs']} to {m['outputs']}, the policy's {size[0]} to {size[1]}")
+    head = add_head(policy, m['kind'], m['hidden'], alpha)
+    head.load_state_dict(load_file(str(Path(path) / WEIGHTS)))
+    return head
+
+
 def load_policy(policy, path, alpha=1.0):
-    """Load the adapter at `path` into `policy` at `alpha`: a weights adapter by load_weights, a LoRA
-    one by load() on the module it names as its root (the flow net if none)."""
-    if meta(path).get('kind') == 'weights':
+    """Load the adapter at `path` into `policy` at `alpha`: a weights adapter by load_weights, a head
+    by load_head, a LoRA one by load() on the module it names as its root (the flow net if none)."""
+    kind = meta(path).get('kind')
+    if kind == 'weights':
         return load_weights(policy, path, alpha)
+    if kind in HEADS:
+        return load_head(policy, path, alpha)
     return load(root_of(policy, path), path, alpha)

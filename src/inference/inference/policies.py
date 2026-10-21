@@ -201,7 +201,8 @@ class LeRobotPolicy:
     With `adapter` (a lora.save directory), VITA runs with that LoRA adapter at `alpha` (0: the base
     exactly), on the flow net or the modules its adapter.json names as root; with a weights adapter
     (lora.save_weights: ttt update's full, flow, flow_last), its weights blended with the base's by
-    `alpha` (0 the base, 1 the tuned weights exactly).
+    `alpha` (0 the base, 1 the tuned weights exactly); with a head adapter (lora.save_head: ttt update's
+    residual, latent_offset), the head's output scaled by `alpha`.
     """
 
     def __init__(self, model, device, task='', rtc=None, revision=None, overrides=None, adapter=None, alpha=1.0):
