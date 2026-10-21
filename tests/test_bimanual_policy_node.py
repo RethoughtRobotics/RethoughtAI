@@ -69,7 +69,7 @@ class FakePolicy:
     def reset(self):
         self.resets += 1
 
-    def __call__(self, obs):
+    def __call__(self, obs, prev=None, history=()):
         self.calls.append(deepcopy(obs))
         if self.hook:
             self.hook()
@@ -232,6 +232,13 @@ def test_invalid_shared_joints_remove_previous_valid_input(make, bad):
         msg.position[0] = float('nan')
     node.send(CFG['joint_states'], msg)
     assert server._observation() is None
+
+
+def test_messages_without_arm_joints_keep_the_last_valid_joints(make):
+    """Baxter's grippers publish their finger joint alone on joint_states."""
+    server, node, _ = make()
+    node.send(CFG['joint_states'], JointState(name=['l_gripper_l_finger_joint'], position=[0.01]))
+    assert server._observation() is not None
 
 
 def test_absolute_two_transform_chunks_normalized_and_matching_headers(make):

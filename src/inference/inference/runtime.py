@@ -34,11 +34,11 @@ is never starts a close, and each new chunk starts again from the open gripper.
 the second and opens only when it falls below the first. Plans that disagree near a grasp otherwise
 flicker the trigger across one threshold, and the gripper starts closing and reopens.
 After a hold, chunks crossfade in over `entry_ramp` s: a policy's first targets lead the TCP.
-With a `path` topic, each policy step also publishes its segment as a timed nav_msgs/Path: the merged
-TCP goal at this step and at the next, each PoseStamped stamped with the time it is due, in the base
-frame. The teleop's trajectory input (BaxterSDK --input trajectory) follows it with the segment's own
-velocity as feedforward, so the arm tracks the plan without the pose servo's 1/gain lag and needs no
-`lead`. It anchors the path at the arm itself, so the poses are the plan's, not mapped.
+With a `path` topic, each policy step also publishes its plan from now on as a timed nav_msgs/Path:
+the merged TCP goals due at this step and the next `path_steps` - 1 (16: 0.64 s), each PoseStamped
+stamped with the time it is due, in the base frame, the plan's own poses. The teleop's plan input
+(BaxterSDK --input plan) plays it as replay plays a demo, so the arm follows the plan's own timing with
+no pose servo lag and needs no `lead`.
 With a `start` pose, the arm moves there first, then `on_start` runs.
 """
 
@@ -223,6 +223,7 @@ class Runtime:
         self.engaged_pub = node.create_publisher(Bool, cfg['engaged'], latched) if cfg.get('engaged') else None
         self.target_pub = node.create_publisher(PoseStamped, cfg['target'], 10)
         self.path_pub = node.create_publisher(Path, cfg['path'], 10) if cfg.get('path') else None
+        self.path_steps = int(cfg.get('path_steps', 16))
         self.trigger_pub = node.create_publisher(Float32, cfg['trigger'], 10)
         node.create_timer(1.0 / float(cfg['publish_rate']), self._tick)
         self._announce()
@@ -413,10 +414,19 @@ class Runtime:
         return True
 
     def _publish_path(self, t, current, following):
-        """This step's segment as a timed path: the goal due at t and the one due a step later."""
+        """The plan from t as a timed path: the goals due at t, a step later, and on to path_steps."""
+        goals = [(t, current[:2]), (t + self.dt, following[:2])]
+        for k in range(2, self.path_steps):
+            merged = self._combine(t + k * self.dt)
+            if merged is None:
+                break
+            goals.append((
+                t + k * self.dt,
+                (merged if self.entry is None else self._entered(t + k * self.dt, merged))[:2],
+            ))
         path = Path()
         path.header.frame_id = 'base'
-        for due, (position, rotation) in ((t, current[:2]), (t + self.dt, following[:2])):
+        for due, (position, rotation) in goals:
             pose = PoseStamped()
             pose.header.frame_id = 'base'
             pose.header.stamp = Time(sec=int(due), nanosec=int(round((due % 1.0) * 1e9)) % 1_000_000_000)

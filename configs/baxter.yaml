@@ -208,8 +208,11 @@ inference:
       # Replan every 16 frames (0.64 s). Publish all 32 trained targets to cover inference latency:
       # returning only 16 ends at 0.60 s and would leave a gap before the next chunk arrives.
       # No RTC and no extra lead: lead640ms already learned its 16-frame label shift.
+      # ramp: each new chunk crossfades in over 10 steps (0.4 s) within the 16-step overlap. With
+      # latest, a new chunk disagreeing with the last one about now (up to 17 mm on the robot) was a
+      # step in the plan, played as a joint setpoint jump (27 in 59 s, 2026-10-20 RealPolicy).
       every: 16
-      merge: {type: latest}
+      merge: {type: ramp, ramp: 10}
       overrides: {n_action_steps: 32}
     multi_task_dit:
       # chunks of 24 (of a 32-step plan) from the last 2 steps; ~100 ms on the laptop GPU (10 DDPM
@@ -218,17 +221,13 @@ inference:
       merge: {type: ensemble, coeff: -0.05}
     multi_task_dit_absolute:
       # Kinesthetic cup DiTs: raw 15-D state, 8-D absolute pose + gripper. 10 DDPM steps (~130 ms on
-      # the laptop GPU; its 100 gave the same offline error at 12x the time). Replan every 16 frames
-      # (0.64 s), each plan crossfaded in over 10 steps. The best rollout so far
-      # (20261015_001349) ran exactly this. Worse on the robot: a run-time `lead`, `gripper_latch`, an
-      # ensemble every 4, and a crossfade every 4 or 8 (they stalled or crept at the cup).
-      # gripper_lead: the gripper labels are its measured opening at the same step (both kin_pose and
-      # lead640ms), so the plan's first gripper value is where it already is; send the value planned
-      # 0.4 s later, as the gripper needs to start closing. The arm's pose is not led.
-      # lead: the arm trails its target ~0.66 s, cutting forward-then-down approaches short (finger on
-      # the cup rim, rollout 20261015_005052); 0.3 s is the one change from rollout 20261015_001349.
-      every: 16
-      merge: {type: ramp, ramp: 10, gripper_lead: 0.4, lead: 0.3}
+      # the laptop GPU; its 100 gave the same offline error at 12x the time). A new plan every 4 frames
+      # (0.16 s), every step the average of the plans covering it (ACT's temporal ensembling, newest
+      # weighted most): no single plan moves the arm, so a plan's disagreement with the last is averaged
+      # out rather than played. No lead: the teleop's plan input plays the plan on its own timing
+      # (BaxterSDK --input plan), so goals are not sent ahead of when they are due.
+      every: 4
+      merge: {type: ensemble, coeff: -0.05}
       overrides: {num_inference_steps: 10, n_action_steps: 31}  # 31: its plan starts at the older of its 2 observations
     groot:
       # GR00T N1.7 3B: absolute goals in chunks of 16 (no RTC: it continues TCP-relative chunks).

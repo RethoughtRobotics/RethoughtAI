@@ -38,7 +38,7 @@ def test_absolute_vita_has_separate_schedule_and_full_latency_coverage():
     effective = {**cfg, **s['overrides']}
     assert cfg['n_action_steps'] == 16  # never rewrite the downloaded training config
     assert chunk_length(effective) == 32 and s['every'] == 16
-    assert s['merge'] == {'type': 'latest'} and not s.get('rtc')
+    assert s['merge'] == {'type': 'ramp', 'ramp': 10} and not s.get('rtc')
     assert check_merge(s['merge'], chunk_length(effective), s['every']) is None
 
 
@@ -165,3 +165,13 @@ def test_bimanual_wrapper_preserves_raw_absolute_actions_and_state_order():
     )
     assert state.dtype == np.float32
     assert p({'observation.state': state}) == pytest.approx(actions)
+
+
+def test_a_replay_as_a_checkpoint_runs_with_its_chunks_schedule_merge_and_layout():
+    from inference.cli import replay_as
+
+    model_cfg = config()  # absolute VITA: 32-step chunks, a new one every 16 steps, latest
+    cfg, merge, absolute = replay_as(settings(), model_cfg, policy_settings(settings(), model_cfg))
+    assert cfg['chunk_size'] == 32 and cfg['n_action_steps'] == 16 and merge['type'] == 'ramp' and absolute
+    relative = config(17, 7)
+    assert not replay_as(settings(), relative, policy_settings(settings(), relative))[2]

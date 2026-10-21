@@ -55,6 +55,16 @@ def policy_settings(cfg, model_cfg, label_lead=None):
     return settings
 
 
+def replay_as(cfg, model_cfg, settings):
+    """(runtime config, merge, absolute) to replay a recording as this checkpoint runs: its chunk length,
+    a new chunk every `every` steps, its merge, and its goal layout (absolute goals or TCP-relative)."""
+    from inference.policies import action_layout, chunk_length
+
+    chunk = chunk_length({**model_cfg, **settings.get('overrides', {})})
+    cfg = {**cfg, 'chunk_size': chunk, 'n_action_steps': int(settings.get('every', 1))}
+    return cfg, settings['merge'], action_layout(model_cfg) == 'absolute'
+
+
 def deploy_task(configured, tasks):
     """The prompt to condition on: the dataset's task the checkpoint was trained on (`tasks`), or the
     configured one if the dataset's tasks are unknown or include it. Several need one configured."""
@@ -187,13 +197,26 @@ def adapted(policy, adapter):
     default=None,
     help='With --explore-sigma: append every plan (latents, log-probabilities) to this file',
 )
-def serve(config, model, device, revision, adapter, alpha, explore_sigma, explore_seed, flow_noise, record):
+@click.option(
+    '--replay',
+    'episode',
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help="Two-arm config: serve this kinesthetic recording's chunks in place of the network, as --model runs",
+)
+def serve(config, model, device, revision, adapter, alpha, explore_sigma, explore_seed, flow_noise, record, episode):
     """Run a policy on the robot's topics, publishing its action chunks for `run`.
+
+    \b
+    With --replay (a two-arm config), a kinesthetic recording is served in the network's place, with
+    --model's chunk length, replanning interval and merge: everything after the chunk topic is the
+    chain the checkpoint runs through.
 
     \b
     Examples:
       inference serve baxter.yaml --model andnetdeboer/ACT_20261007-2113_ckpt010000
       inference serve baxter.yaml --model models/vita_X/step-30000 --adapter adapters/t1 --alpha 0.5
+      inference serve baxter_bimanual.yaml --model models/<sweep checkpoint> --replay data/bags/<demo>
     """
     if alpha is not None and not adapter:
         raise click.UsageError('--alpha needs --adapter')
@@ -204,6 +227,8 @@ def serve(config, model, device, revision, adapter, alpha, explore_sigma, explor
         explore = {'sigma': explore_sigma, 'seed': explore_seed, 'noise': flow_noise, 'record': record}
     full = yaml.safe_load(resolve_config(config).read_text())
     cfg = full['inference']
+    if episode and cfg.get('arm') != 'both':
+        raise click.UsageError('serve --replay is for two-arm configs; one arm: inference run --replay')
 
     from inference.policies import LeRobotPolicy, model_config, trained_lead, trained_tasks
     from inference.runtime import check_merge
@@ -211,17 +236,29 @@ def serve(config, model, device, revision, adapter, alpha, explore_sigma, explor
     settings = policy_settings(cfg, model_config(model, revision), trained_lead(model, revision))
     task = deploy_task(cfg.get('task'), trained_tasks(model, revision))
     alpha = 1.0 if alpha is None else alpha
-    policy = LeRobotPolicy(
-        model,
-        device,
-        task,
-        settings.get('rtc'),
-        revision,
-        settings.get('overrides'),
-        adapter=adapter,
-        alpha=alpha,
-        explore=explore,
-    )
+    if episode:
+        from inference.policies import BimanualReplayPolicy, chunk_length
+
+        model_cfg = model_config(model, revision)
+        policy = BimanualReplayPolicy(episode, cfg['fps'], chunk_length({**model_cfg, **settings.get('overrides', {})}))
+        start = {arm: [round(float(v), 3) for v in p] for arm, p in policy.start.items()}
+        click.echo(
+            f'Replaying {episode}: {len(policy)} steps ({len(policy) / cfg["fps"]:.1f} s), starting with the TCPs '
+            f'at {start} m (base); scripts/start runs it once both arms are within '
+            f'{policy.START_RADIUS * 100:.0f} cm of there'
+        )
+    else:
+        policy = LeRobotPolicy(
+            model,
+            device,
+            task,
+            settings.get('rtc'),
+            revision,
+            settings.get('overrides'),
+            adapter=adapter,
+            alpha=alpha,
+            explore=explore,
+        )
     check_merge(settings['merge'], policy.chunk_size, settings.get('every', 1))
     click.echo(
         f'Serving {model} ({policy.type}, chunks of {policy.chunk_size})'
@@ -244,7 +281,16 @@ def serve(config, model, device, revision, adapter, alpha, explore_sigma, explor
         if policy.bimanual:
             from inference.bimanual_policy_node import BimanualPolicyNode
 
-            servers.append(BimanualPolicyNode(node, cfg, full['topics']['images'], policy, settings.get('every', 1)))
+            servers.append(
+                BimanualPolicyNode(
+                    node,
+                    cfg,
+                    full['topics']['images'],
+                    policy,
+                    settings.get('every', 1),
+                    settings.get('inpaint', False),
+                )
+            )
         else:
             PolicyNode(node, cfg, full['topics']['images'], policy, settings.get('every', 1))
         if full.get('trigger', {}).get('light'):  # lit as in every recorded frame
@@ -284,12 +330,18 @@ def run(config, episode, model, start_at, player, revision):
     """Run a policy on the robot, through its teleop (the config's `inference:` section).
 
     \b
+    With both --replay and --model the recording is played as that checkpoint runs (its chunk length,
+    replanning interval, merge and goal layout): the whole chain a policy runs through, without the
+    network.
+
+    \b
     Examples:
       inference run baxter.yaml --replay recorder/data/CupToContainer/episode_042
       inference run baxter.yaml --model andnetdeboer/ACT_20261007-2113_ckpt010000
+      inference run baxter.yaml --replay data/bags/<kinesthetic demo> --model models/<checkpoint>
     """
-    if (episode is None) == (model is None):
-        raise click.UsageError('give one of --replay or --model')
+    if episode is None and model is None:
+        raise click.UsageError('give --replay, --model, or both')
     if start_at and not model or player and not start_at:
         raise click.UsageError('--start-at needs --model, --player needs --start-at')
     cfg = yaml.safe_load(resolve_config(config).read_text())['inference']
@@ -302,17 +354,30 @@ def run(config, episode, model, start_at, player, revision):
 
         if cfg.get('arm') == 'both':
             raise click.UsageError('Bimanual replay/start-pose loading is not supported; use live cameras')
-        policy = ReplayPolicy(episode, cfg['arm'], cfg['fps'], cfg['chunk_size'])
+        merge, absolute = None, False
+        if model:
+            from inference.policies import model_config, trained_lead
+
+            model_cfg = model_config(model, revision)
+            settings = policy_settings(cfg, model_cfg, trained_lead(model, revision))
+            cfg, merge, absolute = replay_as(cfg, model_cfg, settings)
+        policy = ReplayPolicy(episode, cfg['arm'], cfg['fps'], cfg['chunk_size'], absolute=absolute)
         click.echo(
             f'Replaying {episode}: {len(policy)} steps ({len(policy) / cfg["fps"]:.1f} s), '
-            f'chunks of {cfg["chunk_size"]}, ensembling {cfg.get("temporal_ensemble_coeff")}'
+            f'chunks of {cfg["chunk_size"]}'
+            + (
+                f' every {cfg["n_action_steps"]} steps, merge {merge}, {"absolute" if absolute else "relative"} goals'
+                f' (as {model})'
+                if model
+                else f', ensembling {cfg.get("temporal_ensemble_coeff")}'
+            )
         )
         start = policy.episode.tcp_p[0]
         click.echo(
             f'Demo starts with the TCP at {start.round(3).tolist()} m (base). Hold the deadman '
             '(trackpad) to run, release to hold; B sends the arm home.'
         )
-        spin('policy_runtime', lambda node: Runtime(node, cfg, policy))
+        spin('policy_runtime', lambda node: Runtime(node, cfg, policy, merge=merge))
         return
 
     from inference.policies import chunk_length, model_config, trained_lead

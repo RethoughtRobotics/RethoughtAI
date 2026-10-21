@@ -54,27 +54,100 @@ class ReplayPolicy:
     """A recorded episode played back as a policy: at step t, the chunk labelled at step t of the
     recording, ignoring the observation. Everything around it (anchoring on the live TCP, chunk
     execution, the teleop) is what a trained policy runs through, so a replay that reproduces the
-    demonstration tests all of it."""
+    demonstration tests all of it.
 
-    def __init__(self, episode, arm, fps, chunk_size):
-        from adapter.labels import load_episode
+    A teleop recording's labels are its goals (load_episode); a kinesthetic one's, the measured TCP
+    at the same step (load_measured, lead 0), as the kinesthetic datasets are exported. `absolute`:
+    the labels are absolute goals made relative to the live TCP, as an absolute-goal checkpoint's
+    chunks are (LeRobotPolicy), so the arm is drawn back onto the demonstration; otherwise they are
+    relative to the recorded TCP, as a relative checkpoint's."""
 
-        self.episode = load_episode(episode, arm, fps)
-        self.chunk_size = chunk_size
+    def __init__(self, episode, arm, fps, chunk_size, absolute=False):
+        from adapter.labels import NoTeleopGoal, load_episode, load_measured
+
+        try:
+            self.episode = load_episode(episode, arm, fps)
+        except NoTeleopGoal:
+            self.episode = load_measured(episode, (arm,), fps, lead=0)[arm]
+        self.chunk_size, self.absolute = chunk_size, bool(absolute)
 
     @property
     def start(self):
-        """The demonstration's first TCP pose (position, quaternion): its actions are relative to the
-        TCP, so the replay reproduces it only from where it began."""
-        return self.episode.tcp_p[0], self.episode.tcp_q[0]
+        """The demonstration's first TCP pose (position, quaternion): relative actions reproduce it only
+        from where it began. None for absolute goals, which start where the arm is, as a policy does."""
+        return None if self.absolute else (self.episode.tcp_p[0], self.episode.tcp_q[0])
 
     def __len__(self):
         return len(self.episode)
 
     def __call__(self, observation):
-        from adapter.labels import chunk_actions
+        from adapter.labels import chunk_actions, relative_actions
 
-        return chunk_actions(self.episode, observation['step'], self.chunk_size)
+        step = observation['step']
+        if not self.absolute:
+            return chunk_actions(self.episode, step, self.chunk_size)
+        from scipy.spatial.transform import Rotation
+
+        k = np.minimum(np.arange(step, step + self.chunk_size), len(self.episode) - 1)
+        e = self.episode
+        tcp = (np.asarray(observation['tcp_position']), np.asarray(observation['tcp_orientation']))
+        return relative_actions(e.target_p[k], Rotation.from_quat(e.target_q[k]), e.trigger[k], *tcp)
+
+
+class BimanualReplayPolicy:
+    """A two-arm kinesthetic recording played back as a bimanual absolute-pose checkpoint, served in the
+    network's place (`inference serve --replay`): each call returns the recording's chunk from the step
+    as long after the first call (since a reset) as the recording had run, as raw absolute
+    [left p3, q4, right p3, q4] goals (load_measured, lead 0, as the kinesthetic datasets are exported).
+    The chunk topic, merge, runtime and teleops after it are the ones a policy runs through.
+
+    It starts only from where the recording starts: a first call with either arm further than
+    START_RADIUS from the recording's first pose raises, so BimanualPolicyNode holds and tries again."""
+
+    START_RADIUS = 0.10  # m
+
+    bimanual, absolute, rtc, n_obs_steps, type = True, True, None, 1, 'replay'
+    features = ['observation.state']
+
+    def __init__(self, episode, fps, chunk_size, clock=None):
+        import time
+
+        from adapter.labels import load_measured
+
+        episodes = load_measured(episode, ('left', 'right'), fps, lead=0)
+        self.actions = np.concatenate(
+            [np.c_[episodes[a].target_p, episodes[a].target_q] for a in ('left', 'right')], axis=1
+        )
+        self.fps, self.chunk_size, self.clock = float(fps), int(chunk_size), clock or time.monotonic
+        self.started = None
+
+    def __len__(self):
+        return len(self.actions)
+
+    @property
+    def start(self):
+        """{arm: position} of the recording's first step."""
+        return {'left': self.actions[0, 0:3], 'right': self.actions[0, 7:10]}
+
+    def reset(self):
+        self.started = None
+
+    def state(self, tcp_p, tcp_q, gripper, joints):
+        return np.concatenate([np.r_[tcp_p[a], tcp_q[a], joints[a]] for a in ('left', 'right')]).astype(np.float32)
+
+    def __call__(self, observation, prev=None, history=()):
+        if self.started is None:
+            state = np.asarray(observation['observation.state'])
+            off = [np.linalg.norm(state[s : s + 3] - self.actions[0, a : a + 3]) for s, a in ((0, 0), (14, 7))]
+            if max(off) > self.START_RADIUS:
+                raise ValueError(
+                    f'arms {off[0] * 100:.0f} / {off[1] * 100:.0f} cm (left / right) from the recording start; '
+                    f'guide them within {self.START_RADIUS * 100:.0f} cm'
+                )
+            self.started = self.clock()
+        step = int(round((self.clock() - self.started) * self.fps))
+        k = np.minimum(np.arange(step, step + self.chunk_size), len(self.actions) - 1)
+        return self.actions[k].copy()
 
 
 def model_dir(model, revision=None):
@@ -304,6 +377,28 @@ class LeRobotPolicy:
         self.pre.reset()
         self.post.reset()
 
+    def _inpainted(self, batch, known, weights):
+        """The DiT's predict_action_chunk with its first len(weights) actions inpainted toward `known`.
+        The sample's steps before the first action (its older observations) take the first known value."""
+        from lerobot.processor import TransitionKey, create_transition
+
+        from inference import inpaint
+
+        policy, torch = self.policy, self.torch
+        if self.type != 'multi_task_dit' or not hasattr(policy.objective, 'noise_scheduler'):
+            raise ValueError(f'inpainting is for diffusion MultiTask DiT checkpoints, not {self.type}')
+        for k in batch:  # as predict_action_chunk: the observation history from the queues
+            if k in policy._queues:
+                batch[k] = torch.stack(list(policy._queues[k]), dim=1)
+        start = policy.config.n_obs_steps - 1
+        known = torch.as_tensor(np.asarray(known), dtype=torch.float32, device=self.device)
+        known = self.normalizer(create_transition(action=known))[TransitionKey.ACTION]
+        known = torch.cat([known[:1].expand(start, -1), known])
+        weights = np.r_[np.full(start, weights[0]), weights]
+        conditioning = policy.observation_encoder.encode(batch)
+        x = inpaint.sample(policy.objective, policy.noise_predictor, conditioning, known, weights)
+        return x[:, start : start + policy.config.n_action_steps]
+
     def state(self, tcp_p, tcp_q, gripper, joints):
         """observation.state for this checkpoint's layout."""
         if getattr(self, 'bimanual', False):
@@ -319,7 +414,9 @@ class LeRobotPolicy:
     def __call__(self, observation, delay=0, prev=None, tcp=None, history=()):
         """`tcp` (position, quaternion), the TCP observed: absolute goals are made relative to it.
         `history`: for a policy that sees past steps (n_obs_steps), the observations one step apart
-        before this one, oldest first; fewer repeat the oldest given, as LeRobot starts an episode."""
+        before this one, oldest first; fewer repeat the oldest given, as LeRobot starts an episode.
+        `prev` with a diffusion MultiTask DiT and no `rtc`: (known (P, action_dim) unnormalized,
+        weights (P,)) for the chunk's first P steps, inpainted as it is denoised (inpaint.py)."""
         from lerobot.policies.utils import populate_queues, prepare_observation_for_inference
         from lerobot.processor import TransitionKey, create_transition
 
@@ -361,7 +458,10 @@ class LeRobotPolicy:
                     pad[: min(horizon, len(prev))] = prev[:horizon]
                     prev = pad
                 kwargs = {'inference_delay': delay, 'prev_chunk_left_over': prev}
-            actions = self.policy.predict_action_chunk(batch, **kwargs)
+            if prev is not None and not self.rtc:
+                actions = self._inpainted(batch, *prev)
+            else:
+                actions = self.policy.predict_action_chunk(batch, **kwargs)
             actions = self.post(actions)[0].float().cpu().numpy().astype(np.float64)
         if self.absolute and not getattr(self, 'bimanual', False):
             from scipy.spatial.transform import Rotation

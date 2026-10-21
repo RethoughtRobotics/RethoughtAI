@@ -23,7 +23,7 @@ import numpy as np
 import rosbag2_py
 from rclpy.serialization import deserialize_message
 from rosidl_runtime_py.utilities import get_message
-from scipy.spatial.transform import Rotation
+from scipy.spatial.transform import Rotation, Slerp
 
 GOAL_HOLD = 0.05  # s: a goal older than this means the clutch was released (the teleop publishes ~60 Hz)
 
@@ -52,6 +52,10 @@ def _gripper_trigger(msg):
     return 1.0 - float(json.loads(msg.args)['position']) / 100.0
 
 
+class NoTeleopGoal(ValueError):
+    """The recording has no teleop goal: the arm was guided by hand (load_measured reads it)."""
+
+
 def load_episode(path, arm='left', fps=25.0) -> Episode:
     topics = {
         'tcp': f'/teleop/{arm}/tcp',
@@ -61,11 +65,10 @@ def load_episode(path, arm='left', fps=25.0) -> Episode:
     reader = rosbag2_py.SequentialReader()
     reader.open(rosbag2_py.StorageOptions(uri=str(Path(path)), storage_id='mcap'), rosbag2_py.ConverterOptions('', ''))
     types = {t.name: t.type for t in reader.get_all_topics_and_types()}
-    missing = [n for n in ('tcp', 'goal') if topics[n] not in types]
-    if missing:
-        raise ValueError(
-            f'{path}: no {", ".join(topics[n] for n in missing)} (recorded before the teleop published it)'
-        )
+    if topics['tcp'] not in types:
+        raise ValueError(f'{path}: no {topics["tcp"]} (recorded before the teleop published it)')
+    if topics['goal'] not in types:
+        raise NoTeleopGoal(f'{path}: no {topics["goal"]}: a kinesthetic recording (load_measured)')
     reader.set_filter(rosbag2_py.StorageFilter(topics=[t for t in topics.values() if t in types]))
     data = {n: [] for n in topics}  # name -> [(time, value)]
     while reader.has_next():
@@ -74,6 +77,8 @@ def load_episode(path, arm='left', fps=25.0) -> Episode:
         msg = deserialize_message(raw, get_message(types[topic]))
         data[name].append((t, _gripper_trigger(msg) if name == 'gripper' else _pose(msg)))
 
+    if not data['goal']:
+        raise NoTeleopGoal(f'{path}: no {topics["goal"]} message: a kinesthetic recording (load_measured)')
     goal_t = np.array([t for t, _ in data['goal']])
     tcp_t = np.array([t for t, _ in data['tcp']])
     t = np.arange(goal_t[0], goal_t[-1] + 1, int(1e9 / fps))
@@ -103,7 +108,7 @@ def load_measured(path, arms=('left',), fps=25.0, lead=1) -> dict[str, Episode]:
     the measured TCP `lead` steps later (the last step holds), so even the first action of a chunk is
     where the hand took the arm next, as a teleop goal leads the arm. The trigger is the measured
     gripper opening (0 open .. 1 closed). Steps span the time every arm's TCP is recorded, on one
-    clock for all arms."""
+    clock for all arms. The TCP is interpolated to each step's time."""
     topics = {
         (arm, kind): tp
         for arm in arms
@@ -134,10 +139,14 @@ def load_measured(path, arms=('left',), fps=25.0, lead=1) -> dict[str, Episode]:
 
     out = {}
     for arm in arms:
+        # Interpolated to each step's time, not the latest sample before it: the TCP arrives at ~76 Hz,
+        # so a held sample is up to 13 ms old, 2 mm rms (13 mm max) of noise at a hand-guided pace.
         tcp = data[(arm, 'tcp')]
-        i = latest(tcp)
-        p = np.array([tcp[k][1][0] for k in i])
-        q = np.array([tcp[k][1][1] for k in i])
+        times = np.array([x for x, _ in tcp], dtype=float)
+        at = np.clip(t.astype(float), times[0], times[-1])
+        positions = np.array([v[0] for _, v in tcp])
+        p = np.stack([np.interp(at, times, positions[:, k]) for k in range(3)], axis=1)
+        q = Slerp(times, Rotation.from_quat([v[1] for _, v in tcp]))(at).as_quat()
         grip = data[(arm, 'gripper')]
         trigger = np.array([grip[k][1] for k in latest(grip)]) if grip else np.zeros(len(t))
         ahead = np.minimum(np.arange(len(t)) + lead, len(t) - 1)
