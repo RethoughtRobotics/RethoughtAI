@@ -57,6 +57,11 @@ draw seeded by the update seed, on cached latents only (not trainable `all`, whi
 Truncated or noisy chunks go through the frozen action encoder again for their z_h, and the `vita`
 objective reconstructs them; a late target is the later frame's cached chunk and latent. Applied to
 S15's capped frames, each S16 variant degrades the frames S15 trains on.
+
+On a Multi-Task DiT base (plan S20) the objective is `dit` (ttt.dit): trainable lora is LoRA on the
+denoiser's attention and MLP layers, trained with the DiT's own loss on the cached conditioning and the
+corrector's (or, on anchor frames, the demonstration's) chunks, lambda weighting the anchor as above. The
+other trainable sets, the preference loss, on-policy corrections and the S16 degradations are VITA's.
 """
 
 import copy
@@ -72,7 +77,7 @@ from torch.utils.data import DataLoader, Subset
 
 from inference import lora
 
-from . import BASE, M0_POOL, corrector
+from . import BASE, M0_POOL, corrector, dit
 from . import cache as cache_mod
 
 LORA_SITES = {
@@ -288,10 +293,20 @@ def run(model, cache_path, out, settings=None, device='cpu', frames=None, worker
     tensors, meta = cache_mod.load(cache_path)
     model = model or meta['model']
     lp = cache_mod.load_policy(model, device)
-    policy, vita = lp.policy, lp.policy.vita
-    ref = copy.deepcopy(vita).requires_grad_(False) if s.beta is not None else None
+    policy = lp.policy
+    if dit.is_dit(policy):
+        check_dit(s)
+        objective, vita, ref = 'dit', None, None
+    elif objective == 'dit':
+        raise ValueError(f'objective dit: {model} is a {policy.config.type}, not a Multi-Task DiT')
+    else:
+        vita = policy.vita
+        ref = copy.deepcopy(vita).requires_grad_(False) if s.beta is not None else None
     torch.manual_seed(s.seed)  # LoRA's A initialisation
-    params, adapter = prepare(policy, s.trainable, s.rank, s.alpha, s.hidden)
+    if objective == 'dit':
+        params, adapter = dit.prepare(policy, s.rank, s.alpha)
+    else:
+        params, adapter = prepare(policy, s.trainable, s.rank, s.alpha, s.hidden)
     policy.eval()  # dropout off, the inference crop
 
     steps = meta['n_action_steps']
@@ -314,7 +329,8 @@ def run(model, cache_path, out, settings=None, device='cpu', frames=None, worker
         keys = list(zip(tensors['episode'].tolist(), tensors['frame'].tolist(), strict=True))
         sets = [Frames(lp, frames, positions, [keys[i] for i in r], device, workers) for r in (c_rows, d_rows)]
     else:
-        sets = [Cached(lp, c_tensors, c_rows, device), Cached(lp, tensors, d_rows, device)]
+        kind = dit.Cached if objective == 'dit' else Cached
+        sets = [kind(lp, c_tensors, c_rows, device), kind(lp, tensors, d_rows, device)]
     corrected_set, anchor_set = sets
 
     g = torch.Generator().manual_seed(s.seed)
@@ -332,7 +348,9 @@ def run(model, cache_path, out, settings=None, device='cpu', frames=None, worker
     for step in range(s.steps):
         t = tc[step].to(device)
         bc = next(batches_c)
-        if objective == 'chunk':
+        if objective == 'dit':
+            loss_c = corrected_set.loss(policy, bc)
+        elif objective == 'chunk':
             loss_c = residual_error(vita, corrected_set, bc).mean()
         else:
             z0, z1, a = corrected_set.pair(vita, bc)
@@ -340,7 +358,9 @@ def run(model, cache_path, out, settings=None, device='cpu', frames=None, worker
         total, row = (1 - s.lam) * loss_c, {'step': step + 1, 'corrected': loss_c.item()}
         if use_anchor:
             bd = next(batches_d)
-            if objective == 'chunk':
+            if objective == 'dit':
+                loss_d = anchor_set.loss(policy, bd)
+            elif objective == 'chunk':
                 loss_d = residual_error(vita, anchor_set, bd, anchor=True).mean()
             else:
                 z0d, z1d, ad = anchor_set.pair(vita, bd)
@@ -399,6 +419,14 @@ def run(model, cache_path, out, settings=None, device='cpu', frames=None, worker
     }
     (out / 'update.json').write_text(json.dumps(record, indent=2) + '\n')
     return record
+
+
+def check_dit(s):
+    """Settings a DiT base takes: LoRA on its denoiser with its own loss, corrections from the cache."""
+    if s.trainable != 'lora' or s.objective not in ('auto', 'dit'):
+        raise ValueError(f'trainable {s.trainable}, objective {s.objective}: a DiT base takes lora with auto or dit')
+    if s.beta is not None or s.corrections is not None or s.degraded():
+        raise ValueError('a DiT base takes no preference loss, on-policy corrections or degraded chunks')
 
 
 def check(s):

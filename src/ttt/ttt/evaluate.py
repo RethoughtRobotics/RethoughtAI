@@ -5,6 +5,9 @@ paired over episodes with bootstrap intervals.
 
 Phases come from the demonstration's gripper channel: reach until it first closes, transfer while
 closed, release after it last opens.
+
+A Multi-Task DiT plans from its cached conditioning with seeded noise (ttt.dit.decode), the same for
+the base and the adapter, over its own executed steps (n_action_steps).
 """
 
 import json
@@ -12,7 +15,7 @@ from pathlib import Path
 
 import torch
 
-from . import BASE, TEST, corrector, stats
+from . import BASE, TEST, corrector, dit, stats
 from . import cache as cache_mod
 
 PHASES = ('reach', 'transfer', 'release')
@@ -22,6 +25,8 @@ CLOSED = 0.5  # gripper command above this is closed (the sim's: 0 open, about 0
 @torch.no_grad()
 def decode(lp, tensors, rows, batch=1024):
     """The unnormalised chunks the policy plans from the cached observer features of `rows`."""
+    if dit.is_dit(lp.policy):
+        return dit.decode(lp, tensors, rows, batch)
     vita, device = lp.policy.vita, lp.device
     out = []
     for i in range(0, len(rows), batch):
@@ -118,6 +123,7 @@ def run(
     model = model or meta['model']
     steps = meta['n_action_steps']
     lp = cache_mod.load_policy(model, device)
+    observer = 'observation_encoder.' if dit.is_dit(lp.policy) else 'vita.observer.'
     weights = adapter is not None and lora.meta(adapter).get('kind') == 'weights'
     if adapter is not None and not weights:
         lora.load_policy(lp.policy, adapter, 1.0)
@@ -132,7 +138,7 @@ def run(
         changed = [
             k
             for k, v in lp.policy.state_dict().items()
-            if k.startswith('vita.observer.') and k in updated and not torch.equal(updated[k].to(v.device), v)
+            if k.startswith(observer) and k in updated and not torch.equal(updated[k].to(v.device), v)
         ]
         if changed:
             raise ValueError(

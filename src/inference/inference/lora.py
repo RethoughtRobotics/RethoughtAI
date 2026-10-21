@@ -5,6 +5,8 @@ zero, so a new adapter is the base policy, and alpha blends: 0 is the base exact
 On VITA they sit on fc1 and fc2 of each flow net block (VITA_TARGETS: 8 layers with the repository's
 4 blocks), named relative to the flow net (flow_net()), the only part a test-time update over cached
 latents runs.
+On the Multi-Task DiT they sit on each denoiser block's attention (qkv_proj, out_proj) and MLP layers
+(DIT_TARGETS: 24 layers with its 6 blocks), named relative to the denoiser (DIT_ROOT, the adapter's root).
 
 An adapter on disk is a directory: adapter.safetensors (each target's A and B) and adapter.json
 (rank, target names and, if saved with one, `root`: the module of the policy the names are relative
@@ -37,6 +39,8 @@ from torch import nn
 from torch.nn import functional as F
 
 VITA_TARGETS = ('layers.*.mlp.fc1', 'layers.*.mlp.fc2')
+DIT_ROOT = 'noise_predictor'
+DIT_TARGETS = tuple(f'transformer_blocks.*.{p}' for p in ('attn.qkv_proj', 'attn.out_proj', 'mlp.0', 'mlp.2'))
 WEIGHTS, META = 'adapter.safetensors', 'adapter.json'
 
 
