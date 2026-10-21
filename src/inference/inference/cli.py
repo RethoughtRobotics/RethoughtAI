@@ -159,18 +159,33 @@ def check(model, config, revision):
     '--adapter', type=click.Path(exists=True, file_okay=False), default=None, help='VITA LoRA adapter (inference.lora)'
 )
 @click.option('--alpha', type=float, default=None, help='With --adapter: its weight, 0 the base exactly (default 1)')
-def serve(config, model, device, revision, adapter, alpha):
+@click.option(
+    '--replay',
+    'episode',
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help="Two-arm config: serve this kinesthetic recording's chunks in place of the network, as --model runs",
+)
+def serve(config, model, device, revision, adapter, alpha, episode):
     """Run a policy on the robot's topics, publishing its action chunks for `run`.
+
+    \b
+    With --replay (a two-arm config), a kinesthetic recording is served in the network's place, with
+    --model's chunk length, replanning interval and merge: everything after the chunk topic is the
+    chain the checkpoint runs through.
 
     \b
     Examples:
       inference serve baxter.yaml --model andnetdeboer/ACT_20261007-2113_ckpt010000
       inference serve baxter.yaml --model models/vita_X/step-30000 --adapter adapters/t1 --alpha 0.5
+      inference serve baxter_bimanual.yaml --model models/<sweep checkpoint> --replay data/bags/<demo>
     """
     if alpha is not None and not adapter:
         raise click.UsageError('--alpha needs --adapter')
     full = yaml.safe_load(resolve_config(config).read_text())
     cfg = full['inference']
+    if episode and cfg.get('arm') != 'both':
+        raise click.UsageError('serve --replay is for two-arm configs; one arm: inference run --replay')
 
     from inference.policies import LeRobotPolicy, model_config, trained_lead, trained_tasks
     from inference.runtime import check_merge
@@ -178,9 +193,21 @@ def serve(config, model, device, revision, adapter, alpha):
     settings = policy_settings(cfg, model_config(model, revision), trained_lead(model, revision))
     task = deploy_task(cfg.get('task'), trained_tasks(model, revision))
     alpha = 1.0 if alpha is None else alpha
-    policy = LeRobotPolicy(
-        model, device, task, settings.get('rtc'), revision, settings.get('overrides'), adapter=adapter, alpha=alpha
-    )
+    if episode:
+        from inference.policies import BimanualReplayPolicy, chunk_length
+
+        model_cfg = model_config(model, revision)
+        policy = BimanualReplayPolicy(episode, cfg['fps'], chunk_length({**model_cfg, **settings.get('overrides', {})}))
+        start = {arm: [round(float(v), 3) for v in p] for arm, p in policy.start.items()}
+        click.echo(
+            f'Replaying {episode}: {len(policy)} steps ({len(policy) / cfg["fps"]:.1f} s), starting with the TCPs '
+            f'at {start} m (base); scripts/start runs it once both arms are within '
+            f'{policy.START_RADIUS * 100:.0f} cm of there'
+        )
+    else:
+        policy = LeRobotPolicy(
+            model, device, task, settings.get('rtc'), revision, settings.get('overrides'), adapter=adapter, alpha=alpha
+        )
     check_merge(settings['merge'], policy.chunk_size, settings.get('every', 1))
     click.echo(
         f'Serving {model} ({policy.type}, chunks of {policy.chunk_size})'

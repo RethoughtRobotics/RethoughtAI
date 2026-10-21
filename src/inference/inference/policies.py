@@ -92,6 +92,60 @@ class ReplayPolicy:
         return relative_actions(e.target_p[k], Rotation.from_quat(e.target_q[k]), e.trigger[k], *tcp)
 
 
+class BimanualReplayPolicy:
+    """A two-arm kinesthetic recording played back as a bimanual absolute-pose checkpoint, served in the
+    network's place (`inference serve --replay`): each call returns the recording's chunk from the step
+    as long after the first call (since a reset) as the recording had run, as raw absolute
+    [left p3, q4, right p3, q4] goals (load_measured, lead 0, as the kinesthetic datasets are exported).
+    The chunk topic, merge, runtime and teleops after it are the ones a policy runs through.
+
+    It starts only from where the recording starts: a first call with either arm further than
+    START_RADIUS from the recording's first pose raises, so BimanualPolicyNode holds and tries again."""
+
+    START_RADIUS = 0.10  # m
+
+    bimanual, absolute, rtc, n_obs_steps, type = True, True, None, 1, 'replay'
+    features = ['observation.state']
+
+    def __init__(self, episode, fps, chunk_size, clock=None):
+        import time
+
+        episodes = load_measured(episode, ('left', 'right'), fps, lead=0)
+        self.actions = np.concatenate(
+            [np.c_[episodes[a].target_p, episodes[a].target_q] for a in ('left', 'right')], axis=1
+        )
+        self.fps, self.chunk_size, self.clock = float(fps), int(chunk_size), clock or time.monotonic
+        self.started = None
+
+    def __len__(self):
+        return len(self.actions)
+
+    @property
+    def start(self):
+        """{arm: position} of the recording's first step."""
+        return {'left': self.actions[0, 0:3], 'right': self.actions[0, 7:10]}
+
+    def reset(self):
+        self.started = None
+
+    def state(self, tcp_p, tcp_q, gripper, joints):
+        return np.concatenate([np.r_[tcp_p[a], tcp_q[a], joints[a]] for a in ('left', 'right')]).astype(np.float32)
+
+    def __call__(self, observation, prev=None, history=()):
+        if self.started is None:
+            state = np.asarray(observation['observation.state'])
+            off = [np.linalg.norm(state[s : s + 3] - self.actions[0, a : a + 3]) for s, a in ((0, 0), (14, 7))]
+            if max(off) > self.START_RADIUS:
+                raise ValueError(
+                    f'arms {off[0] * 100:.0f} / {off[1] * 100:.0f} cm (left / right) from the recording start; '
+                    f'guide them within {self.START_RADIUS * 100:.0f} cm'
+                )
+            self.started = self.clock()
+        step = int(round((self.clock() - self.started) * self.fps))
+        k = np.minimum(np.arange(step, step + self.chunk_size), len(self.actions) - 1)
+        return self.actions[k].copy()
+
+
 def model_dir(model, revision=None):
     """Local checkpoint directory: `model` itself or its Hub download."""
     if Path(model).is_dir():

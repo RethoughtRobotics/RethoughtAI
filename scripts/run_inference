@@ -9,6 +9,8 @@
 #   --adapter D  VITA LoRA adapter directory (inference.lora), on the checkpoint's flow net
 #   --alpha A    with --adapter: its weight, 0 the base exactly (default 1)
 #   --episode N  sim: shadow rollout of recorded episode N (default 4); refused with live cameras
+#   --replay BAG two-arm (*SweepTrash*): serve this kinesthetic recording in place of the network, as the
+#                checkpoint runs (inference serve --replay); scripts/start once the arms are at its start
 #   --config F   RethoughtAI config (default: configs/baxter.yaml; *SweepTrash*: baxter_bimanual.yaml)
 #   --device D   torch device (default: cuda)
 #   --list       list the downloaded checkpoints
@@ -35,12 +37,13 @@ set -eo pipefail
 cd "$(dirname "$0")/.."
 
 NAME="" STEP="" EPISODE="" CONFIG=configs/baxter.yaml DEVICE=cuda RESOLVE="" LIST="" CONFIG_GIVEN=""
-MODEL="" REVISION="" ADAPTER="" ALPHA=""
+MODEL="" REVISION="" ADAPTER="" ALPHA="" REPLAY=""
 while (( $# )); do
     case "$1" in
         --model) MODEL="$2"; shift ;;
         --revision) REVISION="$2"; shift ;;
         --adapter) ADAPTER="$(realpath "$2")"; shift ;;
+        --replay) REPLAY="$(realpath "$2")"; shift ;;
         --alpha) ALPHA="$2"; shift ;;
         --resolve) RESOLVE=1 ;;
         --list) LIST=1 ;;
@@ -134,7 +137,7 @@ for topic in $(python3 -c "import yaml,sys; print(*(c['topic'] for c in yaml.saf
     [[ "$(timeout 5 ros2 topic info "$topic" 2>/dev/null)" =~ Publisher\ count:\ [1-9] ]] && live+=("$topic")
 done
 LAUNCH="ros2 launch launch/policy.launch.py model:=$MODEL config:=$CONFIG device:=$DEVICE"
-LAUNCH+="${REVISION:+ revision:=$REVISION}${ADAPTER:+ adapter:=$ADAPTER}${ALPHA:+ alpha:=$ALPHA}"
+LAUNCH+="${REVISION:+ revision:=$REVISION}${ADAPTER:+ adapter:=$ADAPTER}${ALPHA:+ alpha:=$ALPHA}${REPLAY:+ replay:=$REPLAY}"
 if (( ${#live[@]} )); then
     [[ -z "$EPISODE" ]] || { echo "--episode $EPISODE: the robot's cameras are up (${live[*]}), and a shadow rollout would mix their frames with the bag's" >&2; exit 2; }
     echo "Live: the robot's cameras (${live[*]})"

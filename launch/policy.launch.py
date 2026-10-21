@@ -3,9 +3,12 @@
   ros2 launch launch/policy.launch.py model:=models/act_CupToContainer/step-100000
   ros2 launch launch/policy.launch.py model:=... episode:=recorder/data/CupToContainer/episode_004
   ros2 launch launch/policy.launch.py model:=models/vita_X/step-30000 adapter:=adapters/t1 alpha:=0.5
+  ros2 launch launch/policy.launch.py model:=... config:=configs/baxter_bimanual.yaml replay:=data/bags/<demo>
 
 With `episode` (a shadow rollout), the policy watches that episode's recorded cameras: the arm
 first moves to the episode's start pose, then the bag plays from its first step.
+With `replay` (a two-arm config), a kinesthetic recording is served in the network's place, as
+`model` would run (inference serve --replay).
 Bring the arm and teleop up first (BaxterSDK: scripts/run_sim_teleop.sh --left --policy).
 """
 
@@ -19,18 +22,24 @@ from launch.substitutions import EnvironmentVariable, LaunchConfiguration
 
 
 def processes(context):
-    model, episode, config, device, revision, adapter, alpha = (
+    model, episode, config, device, revision, adapter, alpha, replay = (
         LaunchConfiguration(n).perform(context)
-        for n in ('model', 'episode', 'config', 'device', 'revision', 'adapter', 'alpha')
+        for n in ('model', 'episode', 'config', 'device', 'revision', 'adapter', 'alpha', 'replay')
     )
     rev = ['--revision', revision] if revision else []
     lora = (['--adapter', adapter] if adapter else []) + (['--alpha', alpha] if alpha else [])
     shadow = ['--start-at', episode, '--player', '/rosbag2_player'] if episode else []
+    recording = ['--replay', replay] if replay else []
     actions = [
         # Respawned if it dies (e.g. it exits on a lost GPU context, bimanual_policy_node.device_lost):
         # the runtime holds the arm and resumes on the new server's chunks.
         ExecuteProcess(
-            cmd=['uv', 'run', 'inference', 'serve', config, '--model', model, '--device', device, *rev, *lora],
+            cmd=[
+                *('uv', 'run', 'inference', 'serve', config, '--model', model, '--device', device),
+                *rev,
+                *lora,
+                *recording,
+            ],
             name='serve',
             output='screen',
             respawn=True,
@@ -57,6 +66,9 @@ def generate_launch_description():
         DeclareLaunchArgument('model', description='LeRobot checkpoint: Hub repo or local directory'),
         DeclareLaunchArgument('episode', default_value='', description='recorded episode to shadow (bag directory)'),
         DeclareLaunchArgument('config', default_value='configs/baxter.yaml'),
+        DeclareLaunchArgument(
+            'replay', default_value='', description='two-arm kinesthetic recording served in place of the network'
+        ),
         DeclareLaunchArgument('device', default_value='cuda'),
         DeclareLaunchArgument('revision', default_value='', description='Hub branch/tag/commit of the model'),
         DeclareLaunchArgument('adapter', default_value='', description='VITA LoRA adapter directory (inference.lora)'),
