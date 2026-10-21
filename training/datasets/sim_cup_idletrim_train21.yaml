@@ -1,0 +1,12 @@
+---
+# BlueCupRedContainer_sim_idletrim_train21
+#   train-only copy of BlueCupRedContainer_sim_idletrim: the sim cup demonstrations exported with
+#   measured TCP labels, no lead, each episode starting just before its TCP first moves 1 mm or 1 deg
+#   (adapt lerobot --trim-idle 0.001 1). The untrimmed episodes wait 1.3 s at home, longer than a
+#   32-step plan, and every base trained on them stalled there.
+# Keeps episodes 0 to 20 of its 60, renumbered from 0 (sim plan: the base).
+repo_id: andnetdeboer/BlueCupRedContainer_sim_idletrim_train21
+short_name: BlueCupRedContainer_sim_idletrim_train21
+episodes:  # all of the copy
+# Validation loss on every evaluation episode (lerobot-train dataset.eval_repo_id):
+eval_repo_id: andnetdeboer/BlueCupRedContainer_sim_idletrim_heldout5
