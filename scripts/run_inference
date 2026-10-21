@@ -124,7 +124,10 @@ EPISODE_DIR="recorder/data/CupToContainer/episode_$(printf %03d "$((10#${EPISODE
 
 source launch/env.sh
 # Reject unsupported layouts before stopping an existing run or touching ROS services.
-.venv/bin/inference check "$MODEL" --config "$CONFIG" ${REVISION:+--revision "$REVISION"}
+check=$(.venv/bin/inference check "$MODEL" --config "$CONFIG" ${REVISION:+--revision "$REVISION"} 2>&1) && rc=0 || rc=$?
+printf '%s\n' "$check"
+# 134: an abort at interpreter teardown (rclpy and zenoh) after the check passed, not a failed check
+((rc == 0)) || [[ $rc == 134 && "$check" == *Compatible:* ]] || exit "$rc"
 SESSION=rai_inference
 
 # One run at a time: two runtimes would fight over the arm.
