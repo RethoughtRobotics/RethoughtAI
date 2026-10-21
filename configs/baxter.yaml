@@ -222,16 +222,10 @@ inference:
     multi_task_dit_absolute:
       # Kinesthetic cup DiTs: raw 15-D state, 8-D absolute pose + gripper. 10 DDPM steps (~130 ms on
       # the laptop GPU; its 100 gave the same offline error at 12x the time). Replan every 16 frames
-      # (0.64 s), each plan crossfaded in over 10 steps. The best rollout so far
-      # (20261015_001349) ran exactly this. Worse on the robot: a run-time `lead`, `gripper_latch`, an
-      # ensemble every 4, and a crossfade every 4 or 8 (they stalled or crept at the cup).
-      # gripper_lead: the gripper labels are its measured opening at the same step (both kin_pose and
-      # lead640ms), so the plan's first gripper value is where it already is; send the value planned
-      # 0.4 s later, as the gripper needs to start closing. The arm's pose is not led.
-      # lead: the arm trails its target ~0.66 s, cutting forward-then-down approaches short (finger on
-      # the cup rim, rollout 20261015_005052); 0.3 s is the one change from rollout 20261015_001349.
+      # (0.64 s), each plan crossfaded in over 10 steps. No lead: the teleop's plan input plays the plan
+      # on its own timing (BaxterSDK --input plan), so goals are not sent ahead of when they are due.
       every: 16
-      merge: {type: ramp, ramp: 10, gripper_lead: 0.4, lead: 0.3}
+      merge: {type: ramp, ramp: 10}
       overrides: {num_inference_steps: 10, n_action_steps: 31}  # 31: its plan starts at the older of its 2 observations
     groot:
       # GR00T N1.7 3B: absolute goals in chunks of 16 (no RTC: it continues TCP-relative chunks).
