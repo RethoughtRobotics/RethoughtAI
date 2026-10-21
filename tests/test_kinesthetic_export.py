@@ -4,8 +4,8 @@ from baxter_core_msgs.msg import EndEffectorState
 from geometry_msgs.msg import PoseStamped
 from rclpy.serialization import serialize_message
 
-from adapter.labels import chunk_actions, load_measured
-from adapter.lerobot_export import features
+from adapter.labels import Episode, chunk_actions, load_measured
+from adapter.lerobot_export import features, idle_start
 
 SHAPES = {'left': (400, 640, 3)}
 
@@ -90,3 +90,18 @@ def test_measured_labels_are_interpolated_to_each_steps_time(tmp_path):
     del writer
     left = load_measured(tmp_path / 'ep', ['left'], fps=25)['left']
     assert np.allclose(np.diff(left.tcp_p[:, 0]), 0.04, atol=1e-6)  # evenly 40 mm per 40 ms step
+
+
+def _still_then_moving(still, n=20, step=0.01):
+    p = np.zeros((n, 3))
+    p[still:, 0] = step * np.arange(1, n - still + 1)
+    q = np.tile([0.0, 0.0, 0.0, 1.0], (n, 1))
+    return Episode(p, q, p.copy(), q.copy(), np.zeros(n), np.arange(n) * 40_000_000, 25.0)
+
+
+def test_idle_start_keeps_the_last_still_step_of_the_first_arm_to_move():
+    # left still for steps 0 to 7, right for 0 to 4: the episode starts at step 4
+    eps = {'left': _still_then_moving(8), 'right': _still_then_moving(5)}
+    assert idle_start(eps, 0.001, np.radians(1.0)) == 4
+    assert idle_start({'left': _still_then_moving(0)}, 0.001, np.radians(1.0)) == 0
+    assert idle_start({'left': _still_then_moving(20)}, 0.001, np.radians(1.0)) == 0  # never moves: kept whole
