@@ -18,6 +18,11 @@ def gate(text):
     return None if text == 'all' else float(text)
 
 
+def pool_of(text, meta):
+    """--pool: episodes, or all of the cache's."""
+    return list(meta['episodes']) if text == 'all' else episodes(text)
+
+
 def default_device():
     import torch
 
@@ -53,16 +58,60 @@ def cache(model, repo, revision, out, eps, device, batch_size, workers):
 
 
 @main.command()
+@click.option('--model', required=True, help='Base checkpoint directory (pretrained_model).')
+@click.option('--out', required=True, help='Cache directory.')
+@click.option('--device', default=None)
+@click.option('--batch-size', default=32, show_default=True)
+@click.option('--lead', type=int, default=None, help="Steps the labels lead the TCP (default: the checkpoint's).")
+@click.option('--arm', default='left', show_default=True)
+@click.option('--rows', multiple=True, help="The evaluator's attempt rows (its --out): their bags, after BAGS.")
+@click.option('--failed', is_flag=True, help='With --rows, only the failed attempts.')
+@click.option('--attempts', type=int, default=None, help='With --rows, the first N attempts by seed.')
+@click.argument('bags', nargs=-1)
+def onpolicy(model, out, device, batch_size, lead, arm, rows, failed, attempts, bags):
+    """Cache the base over evaluator bags (with their expert.npz), the planner's chunks as the targets."""
+    from . import onpolicy as onpolicy_mod
+
+    bags = list(bags) + (onpolicy_mod.bags_of(rows, failed, attempts) if rows else [])
+    if not bags:
+        raise click.UsageError('no bag: give BAGS or --rows')
+    path = onpolicy_mod.build(model, bags, out, device or default_device(), batch_size, lead, arm)
+    click.echo(path.with_name('cache.json').read_text())
+
+
+@main.command()
+@click.option('--cache', 'cache_path', required=True, help='On-policy cache (ttt onpolicy).')
+@click.option('--root', required=True, help='Dataset directory to write.')
+@click.option('--repo-id', required=True)
+@click.option('--task', required=True, help='Language instruction stored with every frame.')
+@click.option('--pool', default='all', show_default=True, help='Seeds, e.g. 1000-1019, or all.')
+@click.option('--gate', 'gate_', default='3', show_default=True, help='cm, or all.')
+def export(cache_path, root, repo_id, task, pool, gate_):
+    """The corrected frames of an on-policy cache as a LeRobot dataset (plan S4)."""
+    from . import cache as cache_mod
+    from . import onpolicy as onpolicy_mod
+
+    _, meta = cache_mod.load(cache_path)
+    n = onpolicy_mod.export(cache_path, root, repo_id, task, gate(gate_), pool_of(pool, meta))
+    click.echo(f'{n} episodes in {root}')
+
+
+@main.command()
 @click.option('--cache', 'cache_path', required=True)
-@click.option('--pool', default=','.join(map(str, M0_POOL)), show_default=True)
+@click.option(
+    '--pool', default=None, help='Episodes, or all (default: 21,25,29,33; all for an on-policy cache).'
+)
 @click.option('--gate', 'gate_', default='3', show_default=True, help='cm, or all.')
 def corrections(cache_path, pool, gate_):
-    """Count the frames the offline corrector takes over (the cost column)."""
+    """Count the frames the corrector takes over (the cost column)."""
     from . import cache as cache_mod
     from . import corrector
 
     tensors, meta = cache_mod.load(cache_path)
-    click.echo(json.dumps(corrector.summary(tensors, episodes(pool), gate(gate_), meta['n_action_steps']), indent=2))
+    if pool is None:
+        pool = 'all' if meta.get('source') == 'on-policy' else ','.join(map(str, M0_POOL))
+    summary = corrector.summary(tensors, pool_of(pool, meta), gate(gate_), meta['n_action_steps'])
+    click.echo(json.dumps(summary, indent=2))
 
 
 @main.command()
@@ -75,8 +124,11 @@ def corrections(cache_path, pool, gate_):
     show_default=True,
     type=click.Choice(['lora', 'flow', 'flow_last', 'all', 'lora_obs', 'lora_dec', 'lora_all']),
 )
-@click.option('--pool', default=','.join(map(str, M0_POOL)), show_default=True)
+@click.option(
+    '--pool', default=None, help='Episodes to correct, or all (default: 21,25,29,33; all with --corrections).'
+)
 @click.option('--gate', 'gate_', default='3', show_default=True, help='cm, or all.')
+@click.option('--corrections', 'corrections_', default=None, help='On-policy cache (ttt onpolicy) of the corrections.')
 @click.option('--anchor', default=span(BASE), show_default=True)
 @click.option('--lam', default=0.5, show_default=True, help='Anchor weight lambda.')
 @click.option('--steps', default=200, show_default=True)
@@ -96,6 +148,7 @@ def update(
     trainable,
     pool,
     gate_,
+    corrections_,
     anchor,
     lam,
     steps,
@@ -112,6 +165,8 @@ def update(
     """Update the base on corrected frames, with the anchor; save an adapter or a checkpoint."""
     from . import update as update_mod
 
+    if pool is None:
+        pool = 'all' if corrections_ else ','.join(map(str, M0_POOL))
     s = update_mod.Settings(
         trainable=trainable,
         rank=rank,
@@ -124,8 +179,9 @@ def update(
         beta=beta,
         objective=objective,
         gate=gate(gate_),
-        pool=tuple(episodes(pool)),
+        pool=None if pool == 'all' else tuple(episodes(pool)),
         anchor=tuple(episodes(anchor)),
+        corrections=corrections_,
     )
     record = update_mod.run(model, cache_path, out, s, device or default_device(), workers=workers)
     click.echo(

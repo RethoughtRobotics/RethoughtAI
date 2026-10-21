@@ -20,6 +20,10 @@ Trainable sets (TRAINABLE), named after the plans that use them:
 LoRA sets save an adapter (inference.lora, loadable by the runtime's --adapter); the others a full
 checkpoint directory (the runtime's --model). Every output gets an update.json: settings, corrected
 frames, wall time of the update and the device it ran on.
+
+Corrections come from the cache's own `pool` episodes (the demonstration as the corrector), or with
+`corrections` from an on-policy cache (ttt.onpolicy: the base's attempts, the planner as the corrector),
+its `pool` attempts (all if None) gated the same way; the anchor is always the cache's.
 """
 
 import copy
@@ -68,8 +72,9 @@ class Settings:
     beta: float | None = None
     objective: str = 'auto'
     gate: float | None = 3.0
-    pool: tuple = M0_POOL
+    pool: tuple | None = M0_POOL
     anchor: tuple = tuple(BASE)
+    corrections: str | None = None
     log_every: int = 10
 
     def resolved_objective(self):
@@ -208,10 +213,11 @@ def run(model, cache_path, out, settings=None, device='cpu', frames=None, worker
     policy.eval()  # dropout off, the inference crop
 
     steps = meta['n_action_steps']
-    c_rows = torch.nonzero(corrector.corrected(tensors, s.pool, s.gate, steps)).flatten()
+    c_tensors, pool = corrections(s, tensors, meta)
+    c_rows = torch.nonzero(corrector.corrected(c_tensors, pool, s.gate, steps)).flatten()
     d_rows = torch.nonzero(corrector.in_episodes(tensors, s.anchor)).flatten()
     if len(c_rows) == 0:
-        raise ValueError(f'no corrected frame in episodes {list(s.pool)} at gate {s.gate} cm')
+        raise ValueError(f'no corrected frame in episodes {list(pool)} at gate {s.gate} cm')
     if s.lam > 0 and len(d_rows) == 0:
         raise ValueError(f'no anchor frame in episodes {list(s.anchor)}')
     if s.trainable == 'all':
@@ -223,7 +229,7 @@ def run(model, cache_path, out, settings=None, device='cpu', frames=None, worker
         keys = list(zip(tensors['episode'].tolist(), tensors['frame'].tolist(), strict=True))
         sets = [Frames(lp, frames, positions, [keys[i] for i in r], device, workers) for r in (c_rows, d_rows)]
     else:
-        sets = [Cached(lp, tensors, r, device) for r in (c_rows, d_rows)]
+        sets = [Cached(lp, c_tensors, c_rows, device), Cached(lp, tensors, d_rows, device)]
     corrected_set, anchor_set = sets
 
     g = torch.Generator().manual_seed(s.seed)
@@ -269,12 +275,13 @@ def run(model, cache_path, out, settings=None, device='cpu', frames=None, worker
     else:
         save_checkpoint(policy, model, out)
     record = {
-        'settings': {**dataclasses.asdict(s), 'objective': objective},
+        'settings': {**dataclasses.asdict(s), 'objective': objective, 'pool': list(pool)},
         'model': str(model),
         'cache': str(Path(cache_path).resolve()),
         'output': 'adapter' if adapter is not None else 'checkpoint',
+        'corrections': str(Path(s.corrections).resolve()) if s.corrections else None,
         'corrected_frames': len(c_rows),
-        'corrected_per_episode': corrector.summary(tensors, s.pool, s.gate, steps)['per_episode'],
+        'corrected_per_episode': corrector.summary(c_tensors, pool, s.gate, steps)['per_episode'],
         'anchor_frames': len(d_rows) if use_anchor else 0,
         'trainable_parameters': sum(p.numel() for p in params),
         'update_s': round(update_s, 3),
@@ -284,6 +291,24 @@ def run(model, cache_path, out, settings=None, device='cpu', frames=None, worker
     }
     (out / 'update.json').write_text(json.dumps(record, indent=2) + '\n')
     return record
+
+
+def corrections(s, tensors, meta):
+    """(tensors, pool) the corrected frames are gated from: the cache's own, or the on-policy cache
+    `s.corrections`, which must come from the same base."""
+    if s.corrections is None:
+        if s.pool is None:
+            raise ValueError('pool: the episodes to correct (all only with an on-policy corrections cache)')
+        return tensors, tuple(s.pool)
+    if s.trainable == 'all':
+        raise ValueError('on-policy corrections have no dataset frames; trainable all needs them')
+    c_tensors, c_meta = cache_mod.load(s.corrections)
+    if c_meta.get('source') != 'on-policy':
+        raise ValueError(f'{s.corrections}: not an on-policy cache (ttt onpolicy)')
+    for k in ('model', 'horizon', 'n_action_steps'):
+        if c_meta[k] != meta[k]:
+            raise ValueError(f"{s.corrections}: {k} {c_meta[k]}, the cache's {meta[k]}")
+    return c_tensors, tuple(c_meta['episodes'] if s.pool is None else s.pool)
 
 
 def preference(vita, ref, pairs, batch, t, objective, beta):

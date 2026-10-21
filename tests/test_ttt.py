@@ -1,6 +1,6 @@
 """Test-time training over cached latents (ttt) on a small randomly initialised VITA: the cache, the
-corrector's gate, the update and its trainable sets, the open-loop evaluation, and adapters and
-checkpoints loading through the runtime's policy."""
+corrector's gate, the update and its trainable sets, the open-loop evaluation, adapters and
+checkpoints loading through the runtime's policy, and on-policy corrections from evaluator bags."""
 
 import json
 
@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from inference import lora
-from ttt import cache, corrector, evaluate, stats, update
+from ttt import cache, corrector, evaluate, onpolicy, stats, update
 
 DIM, H, STEPS = 64, 32, 16
 CAMERAS = {'observation.images.left': (3, 40, 48), 'observation.images.third_eye': (3, 48, 48)}
@@ -282,3 +282,214 @@ def test_paired_bootstrap():
     assert d['excludes_zero'] and d['lo'] <= d['value'] <= d['hi'] and d['units'] == 18
     assert not stats.paired(same, base, n=2000)['excludes_zero']
     assert stats.paired({1: 1.0, 2: None}, {1: 0.0, 2: 0.0}, n=100)['units'] == 1
+
+
+# On-policy corrections: evaluator bags of two attempts, cameras every 40 ms and the arm every 10 ms,
+# with an expert.npz of FRAMES frames 5 ms after each camera message; frame NO_PLAN without a plan
+T0, FRAMES, LEAD, NO_PLAN = 1_000_000_000, 10, 2, 3
+SEEDS = (1000, 1001)
+IMAGES = {'left': (30, 40), 'third_eye': (48, 48)}  # the left camera letterboxed into the policy's 40 x 48
+
+
+def expert_frame(seed, i):
+    """What frame i of attempt `seed` sees: (images, joints, TCP, gripper), the camera and joint
+    messages of step 4 i."""
+    images = {
+        key: np.full((*shape, 3), (4 * i + 50 * k + seed) % 256, np.uint8)
+        for k, (key, shape) in enumerate(IMAGES.items())
+    }
+    joints = 0.01 * 4 * i + 0.1 * np.arange(7)
+    tcp = (np.array([0.5 + 0.01 * i, 0.2, 0.1 + 0.001 * (seed % 7)]), np.array([0.0, 1.0, 0.0, 0.0]))
+    return images, joints, tcp, i / FRAMES
+
+
+def evaluator_bag(path, seed):
+    """An evaluator bag (cameras, joints, gripper) and its expert.npz: the planner's chunks a straight
+    path from the TCP, its gripper closing."""
+    import rosbag2_py
+    from baxter_core_msgs.msg import EndEffectorState
+    from rclpy.serialization import serialize_message
+    from sensor_msgs.msg import Image, JointState
+
+    from adapter.lerobot_export import JOINTS
+
+    topics = {
+        '/cameras/left_hand_camera/image': 'sensor_msgs/msg/Image',
+        '/cameras/third_eye/color/image_raw': 'sensor_msgs/msg/Image',
+        '/robot/joint_states': 'sensor_msgs/msg/JointState',
+        '/robot/end_effector/left_gripper/state': 'baxter_core_msgs/msg/EndEffectorState',
+    }
+    writer = rosbag2_py.SequentialWriter()
+    writer.open(rosbag2_py.StorageOptions(uri=str(path), storage_id='mcap'), rosbag2_py.ConverterOptions('', ''))
+    for i, (topic, kind) in enumerate(topics.items()):
+        writer.create_topic(rosbag2_py.TopicMetadata(id=i, name=topic, type=kind, serialization_format='cdr'))
+    for k in range(4 * FRAMES):
+        t = T0 + k * 10_000_000
+        images, joints, _, gripper = expert_frame(seed, k // 4)
+        if k % 4 == 0:
+            for topic, key in zip(list(topics)[:2], IMAGES, strict=True):
+                h, w = IMAGES[key]
+                msg = Image(height=h, width=w, encoding='rgb8', step=3 * w, data=images[key].tobytes())
+                writer.write(topic, serialize_message(msg), t)
+        msg = JointState(name=[f'left_{j}' for j in JOINTS], position=list(joints + 0.001 * (k % 4)))
+        writer.write('/robot/joint_states', serialize_message(msg), t)
+        writer.write('/robot/end_effector/left_gripper/state', serialize_message(EndEffectorState(position=50.0)), t)
+    del writer
+
+    frames = [expert_frame(seed, i) for i in range(FRAMES)]
+    tcp = np.array([np.r_[f[2][0], f[2][1]] for f in frames])
+    steps = np.arange(H + LEAD)
+    chunk = np.zeros((FRAMES, H + LEAD, 8))
+    chunk[:, :, :3] = tcp[:, None, :3] + 0.002 * steps[:, None] * np.array([1.0, -1.0, 0.0])
+    chunk[:, :, 3:7] = tcp[:, None, 3:7]
+    chunk[:, :, 7] = np.clip(steps / H, 0, 0.87)
+    valid = np.arange(FRAMES) != NO_PLAN
+    chunk[~valid] = np.nan
+    np.savez_compressed(
+        path / onpolicy.EXPERT,
+        meta=json.dumps({'fps': 25.0, 'horizon': H + LEAD, 'arm': 'left', 'task': 'cup'}),
+        t=T0 + 5_000_000 + 40_000_000 * np.arange(FRAMES, dtype=np.int64),
+        tcp=tcp,
+        gripper=np.array([f[3] for f in frames]),
+        cup=np.zeros((FRAMES, 7)),
+        container=np.zeros((FRAMES, 7)),
+        chunk=chunk,
+        valid=valid,
+        home=tcp[0],
+    )
+    return path
+
+
+@pytest.fixture(scope='module')
+def attempts(model, tmp_path_factory):
+    root = tmp_path_factory.mktemp('bags')
+    bags = [evaluator_bag(root / f'seed_{s}', s) for s in SEEDS]
+    out = tmp_path_factory.mktemp('onpolicy')
+    onpolicy.build(model, bags, out, batch_size=4, lead=LEAD)
+    return bags, out
+
+
+def test_planner_labels_lead_the_pose_not_the_gripper():
+    chunk = np.arange(2 * 6 * 8, dtype=float).reshape(2, 6, 8)
+    labels = onpolicy.relabel(chunk, 4, 2)
+    assert np.array_equal(labels[..., :7], chunk[:, 2:6, :7]) and np.array_equal(labels[..., 7], chunk[:, :4, 7])
+    with pytest.raises(ValueError, match='--horizon'):
+        onpolicy.relabel(chunk, 5, 2)
+    assert onpolicy.seed('bags/seed_1004') == 1004 and onpolicy.seed('bags/attempt') is None
+
+
+def test_onpolicy_cache_from_evaluator_bags(model, attempts):
+    bags, out = attempts
+    tensors, meta = cache.load(out)
+    planned = [i for i in range(FRAMES) if i != NO_PLAN]
+    n = len(SEEDS) * len(planned)
+    assert {k: tuple(v.shape) for k, v in tensors.items()} == {
+        'feat': (n, 2 * 512 + 15),
+        'z0': (n, DIM),
+        'z_pi': (n, DIM),
+        'z_demo': (n, DIM),
+        'chunk_pi': (n, H, 8),
+        'chunk_demo': (n, H, 8),
+        'pad': (n, H),
+        'state': (n, 15),
+        'episode': (n,),
+        'frame': (n,),
+    }
+    assert tensors['episode'].tolist() == [s for s in SEEDS for _ in planned]
+    assert tensors['frame'].tolist() == planned * len(SEEDS) and not tensors['pad'].any()
+    assert meta['source'] == 'on-policy' and meta['episodes'] == list(SEEDS) and meta['frames_without_plan'] == 2
+    assert meta['lead_steps'] == LEAD and meta['cameras'] == {
+        '/cameras/left_hand_camera/image': 'left',
+        '/cameras/third_eye/color/image_raw': 'third_eye',
+    }
+    assert meta['model'] == str(model.resolve())
+
+    e = onpolicy.load_expert(bags[1])
+    row = len(planned) + 4  # seed 1001, frame 5
+    i = planned[4]
+    assert torch.allclose(tensors['chunk_demo'][row], torch.as_tensor(onpolicy.relabel(e['chunk'][i], H, LEAD)).float())
+    lp = cache.load_policy(model)
+    images, joints, tcp, gripper = expert_frame(SEEDS[1], i)
+    item = onpolicy.item(lp, images, joints, tcp, gripper, onpolicy.relabel(e['chunk'][i], H, LEAD), SEEDS[1], i)
+    expected = cache.rows(lp, torch.utils.data.default_collate([item]))
+    for k in ('chunk_pi', 'state'):
+        assert torch.allclose(tensors[k][row].float(), expected[k][0].float(), atol=1e-4)
+    assert torch.allclose(tensors['z0'][row].float(), expected['z0'][0].float(), atol=2e-2)
+
+
+def test_update_on_onpolicy_corrections(model, built, attempts, tmp_path):
+    _, onp = attempts
+    record = update.run(model, built, tmp_path / 'a', settings(corrections=str(onp), pool=None, steps=5))
+    assert record['corrected_frames'] == len(SEEDS) * (FRAMES - 1) and record['settings']['pool'] == list(SEEDS)
+    assert record['anchor_frames'] == EPISODES[0] + EPISODES[1]
+    record = update.run(model, built, tmp_path / 'b', settings(corrections=str(onp), pool=(1001,), steps=5))
+    assert record['corrected_per_episode'] == {1001: FRAMES - 1}
+    with pytest.raises(ValueError, match='not an on-policy cache'):
+        update.run(model, built, tmp_path / 'c', settings(corrections=str(built)))
+    with pytest.raises(ValueError, match='trainable all'):
+        update.run(model, built, tmp_path / 'd', settings(corrections=str(onp), trainable='all'))
+
+
+def test_corrected_frames_export_as_a_lerobot_dataset(built, attempts, tmp_path):
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    _, onp = attempts
+    tensors, meta = cache.load(onp)
+    error = corrector.path_error(tensors['chunk_pi'], tensors['chunk_demo'], tensors['pad'], STEPS)
+    gate = float(error.median()) * 100  # about half the frames
+    mask = corrector.corrected(tensors, [SEEDS[0]], gate, STEPS)
+    root = tmp_path / 'ds'
+    n = onpolicy.export(
+        onp, root, 'local/corrections', 'Pick up the cup', gate=gate, pool=[SEEDS[0]], log=lambda _: None
+    )
+    assert n == int(mask.sum()) > 0
+    ds = LeRobotDataset('local/corrections', root=root)
+    cols = ds.hf_dataset.select_columns(['episode_index', 'frame_index', 'action', 'observation.state'])
+    assert ds.meta.total_episodes == n and len(cols) == n * H
+    sources = json.loads((root / onpolicy.SOURCES).read_text())
+    assert [e['frame'] for e in sources['episodes']] == tensors['frame'][mask].tolist()
+    assert all(e['seed'] == SEEDS[0] and e['path_error_cm'] > gate for e in sources['episodes'])
+    actions = torch.stack([torch.as_tensor(a) for a in cols['action']]).reshape(n, H, 8)
+    states = torch.stack([torch.as_tensor(a) for a in cols['observation.state']]).reshape(n, H, 15)
+    assert torch.allclose(actions, tensors['chunk_demo'][mask])
+    assert torch.allclose(states[:, 0], tensors['state'][mask]) and (states == states[:, :1]).all()
+    with pytest.raises(ValueError, match='not an on-policy cache'):
+        onpolicy.export(built, tmp_path / 'x', 'local/x', 'Pick up the cup')
+
+
+def test_bags_of_the_evaluator_rows(tmp_path):
+    rows = tmp_path / 'rows.jsonl'
+    (tmp_path / 'bags' / 'seed_1003').mkdir(parents=True)
+    lines = [
+        {'seed': 1003, 'success': False, 'bag': 'bags/seed_1003'},  # relative to the rows file
+        {'seed': 1001, 'success': True, 'bag': str(tmp_path / 'bags' / 'seed_1001')},
+        {'seed': 1000, 'success': False, 'bag': str(tmp_path / 'bags' / 'seed_1000')},
+    ]
+    rows.write_text(''.join(json.dumps(r) + '\n' for r in lines) + '\n')
+    assert onpolicy.bags_of(rows) == [tmp_path / 'bags' / f'seed_{s}' for s in (1000, 1001, 1003)]
+    assert onpolicy.bags_of([rows], failed=True) == [tmp_path / 'bags' / f'seed_{s}' for s in (1000, 1003)]
+    assert onpolicy.bags_of(rows, failed=True, attempts=1) == [tmp_path / 'bags' / 'seed_1000']
+    with pytest.raises(ValueError, match='3 attempts'):
+        onpolicy.bags_of(rows, failed=True, attempts=3)
+    rows.write_text(json.dumps({'seed': 1004, 'success': False, 'bag': None}))
+    with pytest.raises(ValueError, match='no bag'):
+        onpolicy.bags_of(rows)
+
+
+def test_onpolicy_cli_from_the_evaluator_rows(model, attempts, tmp_path):
+    from click.testing import CliRunner
+
+    from ttt.cli import main
+
+    bags, _ = attempts
+    rows = tmp_path / 'rows.jsonl'
+    lines = [{'seed': s, 'success': False, 'bag': str(b)} for s, b in zip(SEEDS, bags, strict=True)]
+    rows.write_text(''.join(json.dumps(r) + '\n' for r in lines))
+    out = tmp_path / 'onp'
+    args = ['onpolicy', '--model', str(model), '--out', str(out), '--device', 'cpu', '--lead', str(LEAD)]
+    result = CliRunner().invoke(main, [*args, '--rows', str(rows), '--failed', '--attempts', '1'])
+    assert result.exit_code == 0, result.output
+    assert cache.load(out)[1]['episodes'] == [SEEDS[0]]
+    result = CliRunner().invoke(main, ['corrections', '--cache', str(out), '--gate', 'all'])
+    assert result.exit_code == 0 and json.loads(result.output)['per_episode'] == {str(SEEDS[0]): FRAMES - 1}
+    assert CliRunner().invoke(main, args).exit_code != 0
