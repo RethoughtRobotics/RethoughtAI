@@ -5,7 +5,7 @@ from geometry_msgs.msg import PoseStamped
 from rclpy.serialization import serialize_message
 
 from adapter.labels import Episode, chunk_actions, load_measured
-from adapter.lerobot_export import features, idle_start
+from adapter.lerobot_export import StillRuns, features, idle_start
 
 SHAPES = {'left': (400, 640, 3)}
 
@@ -105,3 +105,14 @@ def test_idle_start_keeps_the_last_still_step_of_the_first_arm_to_move():
     assert idle_start(eps, 0.001, np.radians(1.0)) == 4
     assert idle_start({'left': _still_then_moving(0)}, 0.001, np.radians(1.0)) == 0
     assert idle_start({'left': _still_then_moving(20)}, 0.001, np.radians(1.0)) == 0  # never moves: kept whole
+
+
+def test_a_still_stretch_keeps_its_first_frame_and_anything_moving():
+    still = StillRuns(0.001, np.radians(1.0))
+    q = [[0.0, 0.0, 0.0, 1.0]]
+    keep = [still.keep([[0.0, 0, 0]], q, [0.0])]  # starts a stretch
+    keep += [still.keep([[0.0005 * i, 0, 0]], q, [0.0]) for i in (1, 2)]  # within 1 mm of its start
+    keep += [still.keep([[0.0015, 0, 0]], q, [0.0])]  # out: a new stretch starts here
+    keep += [still.keep([[0.0015, 0, 0]], q, [0.005])]  # gripper within 0.01: still
+    keep += [still.keep([[0.0015, 0, 0]], q, [0.02])]  # the gripper moving is not still
+    assert keep == [True, False, False, True, False, True]

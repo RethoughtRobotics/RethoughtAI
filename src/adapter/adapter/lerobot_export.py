@@ -72,6 +72,36 @@ def idle_start(eps, distance, angle):
     return max(min(onsets) - 1, 0) if onsets else 0  # an episode that never moves is kept whole
 
 
+class StillRuns:
+    """Keeps only the first frame of each still stretch: every position (TCPs, goals) within `distance`
+    (m), every orientation within `angle` (rad) and every gripper value (trigger, measured opening)
+    within GRIP of where the stretch began. A scripted demonstration holds still for fixed times (the
+    sim expert 1 s after closing the gripper, 0.8 s after opening it, 1.3 s at the start) that nothing
+    observable measures; a policy replanning there sees the same view and plans the same wait."""
+
+    GRIP = 0.01  # gripper 0 open .. 1 closed: about 0.4 mm of the stroke
+
+    def __init__(self, distance, angle):
+        self.distance, self.angle, self.anchor = float(distance), float(angle), None
+
+    def keep(self, positions, quaternions, grips):
+        """Whether the frame with these (lists of) values starts a stretch or moves out of one."""
+        from scipy.spatial.transform import Rotation
+
+        frame = (np.asarray(positions), np.asarray(quaternions), np.asarray(grips))
+        if self.anchor is not None:
+            p, q, g = self.anchor
+            turned = (Rotation.from_quat(frame[1]) * Rotation.from_quat(q).inv()).magnitude()
+            if (
+                np.linalg.norm(frame[0] - p, axis=-1).max() <= self.distance
+                and turned.max() <= self.angle
+                and np.abs(frame[2] - g).max() <= self.GRIP
+            ):
+                return False
+        self.anchor = frame
+        return True
+
+
 def features(cameras, arms, image_shapes, gripper=True):
     """One arm: state tcp.*, gripper, joints; action goal.*, gripper. Several: each name prefixed
     with its arm (left.tcp.x ...), arms in order. Without `gripper`, no gripper in either."""
@@ -171,6 +201,7 @@ def export(
     gripper=True,
     workers=1,
     trim_idle=None,
+    trim_still=None,
 ):
     """Write every episode_* of `session` (in order) as one LeRobot dataset at `root`.
 
@@ -178,7 +209,8 @@ def export(
     measured TCP of each of `arms` `lead` steps later (labels.load_measured), for kinesthetic
     demonstrations. `gripper`: False leaves the gripper out of state and action (tools held fixed).
     `trim_idle` (distance m, angle rad): each episode starts at its last step before any arm's TCP
-    moves that far from its first pose (idle_start); None keeps the wait.
+    moves that far from its first pose (idle_start); None keeps the wait. `trim_still` (distance m,
+    angle rad): every still stretch, the start's too, is cut to its first frame (StillRuns).
     Videos are encoded as frames arrive (streaming encoding), not from images written to disk after
     each episode. `workers` > 1 exports runs of consecutive episodes in parallel processes, each to
     its own dataset, then joins them in order (LeRobot's aggregate_datasets: videos and data files
@@ -203,6 +235,7 @@ def export(
         lead=lead,
         gripper=gripper,
         trim_idle=trim_idle,
+        trim_still=trim_still,
     )
     if workers == 1:
         summary = _export_episodes(episodes, root=root, log=log, **args)
@@ -244,6 +277,7 @@ def export(
                 **({'lead_steps': lead} if labels == 'measured' else {}),
                 'gripper': gripper,
                 **({'trim_idle': list(trim_idle)} if trim_idle else {}),
+                **({'trim_still': list(trim_still)} if trim_still else {}),
                 'episodes': summary,
             },
             indent=1,
@@ -252,7 +286,20 @@ def export(
 
 
 def _export_episodes(
-    episodes, repo_id, root, task, cameras, fps, robot_type, arms, labels, lead, gripper, log, trim_idle=None
+    episodes,
+    repo_id,
+    root,
+    task,
+    cameras,
+    fps,
+    robot_type,
+    arms,
+    labels,
+    lead,
+    gripper,
+    log,
+    trim_idle=None,
+    trim_still=None,
 ):
     """`episodes` as one LeRobot dataset at `root`; per episode, a summary of what was written."""
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -279,7 +326,8 @@ def _export_episodes(
         eps = load(path)
         idle = idle_start(eps, *trim_idle) if trim_idle else 0
         eps = {a: _drop_leading(e, idle) for a, e in eps.items()}
-        skip, stale, poses, n = 0, 0, None, 0
+        skip, stale, poses, n, k = 0, 0, None, 0, -1
+        still = StillRuns(*trim_still) if trim_still else None
         for frame in iter_frames(path, arms, cameras, eps[arms[0]].t, gripper):
             if frame is None:  # leading frames before every stream started
                 skip += 1
@@ -293,9 +341,15 @@ def _export_episodes(
                     goal_q[np.sum(goal_q * tcp_q, axis=1) < 0] *= -1  # goal in the TCP's hemisphere
                     poses[a] = (tcp_q, goal_q)
             images, joints, opening, age = frame
-            k = n
-            stale += age > MAX_IMAGE_AGE
+            k += 1  # the step of eps this frame is
             opening = np.atleast_1d(opening)
+            if still is not None and not still.keep(
+                [x for a in arms for x in (eps[a].tcp_p[k], eps[a].target_p[k])],
+                [x for a in arms for x in (poses[a][0][k], poses[a][1][k])],
+                [*opening, *(eps[a].trigger[k] for a in arms)],
+            ):
+                continue
+            stale += age > MAX_IMAGE_AGE
             grip_state = (lambda i: [opening[i]]) if gripper else (lambda i: [])
             grip_action = (lambda a: [eps[a].trigger[k]]) if gripper else (lambda a: [])
             row = {f'observation.images.{key}': img for key, img in images.items()}
@@ -316,6 +370,7 @@ def _export_episodes(
             'frames': n,
             'skipped_leading_frames': skip,
             'idle_start_frames': idle,
+            **({'still_frames_cut': k + 1 - n} if still is not None else {}),
             'stale_image_frames': int(stale),
         })
         log(

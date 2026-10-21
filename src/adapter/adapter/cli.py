@@ -93,9 +93,15 @@ def adapt(config, sessions, output, hub_repo):
     help='DISTANCE ANGLE (m, deg): start each episode just before its TCP first moves that far (the wait at the start)',
 )
 @click.option(
+    '--trim-still',
+    default=None,
+    type=(float, float),
+    help='DISTANCE ANGLE (m, deg): cut every still stretch (TCP, goal and gripper unchanged) to its first frame',
+)
+@click.option(
     '--workers', default=6, show_default=True, help='Episodes exported in parallel processes, then joined in order'
 )
-def lerobot(session, config, repo_id, task, output, arms, labels, lead, gripper, trim_idle, workers):
+def lerobot(session, config, repo_id, task, output, arms, labels, lead, gripper, trim_idle, trim_still, workers):
     """Convert a teleop session (every episode_*) to a LeRobot v3 dataset on labels.py's actions.
 
     \b
@@ -133,6 +139,7 @@ def lerobot(session, config, repo_id, task, output, arms, labels, lead, gripper,
         gripper=gripper,
         workers=workers,
         trim_idle=(trim_idle[0], math.radians(trim_idle[1])) if trim_idle else None,
+        trim_still=(trim_still[0], math.radians(trim_still[1])) if trim_still else None,
     )
     click.echo(f'Dataset written to {output}')
 
