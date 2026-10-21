@@ -56,10 +56,11 @@ inference:
       merge: {type: latest}
       overrides: {num_steps: 10}
     multi_task_dit_bimanual:
-      # SweepTrash DiTs: as the cup DiT's multi_task_dit_absolute, without a gripper. A _lead<N>ms
-      # dataset already leads its labels, so no run-time lead is added.
-      every: 16
-      merge: {type: ramp, ramp: 10}
+      # SweepTrash DiTs: as the cup DiT's multi_task_dit_absolute (a plan every 4 frames, temporally
+      # ensembled), without a gripper. A _lead<N>ms dataset already leads its labels, so no run-time
+      # lead is added.
+      every: 4
+      merge: {type: ensemble, coeff: -0.05}
       overrides: {num_inference_steps: 10, n_action_steps: 31}  # 31: its plan starts at the older of its 2 observations
       # inpaint: each chunk continues the one playing (inference/inpaint.py), for the teleop's plan input
-      inpaint: true
+      inpaint: false
