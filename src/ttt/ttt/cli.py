@@ -35,7 +35,7 @@ def span(r):
 
 @click.group()
 def main():
-    """Test-time training of a frozen VITA over cached latents."""
+    """Test-time training of a frozen VITA (over cached latents) or Multi-Task DiT (over cached conditioning)."""
 
 
 @main.command()
@@ -155,7 +155,13 @@ def corrections(cache_path, pool, gate_):
 )
 @click.option('--alpha', default=1.0, show_default=True)
 @click.option('--beta', default=None, type=float, help='Adds the preference loss with this beta.')
-@click.option('--objective', default='auto', show_default=True, type=click.Choice(['auto', 'flow', 'vita']))
+@click.option(
+    '--objective',
+    default='auto',
+    show_default=True,
+    type=click.Choice(['auto', 'flow', 'vita', 'dit']),
+    help="auto: flow or vita by the trainable set, dit on a Multi-Task DiT base (its denoiser's own loss).",
+)
 @click.option('--device', default=None)
 @click.option('--workers', default=4, show_default=True, help='Frame loaders (trainable all).')
 def update(

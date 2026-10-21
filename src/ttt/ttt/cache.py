@@ -10,6 +10,9 @@ encoder latent; `state`; `episode`, `frame`. Chunks are unnormalised, the datase
 Frames go through the policy as the runtime feeds them: the checkpoint's own normaliser, the
 cameras at their recorded size, resized by the policy (bilinear, no antialias, as training resized
 them) and centre cropped.
+
+A Multi-Task DiT base has no latents: its rows are ttt.dit's (the observation encoder's conditioning
+vector `cond`, the training-aligned target chunk, the base's seeded plan), and meta's `type` says so.
 """
 
 import json
@@ -84,18 +87,27 @@ def build(model, repo_id, revision, out, episodes=None, device='cpu', batch_size
     """Run the base `model` over the dataset's `episodes` (all if None) and write the cache to the
     directory `out`; `frames`, a dataset to read instead of the Hub's (tests). Returns its path."""
     start = time.time()
+    from . import dit
+
     lp = load_policy(model, device)
     cfg = lp.policy.config
-    ds = frames if frames is not None else dataset(repo_id, revision, episodes, cfg.horizon)
+    if dit.is_dit(lp.policy):
+        dit.check(lp.policy)
+        make_rows = dit.rows
+        ds = frames if frames is not None else dit.dataset(repo_id, revision, episodes, cfg)
+    else:
+        make_rows = rows
+        ds = frames if frames is not None else dataset(repo_id, revision, episodes, cfg.horizon)
     loaded = time.time()
     parts = []
     for batch in DataLoader(ds, batch_size=batch_size, num_workers=workers, shuffle=False):
-        parts.append({k: v.cpu() for k, v in rows(lp, batch).items()})
+        parts.append({k: v.cpu() for k, v in make_rows(lp, batch).items()})
     tensors = typed({k: torch.cat([p[k] for p in parts]) for k in parts[0]})
     done = time.time()
     n = len(tensors['episode'])
     meta = {
         'model': str(Path(model).resolve()) if Path(model).exists() else str(model),
+        'type': cfg.type,
         'repo_id': repo_id,
         'revision': revision,
         'fps': getattr(ds, 'fps', None),
@@ -113,10 +125,12 @@ def build(model, repo_id, revision, out, episodes=None, device='cpu', batch_size
 
 def typed(tensors):
     """The rows' tensors in the cache's dtypes."""
-    for k in LATENTS:
-        tensors[k] = tensors[k].half()
-    for k in ('chunk_pi', 'chunk_demo', 'state'):
-        tensors[k] = tensors[k].float()
+    for k in (*LATENTS, 'cond'):
+        if k in tensors:
+            tensors[k] = tensors[k].half()
+    for k in ('chunk_pi', 'chunk_demo', 'state', 'target'):
+        if k in tensors:
+            tensors[k] = tensors[k].float()
     for k in ('episode', 'frame'):
         tensors[k] = tensors[k].int()
     return tensors

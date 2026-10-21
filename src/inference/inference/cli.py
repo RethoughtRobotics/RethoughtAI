@@ -166,7 +166,7 @@ def adapted(policy, adapter):
     '--adapter',
     type=click.Path(exists=True, file_okay=False),
     default=None,
-    help='VITA adapter (inference.lora): LoRA, tuned weights or a head',
+    help='Adapter (inference.lora): on VITA LoRA, tuned weights or a head; on the Multi-Task DiT LoRA',
 )
 @click.option(
     '--alpha', type=float, default=None, help='With --adapter: its weight, 0 the base exactly, 1 the adapted (default)'

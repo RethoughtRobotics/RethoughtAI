@@ -182,6 +182,16 @@ def load_config(path):
         return PreTrainedConfig.from_pretrained(tmp)
 
 
+def check_adapter(policy_type, adapter):
+    """An adapter this policy type loads: any on VITA, a LoRA one on the Multi-Task DiT."""
+    from inference import lora
+
+    kind = lora.meta(adapter).get('kind')
+    if policy_type == 'vita' or (policy_type == 'multi_task_dit' and kind is None):
+        return
+    raise ValueError(f'{adapter}: a {kind or "LoRA"} adapter is for VITA checkpoints, not {policy_type}')
+
+
 class LeRobotPolicy:
     """Any LeRobot policy (ACT, SmolVLA, ...) through LeRobot's own loading and processors.
 
@@ -202,7 +212,8 @@ class LeRobotPolicy:
     exactly), on the flow net or the modules its adapter.json names as root; with a weights adapter
     (lora.save_weights: ttt update's full, flow, flow_last), its weights blended with the base's by
     `alpha` (0 the base, 1 the tuned weights exactly); with a head adapter (lora.save_head: ttt update's
-    residual, latent_offset), the head's output scaled by `alpha`.
+    residual, latent_offset), the head's output scaled by `alpha`. A Multi-Task DiT takes a LoRA
+    adapter on its denoiser (ttt update on a DiT base).
     With `explore` (inference.explore.Explorer's sigma, seed, noise and record), VITA plans from a seeded
     offset of its latent, its flow optionally stochastic, every plan optionally recorded (plan S7).
     """
@@ -256,8 +267,7 @@ class LeRobotPolicy:
         if adapter:
             from inference import lora
 
-            if cfg.type != 'vita':
-                raise ValueError(f'adapters are for VITA checkpoints, not {cfg.type}')
+            check_adapter(cfg.type, adapter)
             lora.load_policy(self.policy, adapter, alpha)
         self.explorer = None
         if explore:
