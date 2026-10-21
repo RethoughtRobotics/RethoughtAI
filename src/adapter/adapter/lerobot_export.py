@@ -56,6 +56,22 @@ def _drop_leading(ep, n):
     return replace(ep, **{f: getattr(ep, f)[n:] for f in ('tcp_p', 'tcp_q', 'target_p', 'target_q', 'trigger', 't')})
 
 
+def idle_start(eps, distance, angle):
+    """Steps before the last one at which every arm's TCP is still within `distance` (m) and `angle`
+    (rad) of its first pose: the wait before a demonstration moves. Nothing observable says how long
+    it lasts, so a policy at the start pose learns to wait and, replanning from the same still view,
+    waits again (a 1.3 s idle stalled every sim cup base at home)."""
+    from scipy.spatial.transform import Rotation
+
+    onsets = []
+    for e in eps.values():
+        moved = np.linalg.norm(e.tcp_p - e.tcp_p[0], axis=1) > distance
+        moved |= (Rotation.from_quat(e.tcp_q) * Rotation.from_quat(e.tcp_q[0]).inv()).magnitude() > angle
+        if moved.any():
+            onsets.append(int(np.argmax(moved)))
+    return max(min(onsets) - 1, 0) if onsets else 0  # an episode that never moves is kept whole
+
+
 def features(cameras, arms, image_shapes, gripper=True):
     """One arm: state tcp.*, gripper, joints; action goal.*, gripper. Several: each name prefixed
     with its arm (left.tcp.x ...), arms in order. Without `gripper`, no gripper in either."""
@@ -154,12 +170,15 @@ def export(
     lead=1,
     gripper=True,
     workers=1,
+    trim_idle=None,
 ):
     """Write every episode_* of `session` (in order) as one LeRobot dataset at `root`.
 
     `labels`: "goal", what the teleop servo chased (labels.load_episode, one arm); "measured", the
     measured TCP of each of `arms` `lead` steps later (labels.load_measured), for kinesthetic
     demonstrations. `gripper`: False leaves the gripper out of state and action (tools held fixed).
+    `trim_idle` (distance m, angle rad): each episode starts at its last step before any arm's TCP
+    moves that far from its first pose (idle_start); None keeps the wait.
     Videos are encoded as frames arrive (streaming encoding), not from images written to disk after
     each episode. `workers` > 1 exports runs of consecutive episodes in parallel processes, each to
     its own dataset, then joins them in order (LeRobot's aggregate_datasets: videos and data files
@@ -183,6 +202,7 @@ def export(
         labels=labels,
         lead=lead,
         gripper=gripper,
+        trim_idle=trim_idle,
     )
     if workers == 1:
         summary = _export_episodes(episodes, root=root, log=log, **args)
@@ -223,6 +243,7 @@ def export(
                 'fps': fps,
                 **({'lead_steps': lead} if labels == 'measured' else {}),
                 'gripper': gripper,
+                **({'trim_idle': list(trim_idle)} if trim_idle else {}),
                 'episodes': summary,
             },
             indent=1,
@@ -230,7 +251,9 @@ def export(
     )
 
 
-def _export_episodes(episodes, repo_id, root, task, cameras, fps, robot_type, arms, labels, lead, gripper, log):
+def _export_episodes(
+    episodes, repo_id, root, task, cameras, fps, robot_type, arms, labels, lead, gripper, log, trim_idle=None
+):
     """`episodes` as one LeRobot dataset at `root`; per episode, a summary of what was written."""
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
@@ -254,6 +277,8 @@ def _export_episodes(episodes, repo_id, root, task, cameras, fps, robot_type, ar
     summary = []
     for path in episodes:
         eps = load(path)
+        idle = idle_start(eps, *trim_idle) if trim_idle else 0
+        eps = {a: _drop_leading(e, idle) for a, e in eps.items()}
         skip, stale, poses, n = 0, 0, None, 0
         for frame in iter_frames(path, arms, cameras, eps[arms[0]].t, gripper):
             if frame is None:  # leading frames before every stream started
@@ -290,6 +315,7 @@ def _export_episodes(episodes, repo_id, root, task, cameras, fps, robot_type, ar
             'source': path.name,
             'frames': n,
             'skipped_leading_frames': skip,
+            'idle_start_frames': idle,
             'stale_image_frames': int(stale),
         })
         log(

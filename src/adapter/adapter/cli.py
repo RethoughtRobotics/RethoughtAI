@@ -1,3 +1,4 @@
+import math
 import sys
 from pathlib import Path
 
@@ -86,9 +87,15 @@ def adapt(config, sessions, output, hub_repo):
     help='Gripper in state and action (--no-gripper when the hands hold tools)',
 )
 @click.option(
+    '--trim-idle',
+    default=None,
+    type=(float, float),
+    help='DISTANCE ANGLE (m, deg): start each episode just before its TCP first moves that far (the wait at the start)',
+)
+@click.option(
     '--workers', default=6, show_default=True, help='Episodes exported in parallel processes, then joined in order'
 )
-def lerobot(session, config, repo_id, task, output, arms, labels, lead, gripper, workers):
+def lerobot(session, config, repo_id, task, output, arms, labels, lead, gripper, trim_idle, workers):
     """Convert a teleop session (every episode_*) to a LeRobot v3 dataset on labels.py's actions.
 
     \b
@@ -125,6 +132,7 @@ def lerobot(session, config, repo_id, task, output, arms, labels, lead, gripper,
         lead=lead,
         gripper=gripper,
         workers=workers,
+        trim_idle=(trim_idle[0], math.radians(trim_idle[1])) if trim_idle else None,
     )
     click.echo(f'Dataset written to {output}')
 
