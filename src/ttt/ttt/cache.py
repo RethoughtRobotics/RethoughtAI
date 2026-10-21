@@ -96,6 +96,7 @@ def build(model, repo_id, revision, out, episodes=None, device='cpu', batch_size
         'model': str(Path(model).resolve()) if Path(model).exists() else str(model),
         'repo_id': repo_id,
         'revision': revision,
+        'fps': getattr(ds, 'fps', None),
         'episodes': sorted({int(e) for e in tensors['episode']}),
         'frames': n,
         'horizon': cfg.horizon,
