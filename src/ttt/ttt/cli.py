@@ -98,9 +98,7 @@ def export(cache_path, root, repo_id, task, pool, gate_):
 
 @main.command()
 @click.option('--cache', 'cache_path', required=True)
-@click.option(
-    '--pool', default=None, help='Episodes, or all (default: 21,25,29,33; all for an on-policy cache).'
-)
+@click.option('--pool', default=None, help='Episodes, or all (default: 21,25,29,33; all for an on-policy cache).')
 @click.option('--gate', 'gate_', default='3', show_default=True, help='cm, or all.')
 def corrections(cache_path, pool, gate_):
     """Count the frames the corrector takes over (the cost column)."""
@@ -230,6 +228,53 @@ def update(
         })
     )
     click.echo(json.dumps(record['losses'][-1]))
+
+
+@main.command()
+@click.option('--cache', 'cache_path', required=True, help="The dataset's cache, for the anchor.")
+@click.option('--out', required=True, help='Adapter directory to write.')
+@click.option(
+    '--method',
+    default='rwr',
+    show_default=True,
+    type=click.Choice(['rwr', 'pg']),
+    help='Reward-weighted regression (S7a) or the clipped policy gradient (S7b).',
+)
+@click.option('--init', default=None, help='The LoRA adapter the attempts ran with, continued (default: a new one).')
+@click.option('--model', default=None, help="Base checkpoint (default: the cache's).")
+@click.option('--anchor', default=span(BASE), show_default=True)
+@click.option('--lam', default=0.5, show_default=True, help='Anchor weight lambda.')
+@click.option('--steps', default=200, show_default=True)
+@click.option('--batch', default=256, show_default=True)
+@click.option('--lr', default=1e-4, show_default=True)
+@click.option('--rank', default=16, show_default=True)
+@click.option('--seed', default=0, show_default=True)
+@click.option('--clip', default=0.1, show_default=True, help="pg: the ratio's clip range.")
+@click.option('--record', default='plans.npy', show_default=True, help="Each stack's record file (serve --record).")
+@click.option('--device', default=None)
+@click.argument('runs', nargs=-1, required=True)
+def reward(cache_path, out, method, init, model, anchor, lam, steps, batch, lr, rank, seed, clip, record, device, runs):
+    """Update a LoRA adapter on the reward of explored attempts (plan S7): RUNS, evaluator runs with a
+    seed per stack and each stack's plans recorded."""
+    from . import reward as reward_mod
+
+    s = reward_mod.Settings(
+        method=method,
+        rank=rank,
+        lam=lam,
+        steps=steps,
+        batch=batch,
+        lr=lr,
+        seed=seed,
+        anchor=tuple(episodes(anchor)),
+        clip=clip,
+    )
+    r = reward_mod.run(model, cache_path, runs, out, s, device or default_device(), init, record)
+    keys = ('method', 'beta', 'kl', 'frames', 'samples', 'skipped', 'update_s', 'device')
+    click.echo(json.dumps({k: r[k] for k in keys if k in r}))
+    click.echo(json.dumps([{k: a[k] for k in ('seed', 'reward', 'weight', 'frames')} for a in r['attempts']]))
+    if r['losses']:
+        click.echo(json.dumps(r['losses'][-1]))
 
 
 @main.command()
