@@ -455,3 +455,41 @@ def test_corrected_frames_export_as_a_lerobot_dataset(built, attempts, tmp_path)
     assert torch.allclose(states[:, 0], tensors['state'][mask]) and (states == states[:, :1]).all()
     with pytest.raises(ValueError, match='not an on-policy cache'):
         onpolicy.export(built, tmp_path / 'x', 'local/x', 'Pick up the cup')
+
+
+def test_bags_of_the_evaluator_rows(tmp_path):
+    rows = tmp_path / 'rows.jsonl'
+    (tmp_path / 'bags' / 'seed_1003').mkdir(parents=True)
+    lines = [
+        {'seed': 1003, 'success': False, 'bag': 'bags/seed_1003'},  # relative to the rows file
+        {'seed': 1001, 'success': True, 'bag': str(tmp_path / 'bags' / 'seed_1001')},
+        {'seed': 1000, 'success': False, 'bag': str(tmp_path / 'bags' / 'seed_1000')},
+    ]
+    rows.write_text(''.join(json.dumps(r) + '\n' for r in lines) + '\n')
+    assert onpolicy.bags_of(rows) == [tmp_path / 'bags' / f'seed_{s}' for s in (1000, 1001, 1003)]
+    assert onpolicy.bags_of([rows], failed=True) == [tmp_path / 'bags' / f'seed_{s}' for s in (1000, 1003)]
+    assert onpolicy.bags_of(rows, failed=True, attempts=1) == [tmp_path / 'bags' / 'seed_1000']
+    with pytest.raises(ValueError, match='3 attempts'):
+        onpolicy.bags_of(rows, failed=True, attempts=3)
+    rows.write_text(json.dumps({'seed': 1004, 'success': False, 'bag': None}))
+    with pytest.raises(ValueError, match='no bag'):
+        onpolicy.bags_of(rows)
+
+
+def test_onpolicy_cli_from_the_evaluator_rows(model, attempts, tmp_path):
+    from click.testing import CliRunner
+
+    from ttt.cli import main
+
+    bags, _ = attempts
+    rows = tmp_path / 'rows.jsonl'
+    lines = [{'seed': s, 'success': False, 'bag': str(b)} for s, b in zip(SEEDS, bags, strict=True)]
+    rows.write_text(''.join(json.dumps(r) + '\n' for r in lines))
+    out = tmp_path / 'onp'
+    args = ['onpolicy', '--model', str(model), '--out', str(out), '--device', 'cpu', '--lead', str(LEAD)]
+    result = CliRunner().invoke(main, [*args, '--rows', str(rows), '--failed', '--attempts', '1'])
+    assert result.exit_code == 0, result.output
+    assert cache.load(out)[1]['episodes'] == [SEEDS[0]]
+    result = CliRunner().invoke(main, ['corrections', '--cache', str(out), '--gate', 'all'])
+    assert result.exit_code == 0 and json.loads(result.output)['per_episode'] == {str(SEEDS[0]): FRAMES - 1}
+    assert CliRunner().invoke(main, args).exit_code != 0

@@ -64,11 +64,17 @@ def cache(model, repo, revision, out, eps, device, batch_size, workers):
 @click.option('--batch-size', default=32, show_default=True)
 @click.option('--lead', type=int, default=None, help="Steps the labels lead the TCP (default: the checkpoint's).")
 @click.option('--arm', default='left', show_default=True)
-@click.argument('bags', nargs=-1, required=True)
-def onpolicy(model, out, device, batch_size, lead, arm, bags):
+@click.option('--rows', multiple=True, help="The evaluator's attempt rows (its --out): their bags, after BAGS.")
+@click.option('--failed', is_flag=True, help='With --rows, only the failed attempts.')
+@click.option('--attempts', type=int, default=None, help='With --rows, the first N attempts by seed.')
+@click.argument('bags', nargs=-1)
+def onpolicy(model, out, device, batch_size, lead, arm, rows, failed, attempts, bags):
     """Cache the base over evaluator bags (with their expert.npz), the planner's chunks as the targets."""
     from . import onpolicy as onpolicy_mod
 
+    bags = list(bags) + (onpolicy_mod.bags_of(rows, failed, attempts) if rows else [])
+    if not bags:
+        raise click.UsageError('no bag: give BAGS or --rows')
     path = onpolicy_mod.build(model, bags, out, device or default_device(), batch_size, lead, arm)
     click.echo(path.with_name('cache.json').read_text())
 
@@ -92,14 +98,18 @@ def export(cache_path, root, repo_id, task, pool, gate_):
 
 @main.command()
 @click.option('--cache', 'cache_path', required=True)
-@click.option('--pool', default=','.join(map(str, M0_POOL)), show_default=True, help='Episodes, or all.')
+@click.option(
+    '--pool', default=None, help='Episodes, or all (default: 21,25,29,33; all for an on-policy cache).'
+)
 @click.option('--gate', 'gate_', default='3', show_default=True, help='cm, or all.')
 def corrections(cache_path, pool, gate_):
-    """Count the frames the offline corrector takes over (the cost column)."""
+    """Count the frames the corrector takes over (the cost column)."""
     from . import cache as cache_mod
     from . import corrector
 
     tensors, meta = cache_mod.load(cache_path)
+    if pool is None:
+        pool = 'all' if meta.get('source') == 'on-policy' else ','.join(map(str, M0_POOL))
     summary = corrector.summary(tensors, pool_of(pool, meta), gate(gate_), meta['n_action_steps'])
     click.echo(json.dumps(summary, indent=2))
 

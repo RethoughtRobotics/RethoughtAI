@@ -14,7 +14,9 @@ checkpoint's training labels were (the pose `lead` steps later, the gripper not 
 expert.npz. Frames without a plan (a fallen cup) are left out. The corrector's gate
 (corrector.corrected: the base's executed steps on average more than `gate` cm from the planner's)
 picks the corrected frames, and the update loop takes them as its corrections
-(update.Settings.corrections, ttt update --corrections), the anchor from the dataset's cache.
+(update.Settings.corrections, ttt update --corrections), the anchor from the dataset's cache. The
+bags can be named by the evaluator's attempt rows (`bags_of`, ttt onpolicy --rows), the failed
+attempts only or the first N of them.
 
 `export` (ttt export) writes the corrected frames as a LeRobot dataset (plan S4): one episode per
 corrected frame, `horizon` frames of its observation with the planner's chunk as their actions, so that
@@ -67,6 +69,31 @@ def seed(bag):
     """The attempt's seed from its bag directory (the evaluator's seed_NNNN), else None."""
     m = re.search(r'(\d+)$', Path(bag).name)
     return int(m.group(1)) if m else None
+
+
+def bags_of(rows, failed=False, attempts=None):
+    """The bag directories of the evaluator's attempt rows (its --out, JSON lines; one file or
+    several), in seed order: only the failed attempts with `failed`, the first `attempts` of those
+    (plan S17). A row's bag as recorded, else relative to its rows file."""
+    found = {}
+    for path in [rows] if isinstance(rows, (str, Path)) else rows:
+        path = Path(path)
+        for line in path.read_text().splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if failed and row['success']:
+                continue
+            if not row.get('bag'):
+                raise ValueError(f'{path}: seed {row["seed"]} has no bag (the evaluator\'s --bags)')
+            bag = Path(row['bag'])
+            if not bag.exists() and (path.parent / bag).exists():
+                bag = path.parent / bag
+            found[row['seed']] = bag
+    seeds = sorted(found)[:attempts]
+    if attempts is not None and len(seeds) < attempts:
+        raise ValueError(f'{attempts} attempts asked for, {len(seeds)} in {rows}')
+    return [found[s] for s in seeds]
 
 
 def cameras_of(lp):
