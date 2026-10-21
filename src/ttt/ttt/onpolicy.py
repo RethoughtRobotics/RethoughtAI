@@ -85,7 +85,7 @@ def bags_of(rows, failed=False, attempts=None):
             if failed and row['success']:
                 continue
             if not row.get('bag'):
-                raise ValueError(f'{path}: seed {row["seed"]} has no bag (the evaluator\'s --bags)')
+                raise ValueError(f"{path}: seed {row['seed']} has no bag (the evaluator's --bags)")
             bag = Path(row['bag'])
             if not bag.exists() and (path.parent / bag).exists():
                 bag = path.parent / bag
@@ -121,14 +121,16 @@ def load_expert(bag, name=EXPERT):
 def observations(bag, expert, rows, cameras, arm='left'):
     """Per frame of `rows` (indices into expert.npz): (images {key: (H, W, 3) uint8}, joints, TCP
     (position, quaternion), gripper), each the latest message at or before the frame, as the dataset
-    export and the policy node take them."""
+    export and the policy node take them; None for the leading frames before every camera and the
+    joints have a message (the cameras start a few frames after the recording)."""
     from adapter.lerobot_export import iter_frames
 
     rows = np.asarray(rows)
     frames = iter_frames(bag, arm, cameras, expert['t'][rows])
     for i, frame in zip(rows, frames, strict=True):
         if frame is None:
-            raise ValueError(f'{bag}: a camera or the joints have no message by frame {i}')
+            yield None
+            continue
         images, joints, _, _ = frame
         tcp = expert['tcp'][i]
         yield images, joints, (tcp[:3], tcp[3:7]), float(expert['gripper'][i])
@@ -187,6 +189,8 @@ def build(model, bags, out, device='cpu', batch_size=32, lead=None, arm='left', 
         seen += len(e['valid'])
         labels = relabel(e['chunk'][rows], cfg.horizon, lead)
         for k, (i, obs) in enumerate(zip(rows, observations(bag, e, rows, cameras, arm), strict=True)):
+            if obs is None:
+                continue
             batch.append(item(lp, *obs, labels[k], episode, int(i)))
             if len(batch) == batch_size:
                 flush()
