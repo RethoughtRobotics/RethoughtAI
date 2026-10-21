@@ -147,3 +147,13 @@ def test_invalid_arm_fails_before_command_generation(tmp_path, selection, policy
 def test_launcher_bash_syntax():
     result = subprocess.run(['bash', '-n', str(LAUNCHER)], capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stderr
+
+
+def test_policy_target_follows_each_arms_target_stream_through_the_servo(tmp_path):
+    commands = teleop_arguments(render_commands(tmp_path, '--policy-target', '--no-gripper'))
+    assert len(commands) == 2
+    for arguments, arm in zip(commands, ('left', 'right')):
+        assert option(arguments, '--input') == 'vr'  # the VR servo, as for a policy trained on teleop goals
+        assert option(arguments, '--vr-topic') == f'/policy/{arm}/target'
+        assert option(arguments, '--vr-trigger-topic') == f'/policy/{arm}/trigger'
+        assert option(arguments, '--vr-config') == 'vr_axes_policy.yaml'
