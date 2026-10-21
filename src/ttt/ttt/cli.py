@@ -122,7 +122,18 @@ def corrections(cache_path, pool, gate_):
     '--trainable',
     default='lora',
     show_default=True,
-    type=click.Choice(['lora', 'lora_obs', 'lora_dec', 'lora_all', 'full', 'flow', 'flow_last', 'all']),
+    type=click.Choice([
+        'lora',
+        'lora_obs',
+        'lora_dec',
+        'lora_all',
+        'full',
+        'flow',
+        'flow_last',
+        'all',
+        'residual',
+        'latent_offset',
+    ]),
 )
 @click.option(
     '--pool', default=None, help='Episodes to correct, or all (default: 21,25,29,33; all with --corrections).'
@@ -141,6 +152,9 @@ def corrections(cache_path, pool, gate_):
 @click.option('--chunk-fraction', default=1.0, show_default=True, help='Leading part of each chunk kept (S16b).')
 @click.option('--noise-cm', default=0.0, show_default=True, help='Gaussian noise per waypoint, cm (S16c: 2).')
 @click.option('--rank', default=16, show_default=True)
+@click.option(
+    '--hidden', type=int, default=None, help="Head width (residual, latent_offset; default: M0's parameters at --rank)."
+)
 @click.option('--alpha', default=1.0, show_default=True)
 @click.option('--beta', default=None, type=float, help='Adds the preference loss with this beta.')
 @click.option('--objective', default='auto', show_default=True, type=click.Choice(['auto', 'flow', 'vita']))
@@ -166,6 +180,7 @@ def update(
     chunk_fraction,
     noise_cm,
     rank,
+    hidden,
     alpha,
     beta,
     objective,
@@ -197,6 +212,7 @@ def update(
         late=late,
         chunk_fraction=chunk_fraction,
         noise_cm=noise_cm,
+        hidden=hidden,
     )
     record = update_mod.run(model, cache_path, out, s, device or default_device(), workers=workers)
     click.echo(
@@ -219,7 +235,7 @@ def update(
 @main.command()
 @click.option('--cache', 'cache_path', required=True)
 @click.option('--out', required=True, help='Results json.')
-@click.option('--adapter', default=None, help='Adapter directory: LoRA or weights (ttt update).')
+@click.option('--adapter', default=None, help='Adapter directory: LoRA, weights or a head (ttt update).')
 @click.option('--checkpoint', default=None, help='Updated full checkpoint directory.')
 @click.option('--plans', default=None, help='Cache built with the updated checkpoint (an updated observer).')
 @click.option('--model', default=None, help="Base checkpoint (default: the cache's).")

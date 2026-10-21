@@ -1,5 +1,5 @@
 """Open-loop evaluation over the cache: decode every frame of the test and base episodes with an
-adapter (LoRA or weights) or an updated checkpoint at any alpha, and score path error (mm) against the
+adapter (LoRA, weights or a head) or an updated checkpoint at any alpha, and score path error (mm) against the
 demonstration overall and per cup phase, and forgetting (on the base episodes, adapted minus base),
 paired over episodes with bootstrap intervals.
 
@@ -108,7 +108,7 @@ def run(
     forget=BASE,
     n_boot=10000,
 ):
-    """Score the base and the adapter (a lora.save or lora.save_weights directory) or checkpoint (an
+    """Score the base and the adapter (a lora.save, save_weights or save_head directory) or checkpoint (an
     updated full checkpoint) at each alpha, or the plans of another cache's model over the same frames (alpha 1:
     an update that changes the observer, whose cached features no longer hold); write the results
     json to `out` and return it."""

@@ -19,9 +19,20 @@ Trainable sets (TRAINABLE), named after the plans that use them:
   lora_obs   LoRA on the observation encoder, the linear map from the observer's features (S8a)
   lora_dec   LoRA on the action decoder's linear layers (S8b)
   lora_all   LoRA on all three (S8c)
+  residual   a residual head on the decoded chunk (S5): an MLP from the base's chunk and z0 to a
+             correction added to the chunk, everything else frozen. It trains on the chunks, not the
+             flow (objective `chunk`): the base's chunk plus the correction against the corrector's
+             chunk, and on anchor frames the correction against zero, with the checkpoint's
+             reconstruction loss (l1 or mse) over the normalised chunk
+  latent_offset
+             a latent offset (S6): an MLP from z0 to an offset added to z0, every weight frozen, trained
+             through the frozen flow net with the flow error (or the vita objective)
+Both heads have `hidden` units, by default as many as make their parameter count M0's adapter's at
+`rank` (S5: the same parameter count as M0's).
 LoRA sets save an adapter (inference.lora, loadable by the runtime's --adapter); full, flow and
 flow_last a weights adapter, their tuned weights only (the runtime's --adapter too, alpha blending the
-base's weights and these); all a full checkpoint directory (the runtime's --model) that is also a
+base's weights and these); residual and latent_offset a head adapter (the runtime's --adapter, alpha
+scaling the head's output); all a full checkpoint directory (the runtime's --model) that is also a
 weights adapter. Every adapter.json records its trainable set. Every output gets an update.json:
 settings, corrected frames, wall time of the update and the device it ran on.
 
@@ -78,8 +89,10 @@ TRAINABLE = {
     'flow': None,
     'flow_last': None,
     'all': None,
+    'residual': None,
+    'latent_offset': None,
 }
-FLOW_ONLY = ('lora', 'flow', 'flow_last')
+FLOW_ONLY = ('lora', 'flow', 'flow_last', 'latent_offset')
 
 
 @dataclasses.dataclass
@@ -103,6 +116,7 @@ class Settings:
     late: float = 0.0
     chunk_fraction: float = 1.0
     noise_cm: float = 0.0
+    hidden: int | None = None
     log_every: int = 10
 
     def degraded(self):
@@ -110,18 +124,36 @@ class Settings:
         return self.late > 0 or self.chunk_fraction < 1 or self.noise_cm > 0
 
     def resolved_objective(self):
+        if self.trainable == 'residual':
+            return 'chunk'
         if self.objective != 'auto':
             return self.objective
         return 'flow' if self.trainable in FLOW_ONLY else 'vita'
 
 
-def prepare(policy, trainable, rank=16, alpha=1.0):
+def lora_parameters(policy, rank):
+    """The parameter count of M0's adapter (LoRA of `rank` on the flow net's targets) on `policy`."""
+    root = lora.flow_net(policy)
+    layers = [root.get_submodule(n) for n in lora.targets(root)]
+    return sum(rank * (m.in_features + m.out_features) for m in layers)
+
+
+def head_hidden(policy, kind, rank):
+    """The hidden width that makes a `kind` head's parameter count closest to M0's adapter's at `rank`."""
+    inputs, outputs = lora.head_size(policy, kind)
+    return max(1, round((lora_parameters(policy, rank) - outputs) / (inputs + 1 + outputs)))
+
+
+def prepare(policy, trainable, rank=16, alpha=1.0, hidden=None):
     """Make `trainable` of the policy trainable and everything else frozen; returns
-    (parameters, adapter root module and its name, or None for a full checkpoint)."""
+    (parameters, adapter root module and its name, or None for a full checkpoint or a head)."""
     if trainable not in TRAINABLE:
         raise ValueError(f'trainable {trainable!r}: one of {", ".join(TRAINABLE)}')
     vita = policy.vita
     policy.requires_grad_(False)
+    if trainable in lora.HEADS:
+        head = lora.add_head(policy, trainable, hidden or head_hidden(policy, trainable, rank), alpha)
+        return list(head.parameters()), None
     sites = TRAINABLE[trainable]
     if sites == ('flow',):
         root, name = vita.flow_net, lora.FLOW_NET
@@ -166,6 +198,14 @@ def pair_error(vita, z0, z1, t, objective, action=None):
         if cfg.flow_recon_weight > 0:
             loss = loss + cfg.flow_recon_weight * recon(vita.action_decoder(z))
     return loss
+
+
+def residual_error(vita, pairs, i, anchor=False):
+    """Per-pair loss (B,) of the residual head on rows i: the base's chunk plus its correction against
+    the corrector's chunk, or with `anchor` against the base's own (the correction zero)."""
+    base = pairs.action[True][i]
+    diff = vita.residual(base, vita.obs_encoder(pairs.feat[i])) + (0 if anchor else base - pairs.action[False][i])
+    return (diff.abs() if vita.config.recon_loss_type == 'l1' else diff**2).mean((1, 2))
 
 
 class Cached:
@@ -239,6 +279,10 @@ def run(model, cache_path, out, settings=None, device='cpu', frames=None, worker
     objective = s.resolved_objective()
     if s.beta is not None and s.trainable == 'all':
         raise ValueError('the preference loss needs cached latents; not available with trainable all')
+    if s.beta is not None and s.trainable == 'residual':
+        raise ValueError('the preference loss is on the flow; the residual head trains on chunks')
+    if s.trainable == 'residual' and s.objective != 'auto':
+        raise ValueError(f'objective {s.objective}: the residual head trains on chunks (auto)')
     check(s)
     started = time.time()
     tensors, meta = cache_mod.load(cache_path)
@@ -247,7 +291,7 @@ def run(model, cache_path, out, settings=None, device='cpu', frames=None, worker
     policy, vita = lp.policy, lp.policy.vita
     ref = copy.deepcopy(vita).requires_grad_(False) if s.beta is not None else None
     torch.manual_seed(s.seed)  # LoRA's A initialisation
-    params, adapter = prepare(policy, s.trainable, s.rank, s.alpha)
+    params, adapter = prepare(policy, s.trainable, s.rank, s.alpha, s.hidden)
     policy.eval()  # dropout off, the inference crop
 
     steps = meta['n_action_steps']
@@ -288,13 +332,19 @@ def run(model, cache_path, out, settings=None, device='cpu', frames=None, worker
     for step in range(s.steps):
         t = tc[step].to(device)
         bc = next(batches_c)
-        z0, z1, a = corrected_set.pair(vita, bc)
-        loss_c = pair_error(vita, z0, z1, t, objective, a).mean()
+        if objective == 'chunk':
+            loss_c = residual_error(vita, corrected_set, bc).mean()
+        else:
+            z0, z1, a = corrected_set.pair(vita, bc)
+            loss_c = pair_error(vita, z0, z1, t, objective, a).mean()
         total, row = (1 - s.lam) * loss_c, {'step': step + 1, 'corrected': loss_c.item()}
         if use_anchor:
             bd = next(batches_d)
-            z0d, z1d, ad = anchor_set.pair(vita, bd)
-            loss_d = pair_error(vita, z0d, z1d, td[step].to(device), objective, ad).mean()
+            if objective == 'chunk':
+                loss_d = residual_error(vita, anchor_set, bd, anchor=True).mean()
+            else:
+                z0d, z1d, ad = anchor_set.pair(vita, bd)
+                loss_d = pair_error(vita, z0d, z1d, td[step].to(device), objective, ad).mean()
             total = total + s.lam * loss_d
             row['anchor'] = loss_d.item()
         if ref is not None:
@@ -314,6 +364,9 @@ def run(model, cache_path, out, settings=None, device='cpu', frames=None, worker
     if adapter is not None:
         lora.save(adapter[0], out, name=adapter[1], trainable=s.trainable)
         output = 'adapter'
+    elif s.trainable in lora.HEADS:
+        lora.save_head(policy, out, s.trainable)
+        output = 'head'
     elif s.trainable == 'all':
         save_checkpoint(policy, model, out)
         lora.save_weights(policy, None, out, s.trainable, weights='model.safetensors')
@@ -323,7 +376,12 @@ def run(model, cache_path, out, settings=None, device='cpu', frames=None, worker
         output = 'weights'
 
     record = {
-        'settings': {**dataclasses.asdict(s), 'objective': objective, 'pool': list(pool)},
+        'settings': {
+            **dataclasses.asdict(s),
+            'objective': objective,
+            'pool': list(pool),
+            **({'hidden': lora.heads(vita)[0].fc1.out_features} if s.trainable in lora.HEADS else {}),
+        },
         'model': str(model),
         'cache': str(Path(cache_path).resolve()),
         'output': output,

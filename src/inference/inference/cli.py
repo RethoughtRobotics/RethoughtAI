@@ -151,6 +151,8 @@ def adapted(policy, adapter):
     trainable = meta.get('trainable', 'lora')
     if meta.get('kind') == 'weights':
         return f'{trainable}: tuned weights'
+    if meta.get('kind') in lora.HEADS:
+        return f"{trainable}: {meta['kind']} head, {meta['hidden']} hidden"
     sites = Counter(name.split('.')[1] for name in lora.adapters(policy.policy))
     return f'{trainable}: ' + ', '.join(f'{n} LoRA layers on {site}' for site, n in sites.items())
 
@@ -164,7 +166,7 @@ def adapted(policy, adapter):
     '--adapter',
     type=click.Path(exists=True, file_okay=False),
     default=None,
-    help='VITA adapter (inference.lora): LoRA or tuned weights',
+    help='VITA adapter (inference.lora): LoRA, tuned weights or a head',
 )
 @click.option(
     '--alpha', type=float, default=None, help='With --adapter: its weight, 0 the base exactly, 1 the adapted (default)'

@@ -37,9 +37,11 @@ def normalise(lp, batch):
 
 
 def flow(vita, z0):
-    """The base's plan from z0: the flowed latent and its decoded (normalised) chunk."""
-    z = vita.flow_matcher.sample(vita.flow_net, start=z0)
-    return z, vita.action_decoder(z)
+    """The policy's plan from z0: the flowed latent and its decoded (normalised) chunk, with a residual
+    head's correction if it has one (inference.lora.plan)."""
+    from inference import lora
+
+    return lora.plan(vita, z0)
 
 
 @torch.no_grad()
