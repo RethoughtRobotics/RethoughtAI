@@ -10,6 +10,10 @@
 #                modules its adapter.json names (ttt update's lora_obs, lora_dec, lora_all), or tuned
 #                weights (ttt update's full, flow, flow_last)
 #   --alpha A    with --adapter: its weight, 0 the base exactly, 1 the adapted (default 1)
+#   --explore-sigma S  VITA: plan from z0 + S eps, eps seeded and fixed for the run (inference.explore)
+#   --explore-seed N   with --explore-sigma: the seed of eps (default 0)
+#   --flow-noise S     with --explore-sigma: Gaussian noise of this size per flow step
+#   --record FILE      with --explore-sigma: append every plan (latents, log-probabilities) to FILE
 #   --episode N  sim: shadow rollout of recorded episode N (default 4); refused with live cameras
 #   --config F   RethoughtAI config (default: configs/baxter.yaml; *SweepTrash*: baxter_bimanual.yaml)
 #   --device D   torch device (default: cuda)
@@ -37,13 +41,17 @@ set -eo pipefail
 cd "$(dirname "$0")/.."
 
 NAME="" STEP="" EPISODE="" CONFIG=configs/baxter.yaml DEVICE=cuda RESOLVE="" LIST="" CONFIG_GIVEN=""
-MODEL="" REVISION="" ADAPTER="" ALPHA=""
+MODEL="" REVISION="" ADAPTER="" ALPHA="" SIGMA="" NOISE_SEED="" FLOW_NOISE="" RECORD=""
 while (( $# )); do
     case "$1" in
         --model) MODEL="$2"; shift ;;
         --revision) REVISION="$2"; shift ;;
         --adapter) ADAPTER="$(realpath "$2")"; shift ;;
         --alpha) ALPHA="$2"; shift ;;
+        --explore-sigma) SIGMA="$2"; shift ;;
+        --explore-seed) NOISE_SEED="$2"; shift ;;
+        --flow-noise) FLOW_NOISE="$2"; shift ;;
+        --record) RECORD="$(realpath -m "$2")"; shift ;;
         --resolve) RESOLVE=1 ;;
         --list) LIST=1 ;;
         --episode) EPISODE="$2"; shift ;;
@@ -60,6 +68,7 @@ if [[ -n "$LIST" ]]; then
     exit 0
 fi
 [[ -z "$ALPHA" || -n "$ADAPTER" ]] || { echo "--alpha needs --adapter" >&2; exit 2; }
+[[ -n "$SIGMA" || -z "$NOISE_SEED$FLOW_NOISE$RECORD" ]] || { echo "--explore-seed, --flow-noise and --record need --explore-sigma" >&2; exit 2; }
 [[ -z "$ADAPTER" || -f "$ADAPTER/adapter.json" ]] || { echo "--adapter $ADAPTER: no adapter.json there" >&2; exit 2; }
 if [[ -n "$MODEL" ]]; then
     [[ -z "$NAME" ]] || { echo "Give --model or --$NAME, not both" >&2; exit 2; }
@@ -137,6 +146,7 @@ for topic in $(python3 -c "import yaml,sys; print(*(c['topic'] for c in yaml.saf
 done
 LAUNCH="ros2 launch launch/policy.launch.py model:=$MODEL config:=$CONFIG device:=$DEVICE"
 LAUNCH+="${REVISION:+ revision:=$REVISION}${ADAPTER:+ adapter:=$ADAPTER}${ALPHA:+ alpha:=$ALPHA}"
+LAUNCH+="${SIGMA:+ explore_sigma:=$SIGMA}${NOISE_SEED:+ explore_seed:=$NOISE_SEED}${FLOW_NOISE:+ flow_noise:=$FLOW_NOISE}${RECORD:+ record:=$RECORD}"
 if (( ${#live[@]} )); then
     [[ -z "$EPISODE" ]] || { echo "--episode $EPISODE: the robot's cameras are up (${live[*]}), and a shadow rollout would mix their frames with the bag's" >&2; exit 2; }
     echo "Live: the robot's cameras (${live[*]})"

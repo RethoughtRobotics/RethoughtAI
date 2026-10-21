@@ -203,9 +203,13 @@ class LeRobotPolicy:
     (lora.save_weights: ttt update's full, flow, flow_last), its weights blended with the base's by
     `alpha` (0 the base, 1 the tuned weights exactly); with a head adapter (lora.save_head: ttt update's
     residual, latent_offset), the head's output scaled by `alpha`.
+    With `explore` (inference.explore.Explorer's sigma, seed, noise and record), VITA plans from a seeded
+    offset of its latent, its flow optionally stochastic, every plan optionally recorded (plan S7).
     """
 
-    def __init__(self, model, device, task='', rtc=None, revision=None, overrides=None, adapter=None, alpha=1.0):
+    def __init__(
+        self, model, device, task='', rtc=None, revision=None, overrides=None, adapter=None, alpha=1.0, explore=None
+    ):
         import torch
         from lerobot.policies import get_policy_class, make_pre_post_processors
         from lerobot.processor import NormalizerProcessorStep
@@ -255,6 +259,13 @@ class LeRobotPolicy:
             if cfg.type != 'vita':
                 raise ValueError(f'adapters are for VITA checkpoints, not {cfg.type}')
             lora.load_policy(self.policy, adapter, alpha)
+        self.explorer = None
+        if explore:
+            from inference.explore import Explorer
+
+            if cfg.type != 'vita':
+                raise ValueError(f'exploration is in a VITA latent, not {cfg.type}')
+            self.explorer = Explorer(self.policy.vita, **explore)
 
         if (path / 'policy_preprocessor.json').exists():
             overrides = {'device_processor': {'device': device}}
