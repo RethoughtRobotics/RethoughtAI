@@ -59,11 +59,10 @@ def test_dual_policy_uses_each_arms_own_topics(tmp_path, selection):
     assert len(commands) == 2
     for arguments, arm in zip(commands, ('left', 'right')):
         assert option(arguments, '--arm') == arm
-        assert option(arguments, '--input') == 'vr'
+        assert option(arguments, '--input') == 'plan'  # the replay stream plays policies
         assert option(arguments, '--vr-config') == 'vr_axes_policy.yaml'
-        assert option(arguments, '--vr-topic') == f'/policy/{arm}/target'
         assert option(arguments, '--vr-trigger-topic') == f'/policy/{arm}/trigger'
-        assert arguments.count('--vr-topic') == 1
+        assert '--vr-topic' not in arguments
         assert arguments.count('--vr-trigger-topic') == 1
         assert arguments.count('--no-gripper') == 1
         other = 'right' if arm == 'left' else 'left'
@@ -86,7 +85,7 @@ def test_single_arm_and_recorder_selection(tmp_path, arm, form, policy):
     assert option(arguments, '--arm') == arm
     assert '--no-gripper' in arguments
     if policy:
-        assert option(arguments, '--vr-topic') == f'/policy/{arm}/target'
+        assert option(arguments, '--input') == 'plan'
         assert option(arguments, '--vr-trigger-topic') == f'/policy/{arm}/trigger'
         assert option(arguments, '--vr-config') == 'vr_axes_policy.yaml'
     else:
@@ -116,13 +115,13 @@ def test_named_selector_still_overrides_passthrough_arm(tmp_path):
     commands = teleop_arguments(render_commands(tmp_path, '--arm', 'right', '--both', '--policy'))
     assert [option(arguments, '--arm') for arguments in commands] == ['left', 'right']
     for arguments, arm in zip(commands, ('left', 'right')):
-        assert option(arguments, '--vr-topic') == f'/policy/{arm}/target'
+        assert option(arguments, '--vr-trigger-topic') == f'/policy/{arm}/trigger'
 
 
 def test_last_passthrough_arm_wins(tmp_path):
     result = render_commands(tmp_path, '--arm', 'left', '--arm=right', '--policy')
     (arguments,) = teleop_arguments(result)
-    assert option(arguments, '--vr-topic') == '/policy/right/target'
+    assert option(arguments, '--vr-trigger-topic') == '/policy/right/trigger'
     assert '--exclude left' in result.stdout.split('===RECORDER===', 1)[1]
 
 
