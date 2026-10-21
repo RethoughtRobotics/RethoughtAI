@@ -55,6 +55,16 @@ def policy_settings(cfg, model_cfg, label_lead=None):
     return settings
 
 
+def replay_as(cfg, model_cfg, settings):
+    """(runtime config, merge, absolute) to replay a recording as this checkpoint runs: its chunk length,
+    a new chunk every `every` steps, its merge, and its goal layout (absolute goals or TCP-relative)."""
+    from inference.policies import action_layout, chunk_length
+
+    chunk = chunk_length({**model_cfg, **settings.get('overrides', {})})
+    cfg = {**cfg, 'chunk_size': chunk, 'n_action_steps': int(settings.get('every', 1))}
+    return cfg, settings['merge'], action_layout(model_cfg) == 'absolute'
+
+
 def deploy_task(configured, tasks):
     """The prompt to condition on: the dataset's task the checkpoint was trained on (`tasks`), or the
     configured one if the dataset's tasks are unknown or include it. Several need one configured."""
@@ -227,12 +237,18 @@ def run(config, episode, model, start_at, player, revision):
     """Run a policy on the robot, through its teleop (the config's `inference:` section).
 
     \b
+    With both --replay and --model the recording is played as that checkpoint runs (its chunk length,
+    replanning interval, merge and goal layout): the whole chain a policy runs through, without the
+    network.
+
+    \b
     Examples:
       inference run baxter.yaml --replay recorder/data/CupToContainer/episode_042
       inference run baxter.yaml --model andnetdeboer/ACT_20261007-2113_ckpt010000
+      inference run baxter.yaml --replay data/bags/<kinesthetic demo> --model models/<checkpoint>
     """
-    if (episode is None) == (model is None):
-        raise click.UsageError('give one of --replay or --model')
+    if episode is None and model is None:
+        raise click.UsageError('give --replay, --model, or both')
     if start_at and not model or player and not start_at:
         raise click.UsageError('--start-at needs --model, --player needs --start-at')
     cfg = yaml.safe_load(resolve_config(config).read_text())['inference']
@@ -245,17 +261,30 @@ def run(config, episode, model, start_at, player, revision):
 
         if cfg.get('arm') == 'both':
             raise click.UsageError('Bimanual replay/start-pose loading is not supported; use live cameras')
-        policy = ReplayPolicy(episode, cfg['arm'], cfg['fps'], cfg['chunk_size'])
+        merge, absolute = None, False
+        if model:
+            from inference.policies import model_config, trained_lead
+
+            model_cfg = model_config(model, revision)
+            settings = policy_settings(cfg, model_cfg, trained_lead(model, revision))
+            cfg, merge, absolute = replay_as(cfg, model_cfg, settings)
+        policy = ReplayPolicy(episode, cfg['arm'], cfg['fps'], cfg['chunk_size'], absolute=absolute)
         click.echo(
             f'Replaying {episode}: {len(policy)} steps ({len(policy) / cfg["fps"]:.1f} s), '
-            f'chunks of {cfg["chunk_size"]}, ensembling {cfg.get("temporal_ensemble_coeff")}'
+            f'chunks of {cfg["chunk_size"]}'
+            + (
+                f' every {cfg["n_action_steps"]} steps, merge {merge}, {"absolute" if absolute else "relative"} goals'
+                f' (as {model})'
+                if model
+                else f', ensembling {cfg.get("temporal_ensemble_coeff")}'
+            )
         )
         start = policy.episode.tcp_p[0]
         click.echo(
             f'Demo starts with the TCP at {start.round(3).tolist()} m (base). Hold the deadman '
             '(trackpad) to run, release to hold; B sends the arm home.'
         )
-        spin('policy_runtime', lambda node: Runtime(node, cfg, policy))
+        spin('policy_runtime', lambda node: Runtime(node, cfg, policy, merge=merge))
         return
 
     from inference.policies import chunk_length, model_config, trained_lead
