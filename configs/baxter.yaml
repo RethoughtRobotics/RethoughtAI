@@ -208,8 +208,11 @@ inference:
       # Replan every 16 frames (0.64 s). Publish all 32 trained targets to cover inference latency:
       # returning only 16 ends at 0.60 s and would leave a gap before the next chunk arrives.
       # No RTC and no extra lead: lead640ms already learned its 16-frame label shift.
+      # ramp: each new chunk crossfades in over 10 steps (0.4 s) within the 16-step overlap. With
+      # latest, a new chunk disagreeing with the last one about now (up to 17 mm on the robot) was a
+      # step in the plan, played as a joint setpoint jump (27 in 59 s, 2026-10-20 RealPolicy).
       every: 16
-      merge: {type: latest}
+      merge: {type: ramp, ramp: 10}
       overrides: {n_action_steps: 32}
     multi_task_dit:
       # chunks of 24 (of a 32-step plan) from the last 2 steps; ~100 ms on the laptop GPU (10 DDPM
