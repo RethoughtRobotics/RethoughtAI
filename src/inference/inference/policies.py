@@ -426,18 +426,10 @@ class LeRobotPolicy:
 
         return model_state(tcp_p, tcp_q, gripper, joints)
 
-    def __call__(self, observation, delay=0, prev=None, tcp=None, history=()):
-        """`tcp` (position, quaternion), the TCP observed: absolute goals are made relative to it.
-        `history`: for a policy that sees past steps (n_obs_steps), the observations one step apart
-        before this one, oldest first; fewer repeat the oldest given, as LeRobot starts an episode.
-        `prev` with a diffusion MultiTask DiT and no `rtc`: (known (P, action_dim) unnormalized,
-        weights (P,)) for the chunk's first P steps, inpainted as it is denoised (inpaint.py)."""
+    def _batch(self, observation, history=()):
+        """The model's input for `observation` (and, for a policy that sees past steps, its `history`
+        in the policy's queues), preprocessed as LeRobot's select_action does."""
         from lerobot.policies.utils import populate_queues, prepare_observation_for_inference
-        from lerobot.processor import TransitionKey, create_transition
-
-        if self.absolute and not getattr(self, 'bimanual', False) and tcp is None:
-            raise ValueError(f'{self.type} predicts absolute goals: pass the TCP observed')
-        torch = self.torch
 
         def preprocess(obs):
             return self.pre(
@@ -453,16 +445,43 @@ class LeRobotPolicy:
                 )
             )
 
+        if self.type not in OBS_HISTORY:
+            return preprocess(observation)
+        self.policy.reset()  # its queues hold exactly these observations
+        for obs in [*history[-(self.n_obs_steps - 1) :], observation]:
+            # cameras stacked, as the queue holds them; no `action` (None here), as select_action
+            batch = self.policy._prepare_batch({k: v for k, v in preprocess(obs).items() if k != 'action'})
+            self.policy._queues = populate_queues(self.policy._queues, batch)
+        return batch
+
+    def encode(self, observation, history=()):
+        """The MultiTask DiT's observation encoding (its denoiser's conditioning) for `observation`, as
+        __call__ computes it before sampling a plan, without sampling one."""
+        if self.type != 'multi_task_dit':
+            raise ValueError(f'encode is for MultiTask DiT checkpoints, not {self.type}')
+        torch = self.torch
+        with torch.inference_mode():
+            batch = self._batch(observation, history)
+            for k in batch:  # as predict_action_chunk: the observation history from the queues
+                if k in self.policy._queues:
+                    batch[k] = torch.stack(list(self.policy._queues[k]), dim=1)
+            return self.policy.observation_encoder.encode(batch)
+
+    def __call__(self, observation, delay=0, prev=None, tcp=None, history=()):
+        """`tcp` (position, quaternion), the TCP observed: absolute goals are made relative to it.
+        `history`: for a policy that sees past steps (n_obs_steps), the observations one step apart
+        before this one, oldest first; fewer repeat the oldest given, as LeRobot starts an episode.
+        `prev` with a diffusion MultiTask DiT and no `rtc`: (known (P, action_dim) unnormalized,
+        weights (P,)) for the chunk's first P steps, inpainted as it is denoised (inpaint.py)."""
+        from lerobot.processor import TransitionKey, create_transition
+
+        if self.absolute and not getattr(self, 'bimanual', False) and tcp is None:
+            raise ValueError(f'{self.type} predicts absolute goals: pass the TCP observed')
+        torch = self.torch
+
         # RTC guidance needs gradients, which inference_mode forbids
         with torch.no_grad() if self.rtc else torch.inference_mode():
-            if self.type in OBS_HISTORY:  # its queues hold exactly these observations
-                self.policy.reset()
-                for obs in [*history[-(self.n_obs_steps - 1) :], observation]:
-                    # cameras stacked, as the queue holds them; no `action` (None here), as select_action
-                    batch = self.policy._prepare_batch({k: v for k, v in preprocess(obs).items() if k != 'action'})
-                    self.policy._queues = populate_queues(self.policy._queues, batch)
-            else:
-                batch = preprocess(observation)
+            batch = self._batch(observation, history)
             kwargs = {}
             if self.rtc:
                 if prev is not None:  # normalized, padded to the horizon, as LeRobot's RTC engine does
