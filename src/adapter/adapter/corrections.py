@@ -10,7 +10,9 @@ corrections.json lists each one: the rollout it came from, its kind, arm, start 
 With `whole`, an episode is instead a whole policy rollout (/policy/{arm}/engaged true to false) that
 holds at least one correction: the policy's own stretches around the corrections are kept, the frames
 a corrector learns to leave alone (export with adapt lerobot --intervention to mark which is which).
-Its row lists the corrections inside it, in s from the episode's start.
+Its row lists the corrections inside it, in s from the episode's start, and its outcome: the label
+given after it on /policy/{arm}/episode (inference.episodes, the VR stick): a discarded rollout is
+skipped, a saved one is 'success', one never labelled 'unlabelled'.
 """
 
 import json
@@ -32,6 +34,8 @@ SOURCES = {
 LATCHED = ('/tf_static', '/robot_description', '/teleop/{arm}/config')
 INDEX = 'corrections.json'
 ENGAGED = '/policy/{arm}/engaged'
+EPISODE = '/policy/{arm}/episode'
+OUTCOMES = {'save': 'success', 'discard': 'discard'}
 
 
 @dataclass(frozen=True)
@@ -98,6 +102,29 @@ def rollouts(bag, arm='left'):
     return spans([*times, end], [*on, False])
 
 
+def labels(bag, arm='left'):
+    """(stamp ns, 'success' or 'discard') of each save or discard the bag holds, in time order."""
+    topic = EPISODE.format(arm=arm)
+    reader = _reader(bag)
+    if topic not in {t.name for t in reader.get_all_topics_and_types()}:
+        return []
+    reader = _reader(bag, [topic])
+    found = []
+    while reader.has_next():
+        _, raw, stamp = reader.read_next()
+        event = json.loads(deserialize_message(raw, get_message('std_msgs/msg/String')).data).get('event')
+        if event in OUTCOMES:
+            found.append((stamp, OUTCOMES[event]))
+    return found
+
+
+def outcome(span, next_start, marks):
+    """The last label given after the rollout `span` ended and before the next one started (None: no
+    next one), or 'unlabelled'."""
+    given = [o for t, o in marks if t >= span[1] and (next_start is None or t < next_start)]
+    return given[-1] if given else 'unlabelled'
+
+
 def _episodes(out):
     return sorted(p for p in Path(out).glob('episode_*') if p.is_dir())
 
@@ -114,13 +141,14 @@ def extract(bags, out, arm='left', min_duration=2.0, whole=False):
     added = []
     for bag in bags:
         corrections = find(bag, arm, min_duration)
-        found = corrections
+        found, outcomes = corrections, {}
         if whole:
-            found = [
-                Correction('rollout', arm, a, b)
-                for a, b in rollouts(bag, arm)
-                if any(a <= c.start_ns <= b for c in corrections)
-            ]
+            runs, marks = rollouts(bag, arm), labels(bag, arm)
+            for i, (a, b) in enumerate(runs):
+                result = outcome((a, b), runs[i + 1][0] if i + 1 < len(runs) else None, marks)
+                if result != 'discard' and any(a <= c.start_ns <= b for c in corrections):
+                    outcomes[a] = result
+            found = [Correction('rollout', arm, a, b) for a, b in runs if a in outcomes]
         if not found:
             continue
         reader = _reader(bag)
@@ -162,6 +190,7 @@ def extract(bags, out, arm='left', min_duration=2.0, whole=False):
                     for k in corrections
                     if c.start_ns <= k.start_ns <= c.end_ns
                 ]
+                row['outcome'] = outcomes[c.start_ns]
             rows.append(row)
             added.append(row)
     index.write_text(json.dumps(rows, indent=1) + '\n')

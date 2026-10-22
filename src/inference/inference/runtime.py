@@ -20,6 +20,7 @@ chunk, re-anchored on the corrected pose, runs at once, crossfaded in over `resu
 The gripper likewise: during a correction the trigger follows what the operator commands the gripper
 (`gripper_command`), so the resumed chunk crossfades in from the gripper as the operator left it.
 A VR takeover (`takeover`, the teleop's --takeover: the operator's controller drives) is the same.
+With `episodes`, one VR thumbstick starts, stops and labels runs (episodes.py).
 
 A chunk is a trajectory of TCP targets timed from its observation: from a policy called here (a
 replay) or the `chunk` topic (policy_node). Each policy step merges the chunks covering it:
@@ -235,6 +236,14 @@ class Runtime:
         self.trigger_pub = node.create_publisher(Float32, cfg['trigger'], 10)
         node.create_timer(1.0 / float(cfg['publish_rate']), self._tick)
         self._announce()
+        self.episodes = None  # episodes.Episodes: the stick starts, stops and labels runs
+        if cfg.get('episodes'):
+            from recorder.screen import SessionScreen
+
+            from .episodes import Episodes
+
+            screen = SessionScreen(node, cfg['episodes'].get('session')) if cfg['episodes'].get('screen') else None
+            self.episodes = Episodes(self, cfg['episodes'], screen)
 
     def _by_hand(self, source, on):
         self.by_hand[source] = bool(on)

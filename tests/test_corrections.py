@@ -23,24 +23,34 @@ def test_a_span_still_on_at_the_end_ends_at_the_last_sample():
     assert corrections.spans([0, 1, 2], [0, 0, 0]) == []
 
 
-def write_bag(path, takeover):
-    """A rollout: the takeover flag at 10 Hz from `takeover` (one bool per 0.1 s), a 100 Hz signal, and
-    the teleop's config published once at the start."""
+def write_bag(path, takeover, engaged=None, events=()):
+    """A rollout: the takeover flag at 10 Hz from `takeover` (one bool per 0.1 s), a 100 Hz signal, the
+    teleop's config published once at the start; with `engaged` (one bool per 0.1 s) the runtime's
+    engaged flag on change, and the stick's episode `events` ((s, event) pairs)."""
     writer = rosbag2_py.SequentialWriter()
     writer.open(rosbag2_py.StorageOptions(uri=str(path), storage_id='mcap'), rosbag2_py.ConverterOptions('', ''))
     topics = [
         ('/teleop/left/takeover', 'std_msgs/msg/Bool'),
         ('/signal', 'std_msgs/msg/Float32'),
         ('/teleop/left/config', 'std_msgs/msg/String'),
+        ('/policy/left/engaged', 'std_msgs/msg/Bool'),
+        ('/policy/left/episode', 'std_msgs/msg/String'),
     ]
     for i, (name, kind) in enumerate(topics):
         writer.create_topic(rosbag2_py.TopicMetadata(i, name, kind, 'cdr'))
     writer.write('/teleop/left/config', serialize_message(String(data='{}')), 1)
+    events = sorted((S + int(s * S), e) for s, e in events)
     for k in range(len(takeover) * 10):
         t = S + k * S // 100
         writer.write('/signal', serialize_message(Float32(data=float(k))), t)
+        while events and events[0][0] <= t:
+            stamp, event = events.pop(0)
+            writer.write('/policy/left/episode', serialize_message(String(data=json.dumps({'event': event}))), stamp)
         if k % 10 == 0:
             writer.write('/teleop/left/takeover', serialize_message(Bool(data=bool(takeover[k // 10]))), t)
+            i = k // 10
+            if engaged is not None and (i == 0 or engaged[i] != engaged[i - 1]):
+                writer.write('/policy/left/engaged', serialize_message(Bool(data=bool(engaged[i]))), t)
     writer.close()
 
 
@@ -75,3 +85,19 @@ def test_a_second_extraction_numbers_on(tmp_path):
     rows = corrections.extract([tmp_path / 'b'], tmp_path / 'session')
     assert [r['episode'] for r in rows] == ['episode_001']
     assert len(json.loads((tmp_path / 'session' / 'corrections.json').read_text())) == 2
+
+
+def test_whole_rollouts_skip_the_discarded_and_carry_their_label(tmp_path):
+    # Three engaged runs (1 to 3 s, 4 to 6 s, 7 to 9 s from the flags' start), a takeover in each;
+    # the first saved, the second discarded, the third never labelled. A label counts for the run
+    # that ended before it: the save given during the second run is not the second's.
+    engaged = [0] * 10 + ([1] * 20 + [0] * 10) * 3
+    takeover = [0] * 10 + ([0] * 5 + [1] * 5 + [0] * 20) * 3
+    events = [(3.5, 'save'), (4.5, 'save'), (6.5, 'discard')]
+    write_bag(tmp_path / 'rollout', takeover, engaged, events)
+    rows = corrections.extract([tmp_path / 'rollout'], tmp_path / 'session', min_duration=0.3, whole=True)
+
+    assert [(r['episode'], r['start_s'], r['duration_s'], r['outcome']) for r in rows] == [
+        ('episode_000', 2.0, 2.0, 'success'),
+        ('episode_001', 8.0, 2.0, 'unlabelled'),
+    ]
