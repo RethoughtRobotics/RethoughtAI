@@ -53,7 +53,8 @@ def _continuous(q):
 
 def _drop_leading(ep, n):
     """The episode without its first n steps."""
-    return replace(ep, **{f: getattr(ep, f)[n:] for f in ('tcp_p', 'tcp_q', 'target_p', 'target_q', 'trigger', 't')})
+    fields = ('tcp_p', 'tcp_q', 'target_p', 'target_q', 'trigger', 't', 'intervention')
+    return replace(ep, **{f: getattr(ep, f)[n:] for f in fields if getattr(ep, f) is not None})
 
 
 def idle_start(eps, distance, angle):
@@ -102,9 +103,10 @@ class StillRuns:
         return True
 
 
-def features(cameras, arms, image_shapes, gripper=True):
+def features(cameras, arms, image_shapes, gripper=True, intervention=False):
     """One arm: state tcp.*, gripper, joints; action goal.*, gripper. Several: each name prefixed
-    with its arm (left.tcp.x ...), arms in order. Without `gripper`, no gripper in either."""
+    with its arm (left.tcp.x ...), arms in order. Without `gripper`, no gripper in either. With
+    `intervention`, a per-frame `intervention` (1 while a person drives the arm, labels.Episode)."""
     arms = [arms] if isinstance(arms, str) else list(arms)
     pose = ['x', 'y', 'z', 'qx', 'qy', 'qz', 'qw']
     prefix = (lambda arm: f'{arm}.') if len(arms) > 1 else (lambda arm: '')
@@ -121,6 +123,8 @@ def features(cameras, arms, image_shapes, gripper=True):
     action = [f'{prefix(a)}{n}' for a in arms for n in [f'goal.{x}' for x in pose] + grip]
     f['observation.state'] = {'dtype': 'float32', 'shape': (len(state),), 'names': state}
     f['action'] = {'dtype': 'float32', 'shape': (len(action),), 'names': action}
+    if intervention:
+        f['intervention'] = {'dtype': 'float32', 'shape': (1,), 'names': ['intervention']}
     return f
 
 
@@ -202,6 +206,7 @@ def export(
     workers=1,
     trim_idle=None,
     trim_still=None,
+    intervention=False,
 ):
     """Write every episode_* of `session` (in order) as one LeRobot dataset at `root`.
 
@@ -214,7 +219,8 @@ def export(
     Videos are encoded as frames arrive (streaming encoding), not from images written to disk after
     each episode. `workers` > 1 exports runs of consecutive episodes in parallel processes, each to
     its own dataset, then joins them in order (LeRobot's aggregate_datasets: videos and data files
-    concatenated, not re-encoded)."""
+    concatenated, not re-encoded). `intervention` adds each frame's intervention flag (goal labels:
+    the policy rollouts of adapt corrections --whole, labels.Episode.intervention)."""
     import shutil
     from concurrent.futures import ProcessPoolExecutor
     from multiprocessing import get_context
@@ -236,6 +242,7 @@ def export(
         gripper=gripper,
         trim_idle=trim_idle,
         trim_still=trim_still,
+        intervention=intervention,
     )
     if workers == 1:
         summary = _export_episodes(episodes, root=root, log=log, **args)
@@ -300,6 +307,7 @@ def _export_episodes(
     log,
     trim_idle=None,
     trim_still=None,
+    intervention=False,
 ):
     """`episodes` as one LeRobot dataset at `root`; per episode, a summary of what was written."""
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -315,7 +323,7 @@ def _export_episodes(
     dataset = LeRobotDataset.create(
         repo_id,
         fps,
-        features(cameras, arms, shapes, gripper),
+        features(cameras, arms, shapes, gripper, intervention),
         root=root,
         robot_type=robot_type,
         streaming_encoding=True,
@@ -360,6 +368,8 @@ def _export_episodes(
             row['action'] = np.concatenate([
                 np.concatenate([eps[a].target_p[k], poses[a][1][k], grip_action(a)]) for a in arms
             ]).astype(np.float32)
+            if intervention:
+                row['intervention'] = np.array([eps[arm].intervention[k]], dtype=np.float32)
             row['task'] = task
             dataset.add_frame(row)
             n += 1

@@ -6,6 +6,11 @@ by hand in zero-g). Each becomes episode_NNN, every topic of the rollout cut to 
 the session layout `adapt lerobot` exports (--labels goal for a takeover: the teleop's goals are the
 operator's; a cuff correction has none, --labels measured) and recap browses one episode at a time.
 corrections.json lists each one: the rollout it came from, its kind, arm, start and end.
+
+With `whole`, an episode is instead a whole policy rollout (/policy/{arm}/engaged true to false) that
+holds at least one correction: the policy's own stretches around the corrections are kept, the frames
+a corrector learns to leave alone (export with adapt lerobot --intervention to mark which is which).
+Its row lists the corrections inside it, in s from the episode's start.
 """
 
 import json
@@ -26,6 +31,7 @@ SOURCES = {
 # their last message before its start. Named, because rosbag2_py exposes no durability getter.
 LATCHED = ('/tf_static', '/robot_description', '/teleop/{arm}/config')
 INDEX = 'corrections.json'
+ENGAGED = '/policy/{arm}/engaged'
 
 
 @dataclass(frozen=True)
@@ -74,13 +80,32 @@ def find(bag, arm='left', min_duration=0.0):
     return sorted((c for c in found if c.duration >= min_duration), key=lambda c: c.start_ns)
 
 
+def rollouts(bag, arm='left'):
+    """(start, end) ns of each stretch the policy was engaged; one still engaged at the bag's end ends
+    there. The topic is published on change only."""
+    topic = ENGAGED.format(arm=arm)
+    reader = _reader(bag)
+    if topic not in {t.name for t in reader.get_all_topics_and_types()}:
+        return []
+    reader = _reader(bag, [topic])
+    times, on = [], []
+    while reader.has_next():
+        _, raw, stamp = reader.read_next()
+        times.append(stamp)
+        on.append(bool(deserialize_message(raw, get_message('std_msgs/msg/Bool')).data))
+    info = rosbag2_py.Info().read_metadata(str(bag), 'mcap')
+    end = info.starting_time.nanoseconds + info.duration.nanoseconds
+    return spans([*times, end], [*on, False])
+
+
 def _episodes(out):
     return sorted(p for p in Path(out).glob('episode_*') if p.is_dir())
 
 
-def extract(bags, out, arm='left', min_duration=2.0):
-    """Cut every correction of `bags` into out/episode_NNN, numbered on from the episodes already
-    there, and add them to out/corrections.json. Returns the new rows."""
+def extract(bags, out, arm='left', min_duration=2.0, whole=False):
+    """Cut every correction of `bags` (with `whole`, every policy rollout holding one) into
+    out/episode_NNN, numbered on from the episodes already there, and add them to
+    out/corrections.json. Returns the new rows."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     index = out / INDEX
@@ -88,7 +113,14 @@ def extract(bags, out, arm='left', min_duration=2.0):
     n = len(_episodes(out))
     added = []
     for bag in bags:
-        found = find(bag, arm, min_duration)
+        corrections = find(bag, arm, min_duration)
+        found = corrections
+        if whole:
+            found = [
+                Correction('rollout', arm, a, b)
+                for a, b in rollouts(bag, arm)
+                if any(a <= c.start_ns <= b for c in corrections)
+            ]
         if not found:
             continue
         reader = _reader(bag)
@@ -124,6 +156,12 @@ def extract(bags, out, arm='left', min_duration=2.0):
                 'end_s': round((c.end_ns - start) / 1e9, 3),
                 'duration_s': round(c.duration, 3),
             }
+            if whole:
+                row['corrections'] = [
+                    [round((k.start_ns - c.start_ns) / 1e9, 3), round((min(k.end_ns, c.end_ns) - c.start_ns) / 1e9, 3)]
+                    for k in corrections
+                    if c.start_ns <= k.start_ns <= c.end_ns
+                ]
             rows.append(row)
             added.append(row)
     index.write_text(json.dumps(rows, indent=1) + '\n')
