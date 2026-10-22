@@ -179,7 +179,7 @@ inference:
   cuff: /robot/digital_io/left_lower_cuff/state  # squeezed = correcting by hand (zero-g), any policy
   takeover: /teleop/left/takeover  # BaxterSDK run_teleop.sh --takeover: the operator's VR drives, as a cuff squeeze
   gripper_command: /robot/end_effector/left_gripper/command  # what the operator commands it during a correction
-  resume_ramp: 0.3  # s, crossfade into the re-anchored chunk after a correction
+  resume_ramp: 1.0  # s, crossfade into the re-anchored chunk after a correction; VR-goal plans lead the arm by up to ~15 cm, which a shorter crossfade turns into a lunge
   chunk: /policy/left/chunk  # serve -> run
   nudge: /policy/left/nudge  # a nudge adapter's offset of each plan (inference.nudge)
   joint_states: /robot/joint_states
