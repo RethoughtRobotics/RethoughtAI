@@ -17,6 +17,8 @@ A cuff squeeze (`cuff`, zero-g) is a physical correction, and the run stays enga
 the target follows the arm (zero-g overrides the teleop, and on release its goal is already where
 the hand left the arm, so nothing springs back), and only the newest chunk is kept. On release that
 chunk, re-anchored on the corrected pose, runs at once, crossfaded in over `resume_ramp` s.
+The gripper likewise: during a correction the trigger follows what the operator commands the gripper
+(`gripper_command`), so the resumed chunk crossfades in from the gripper as the operator left it.
 A VR takeover (`takeover`, the teleop's --takeover: the operator's controller drives) is the same.
 
 A chunk is a trajectory of TCP targets timed from its observation: from a policy called here (a
@@ -43,11 +45,12 @@ no pose servo lag and needs no `lead`.
 With a `start` pose, the arm moves there first, then `on_start` runs.
 """
 
+import json
 from collections import deque
 from dataclasses import dataclass, replace
 
 import numpy as np
-from baxter_core_msgs.msg import DigitalIOState
+from baxter_core_msgs.msg import DigitalIOState, EndEffectorCommand
 from builtin_interfaces.msg import Time
 from geometry_msgs.msg import PoseStamped
 from moveit_msgs.msg import RobotTrajectory
@@ -221,6 +224,9 @@ class Runtime:
             node.create_subscription(DigitalIOState, cfg['cuff'], lambda m: self._by_hand('cuff', m.state), 10)
         if cfg.get('takeover'):
             node.create_subscription(Bool, cfg['takeover'], lambda m: self._by_hand('takeover', m.data), 10)
+        self.hand_trigger = None  # the gripper as the operator last commanded it, 0 open .. 1 closed
+        if cfg.get('gripper_command'):
+            node.create_subscription(EndEffectorCommand, cfg['gripper_command'], self._on_gripper_command, 10)
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.engaged_pub = node.create_publisher(Bool, cfg['engaged'], latched) if cfg.get('engaged') else None
         self.target_pub = node.create_publisher(PoseStamped, cfg['target'], 10)
@@ -233,6 +239,15 @@ class Runtime:
     def _by_hand(self, source, on):
         self.by_hand[source] = bool(on)
         self.squeezed = any(self.by_hand.values())
+
+    def _on_gripper_command(self, msg):
+        """A gripper position command (0 closed .. 100 open %), whoever sent it, as a trigger."""
+        try:
+            position = json.loads(msg.args or '{}').get('position')
+        except json.JSONDecodeError:
+            return
+        if position is not None:
+            self.hand_trigger = float(np.clip(1.0 - float(position) / 100.0, 0.0, 1.0))
 
     def _now(self):
         return self.node.get_clock().now().nanoseconds * 1e-9
@@ -330,7 +345,9 @@ class Runtime:
                 self._log(f'Correcting by hand ({", ".join(k for k, v in self.by_hand.items() if v)})')
                 self.correcting, self.chunks = True, self.chunks[-1:]
             self.segment, self.entry, self.hold = None, None, (p, R)
-            self._publish(p, q, None, engaged=True)  # the goal stays on the arm
+            # The goal stays on the arm, and the trigger on the operator's gripper: when the correction
+            # ends, the resumed chunk crossfades in from that, not from the trigger before it
+            self._publish(p, q, self.hand_trigger, engaged=True)
             return True
         self.correcting, self.accept_after = False, now  # in-flight chunks were anchored mid-correction
         if self.chunks:

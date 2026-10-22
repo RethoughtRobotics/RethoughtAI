@@ -385,3 +385,41 @@ def test_each_step_publishes_its_plan_ahead_as_a_timed_path():
     assert len(stamps) == 16 and paths[-1].header.frame_id == 'base'  # path_steps: 0.64 s of plan
     assert stamps[:3] == pytest.approx([10.04, 10.08, 10.12])
     assert x[:3] == pytest.approx([0.504, 0.508, 0.512])  # the plan's own poses, 0.1 m/s
+
+
+def test_a_correction_hands_back_the_gripper_as_the_operator_left_it():
+    """Closed on the object by hand, the resumed policy starts closed: no open command at the handback."""
+    rt, clock, sent = released_runtime()
+    triggers = []
+    rt.trigger_pub = type('Pub', (), {'publish': lambda self, m: triggers.append(m.data)})()
+    rt.merge = {'type': 'latest', 'gripper_latch': [0.3, 0.7]}
+    q = np.array([0, 0, 0, 1.0])
+    a = np.array([0.5, 0.0, 0.1])
+    rt.requested, rt.engaged, rt.frozen = True, True, (a, q)
+    rt.ref = (a, Rotation.identity(), a, Rotation.identity())
+    rt.hold, rt.accept_after = (a, Rotation.identity()), 0.0
+    rt.trigger = 0.0  # open before the correction
+    for k in range(10):
+        clock[0] = 0.01 * k
+        rt.tcp = (a, q, clock[0])
+        rt.history.append((clock[0], a, Rotation.identity()))
+    closed = line(0.05, 0.05, 0.5, 0.0)
+    closed.triggers[:] = 1.0  # the policy plans the gripper closed
+    rt.chunks = [closed]
+    rt.squeezed = True
+    command = type('Command', (), {'args': '{"position": 0.0}'})()  # the operator closes it
+    for k in range(20):
+        clock[0] = 0.1 + 0.01 * k
+        rt.tcp = (a, q, clock[0])
+        rt.history.append((clock[0], a, Rotation.identity()))
+        if k == 5:
+            rt._on_gripper_command(command)
+        rt._tick()
+    assert triggers[-1] == 1.0  # during the correction the trigger is the operator's
+    rt.squeezed = False
+    after = len(triggers)
+    for k in range(40):
+        clock[0] += 0.01
+        rt.tcp = (a, q, clock[0])
+        rt._tick()
+    assert triggers[after:] and min(triggers[after:]) == 1.0  # never opened at the handback
