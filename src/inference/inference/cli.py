@@ -162,7 +162,8 @@ def adapted(policy, adapter):
     if meta.get('kind') == 'weights':
         return f'{trainable}: tuned weights'
     if meta.get('kind') == 'nudge':
-        return f'nudge from {meta.get("corrections", {}).get("repo_id", "corrections")}'
+        kind = (meta.get('model') or {}).get('type', 'linear')
+        return f'{kind} nudge from {meta.get("corrections", {}).get("repo_id", "corrections")}'
 
     if meta.get('kind') in lora.HEADS:
         return f'{trainable}: {meta["kind"]} head, {meta["hidden"]} hidden'

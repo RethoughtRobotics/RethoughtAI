@@ -485,5 +485,5 @@ class LeRobotPolicy:
 
             actions = relative_actions(actions[:, :3], Rotation.from_quat(actions[:, 3:7]), actions[:, 7], *tcp)
         if self.nudge is not None:
-            actions = self.nudge(actions)
+            actions = self.nudge(actions, observation.get('observation.state'))
         return actions
