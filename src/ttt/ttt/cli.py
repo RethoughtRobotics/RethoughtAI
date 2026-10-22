@@ -343,7 +343,14 @@ def correction_rows(model, root, repo_id, out, device):
 @click.option('--save', default=None, help='Also fit on every episode and write a nudge adapter here.')
 @click.option('--model', default=None, help="With --save: the base checkpoint (default: the rows').")
 @click.option('--gripper', is_flag=True, help='With --save: the adapter also offsets the gripper trigger.')
-def corrector(rows, method, save, model, gripper):
+@click.option(
+    '--target',
+    default='plan',
+    show_default=True,
+    type=click.Choice(['plan', 'step']),
+    help='One offset for the whole plan, or one per step of it (shaped: e.g. up, then down, within a plan).',
+)
+def corrector(rows, method, save, model, gripper, target):
     """A corrector (ttt.correctors), each episode held out in turn: on the correction frames, plan error
     in cm / gripper decisions (open or closed now) that match the person's. With --save, the adapter
     for the robot or the sim (inference serve --adapter), by convention
@@ -352,7 +359,7 @@ def corrector(rows, method, save, model, gripper):
     from .correctors.evaluate import leave_one_out, save_adapter
 
     tensors, meta = cache.load(rows)
-    results = leave_one_out(tensors, method)
+    results = leave_one_out(tensors, method, target)
     names = ('base', 'constant', method, 'true nudge')
     click.echo('held out  ' + ''.join(f'{n:>14s}' for n in names) + '   policy frames moved (cm)')
     for r in results:
@@ -363,7 +370,7 @@ def corrector(rows, method, save, model, gripper):
     click.echo('mean      ' + ''.join(f'{mean[n]:8.2f}      ' for n in names))
     click.echo(json.dumps(results))
     if save:
-        path = save_adapter(tensors, meta, save, model or meta['model'], results, method, gripper)
+        path = save_adapter(tensors, meta, save, model or meta['model'], results, method, gripper, target)
         click.echo(f'nudge adapter: {path}')
 
 
@@ -375,7 +382,7 @@ def corrector(rows, method, save, model, gripper):
 @click.pass_context
 def linear(ctx, rows, save, model, gripper):
     """ttt corrector --method ridge."""
-    ctx.invoke(corrector, rows=rows, method='ridge', save=save, model=model, gripper=gripper)
+    ctx.invoke(corrector, rows=rows, method='ridge', save=save, model=model, gripper=gripper, target='plan')
 
 
 if __name__ == '__main__':

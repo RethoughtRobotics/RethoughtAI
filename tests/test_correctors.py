@@ -27,17 +27,19 @@ def checkpoint(tmp_path):
     return tmp_path / 'ckpt'
 
 
-def served(tmp_path, checkpoint, corrector, outputs, z):
-    """The offsets the robot's nudge adapter gives for the rows z, from the adapter `corrector` wrote."""
-    description, arrays = corrector.export(outputs)
-    path = nudge.save(tmp_path / corrector.name, description, arrays, checkpoint)
+def served(tmp_path, checkpoint, corrector, outputs, z, steps=0):
+    """The offsets the robot's nudge adapter gives for the rows z (per step: (steps, outputs) each),
+    from the adapter `corrector` wrote."""
+    columns = [s * 7 + j for s in range(max(steps, 1)) for j in range(outputs)]
+    description, arrays = corrector.export(columns)
+    path = nudge.save(tmp_path / corrector.name, description, arrays, checkpoint, steps=steps)
     out = []
     for row in z:
         encoder = types.SimpleNamespace(encode=lambda batch: batch)
         loaded = nudge.Nudge(path, types.SimpleNamespace(observation_encoder=encoder), checkpoint, 1.0)
         loaded.z = row  # what the policy's encoder gave for the frame
-        loaded(np.zeros((2, 7)))
-        out.append(loaded.offset)
+        plan = loaded(np.zeros((max(steps, 2) + 1, 7)))
+        out.append(plan[:steps] if steps else loaded.offset)
     return np.array(out)
 
 
@@ -70,3 +72,40 @@ def test_mlp_forward_matches_pytorch():
     x = np.random.default_rng(2).normal(size=(4, 3))
     layers = [(m.weight.detach().numpy(), m.bias.detach().numpy()) for m in net if isinstance(m, torch.nn.Linear)]
     np.testing.assert_allclose(mlp.forward(layers, x), net(torch.as_tensor(x)).detach().numpy(), atol=1e-10)
+
+
+@pytest.mark.parametrize('method', sorted(METHODS))
+def test_a_per_step_adapter_serves_each_steps_fitted_offset(tmp_path, checkpoint, method):
+    z, y, w, groups = rows()
+    steps = 3
+    y = np.concatenate([y * (k + 1) for k in range(steps)], axis=1)  # a different offset at each step
+    options = {'steps': 300} if method == 'mlp' else {}
+    corrector = METHODS[method](**options).fit(z, y, w, groups)
+    got = served(tmp_path, checkpoint, corrector, 7, z[:5], steps=steps)
+    want = corrector.predict(z[:5]).reshape(5, steps, 7)
+    want[:, :, 6] = np.clip(want[:, :, 6], 0.0, 1.0)  # the served plan keeps the trigger within 0 .. 1
+    np.testing.assert_allclose(got, want, atol=1e-5)
+
+
+def test_a_per_step_target_keeps_an_up_then_down_that_the_plan_average_loses():
+    import torch
+
+    from ttt.correctors import data
+
+    n, steps = 8, 4
+    offset = torch.zeros(n, steps, 6)
+    offset[:, :2, 2], offset[:, 2:, 2] = 0.03, -0.03  # up for half the plan, then down
+    tensors = {
+        'cond': torch.zeros(n, 3),
+        'chunk_pi': torch.zeros(n, steps, 7),
+        'chunk_demo': torch.zeros(n, steps, 7),
+        'intervention': torch.ones(n),
+        'step_intervention': torch.ones(n, steps),
+        'offset': offset,
+        'episode': torch.zeros(n, dtype=torch.int32),
+        'frame': torch.arange(n, dtype=torch.int32),
+    }
+    plan = data.problem(tensors, target='plan')[1]
+    step = data.problem(tensors, target='step')[1].reshape(n, steps, 7)
+    np.testing.assert_allclose(plan[:, 2], 0.0, atol=1e-12)  # averaged over the plan: nothing
+    np.testing.assert_allclose(step[0, :, 2], [0.03, 0.03, -0.03, -0.03])
