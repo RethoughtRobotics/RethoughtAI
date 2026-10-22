@@ -1,4 +1,4 @@
-# Cluster brief: correctors in the sim (priority 1), then re-scoring the earlier sim bases (priority 2)
+# Cluster brief: correctors in the sim (priority 1), the SimplifiedKinSweep models (priority 2), re-scoring the earlier sim bases (priority 3)
 
 For the cluster agent. Run everything headless (`MUJOCO_GL=egl`) with the job setup in your private
 `hpc/` checkout; nothing about the cluster goes into this repository. Report every result as a
@@ -60,7 +60,32 @@ C1 and C2 above 0 on red (S0 is at 0), C2 at least C1, C3 within noise of S0 on 
   one node should each get their own cores.
 - Never overwrite an adapter a run used; a new fit gets a new name (`sim-<colour>cup<N>-<method>-r<k>`).
 
-## Priority 2 (last): re-score the earlier sim bases with the current inference
+## Priority 2: SimplifiedKinSweep, inpainted and trained (no lead and 80 ms lead)
+
+A new two-arm kinesthetic sweep: 55 episodes, 43.6 min, both hands holding tools (no gripper), task
+"Sweep the colored cubes into the dustpan and empty them into the bin". Recording and lead choice:
+reports repo `2026-10-22-kin-sweep-lead`. Exported twice with measured labels:
+
+| dataset (private, tag `v3.0`) | label lead |
+|---|---|
+| `andnetdeboer/SimplifiedKinSweep_lead0ms` | 0 |
+| `andnetdeboer/SimplifiedKinSweep_lead80ms` | 2 steps: the plan input trails its plan by 55 to 90 ms |
+
+Start each as soon as it is on the Hub. For each, exactly the recipe of
+`SweepTrash_Kin-Full_inpainted_minimax`:
+
+1. **Remove the operator** from `observation.images.third_eye` (`tools/masking/README.md`): SAM3 person
+   masks, then MiniMax-Remover; push as `<dataset>_inpainted_minimax`. Check a contact sheet before
+   training: hands entering from the frame edge are the hard case.
+2. **Split** into train-only and held-out copies as `training/datasets/sweep_minimax_train48.yaml` and
+   `sweep_raw_heldout8.yaml` did: episodes 3, 10, 17, 24, 31, 38, 45, 52 held out, the other 47 for
+   training. Push both copies and add their `training/datasets/*.yaml`.
+3. **Train** a Multi-Task DiT with `training/dit_sweep/config.yaml` (30k steps, batch 64, bf16, 240x320
+   resize, random 224x224 crop), the held-out copy as `eval_repo_id`. Name the checkpoints
+   `multi_task_dit_SimplifiedKinSweep_inpainted_minimax_lead0ms_30k_r1` and `..._lead80ms_30k_r1`.
+4. Report both validation curves side by side; robot evaluation is local.
+
+## Priority 3 (last): re-score the earlier sim bases with the current inference
 
 The results in `reports/sim_experiments/README.md` were measured with the old VR-style target servo
 pipeline (`exp/old-servo-pipeline`). Re-score each base on seeds 1000 to 1049, blue, once, with the
