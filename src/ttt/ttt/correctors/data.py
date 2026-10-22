@@ -20,6 +20,7 @@ correction weighted as CR-DAgger's correction_horizon.
 import numpy as np
 
 WEIGHT = 4.0
+TARGETS = ('plan', 'step')  # one offset for the whole plan, or one per step of it
 LEAD_UP = 1.0  # s
 CONSTANT = 1e-6  # a feature's spread over the rows below this: it does not vary
 
@@ -33,9 +34,11 @@ def nudge(chunk_pi, chunk_demo, mask=None):
     return (difference if mask is None else difference * mask[:, :, None]).mean(axis=1)
 
 
-def problem(tensors, fps=25):
+def problem(tensors, fps=25, target='plan'):
     """(inputs, targets, weights, corrected, untouched) of the rows: inputs the base's features and
-    state; targets the nudge over the plan's corrected steps, 0 where none is; weights WEIGHT on rows
+    state; targets the nudge over the plan's corrected steps, 0 where none is (target 'plan': its
+    average over the plan, (N, 7); 'step': at each step, flattened step by step, (N, steps x 7), which
+    needs the per-step mask); weights WEIGHT on rows
     with a corrected step (rows without step_intervention: on correction frames and the LEAD_UP
     before each), 1 elsewhere; corrected the rows whose frame the person drove, untouched those no
     step of whose plan they did (what the evaluation scores)."""
@@ -45,15 +48,20 @@ def problem(tensors, fps=25):
     pi, demo = (tensors[k].numpy().astype(np.float64) for k in ('chunk_pi', 'chunk_demo'))
     n = len(pi)
     corrected = tensors['intervention'].numpy() > 0.5 if 'intervention' in tensors else np.ones(n, bool)
+    if target not in TARGETS:
+        raise ValueError(f'target {target!r}: one of {TARGETS}')
     if 'step_intervention' in tensors:
         steps = tensors['step_intervention'].numpy() > 0.5
-        y = nudge(pi, demo, steps)
+        y = (demo - pi) * steps[:, :, None]  # per step, the policy's own steps 0
         touched = steps.any(axis=1)
         if 'offset' in tensors:  # nudges: the offset as recorded; the gripper as the person drove it
             offset = tensors['offset'].numpy().astype(np.float64)
-            y[:, :6] = offset.mean(axis=1)
+            y[:, :, :6] = offset
             touched |= np.abs(offset).max(axis=(1, 2)) > 0
+        y = y.reshape(n, -1) if target == 'step' else y.mean(axis=1)
         return z, y, np.where(touched, WEIGHT, 1.0), corrected, ~touched
+    if target == 'step':
+        raise ValueError('per-step targets need rows with step_intervention (ttt correction-rows)')
     y = np.where(corrected[:, None], nudge(pi, demo), 0.0)
     episode, frame = tensors['episode'].numpy(), tensors['frame'].numpy()
     lead_up = np.zeros(n, bool)
@@ -83,9 +91,9 @@ def weighted_mean(y, w):
 
 def plan_error(chunk_pi, chunk_demo, offset):
     """Per row: the mean distance (cm) between the person's plan and the base's plan shifted by
-    `offset` (N, 7) over every step, the mean gripper difference, and whether the shifted plan's
+    `offset` (N, 7), or per step (N, steps, 7), over every step, the mean gripper difference, and whether the shifted plan's
     gripper decision now (step 0, closed above 0.5, the trigger kept within 0 .. 1) is the person's."""
-    shifted = chunk_pi + offset[:, None, :]
+    shifted = chunk_pi + (offset[:, None, :] if offset.ndim == 2 else offset)
     position = np.linalg.norm((shifted - chunk_demo)[:, :, :3], axis=2).mean(1) * 100
     trigger = np.clip(shifted[:, :, 6], 0.0, 1.0)
     gripper = np.abs(trigger - chunk_demo[:, :, 6]).mean(1)

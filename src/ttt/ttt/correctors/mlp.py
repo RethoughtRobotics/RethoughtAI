@@ -102,13 +102,13 @@ class MLP:
     def summary(self):
         return {'final_training_loss': self.loss, 'hidden': list(self.hidden), 'steps': self.steps}
 
-    def export(self, outputs):
-        """(model description, arrays) for the nudge adapter (inference.nudge), the first `outputs`."""
+    def export(self, columns):
+        """(model description, arrays) for the nudge adapter (inference.nudge): the target `columns`."""
         arrays = {'mean': self.scaler.mean, 'std': self.scaler.std}
         for i, (W, b) in enumerate(self.layers):
             last = i == len(self.layers) - 1
-            arrays[f'layer{i}.weight'] = W[:outputs] if last else W
-            arrays[f'layer{i}.bias'] = b[:outputs] if last else b
+            arrays[f'layer{i}.weight'] = W[columns] if last else W
+            arrays[f'layer{i}.bias'] = b[columns] if last else b
         return {'type': 'mlp', 'layers': len(self.layers), 'activation': 'gelu'}, arrays
 
 

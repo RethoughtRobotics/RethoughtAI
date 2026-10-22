@@ -1,7 +1,8 @@
 """A nudge adapter: a small corrector on a frozen policy, fitted from human corrections (ttt corrector;
 the methods are in ttt.correctors, README.md there).
 
-The frozen policy plans as always; the adapter adds one offset to every step of the plan:
+The frozen policy plans as always; the adapter adds one offset to every step of the plan, or, fitted
+per step (adapter.json `steps`), each of the plan's first `steps` its own (the last also to any later):
 
     plan' = plan + alpha * f(x),   x = (z - mean) / std
 
@@ -43,10 +44,11 @@ def fingerprint(model_dir):
     return digest.hexdigest()
 
 
-def save(path, model, arrays, model_dir, state=0, **meta):
+def save(path, model, arrays, model_dir, state=0, steps=0, **meta):
     """Write a nudge adapter at `path` for the checkpoint at `model_dir`: `model` its description
     ({'type': 'linear'} or {'type': 'mlp', 'layers': n, 'activation': 'gelu'}), `arrays` its weights
-    (module docstring), `state` how many of the last inputs are the observation.state; `meta`
+    (module docstring), `state` how many of the last inputs are the observation.state, `steps` the
+    plan steps of a per-step model (its outputs step by step), 0 for one offset per plan; `meta`
     (corrections, fit, ...) goes into adapter.json."""
     from safetensors.numpy import save_file
 
@@ -62,7 +64,9 @@ def save(path, model, arrays, model_dir, state=0, **meta):
         'base': {'checkpoint': str(Path(model_dir).resolve()), 'sha256': fingerprint(model_dir)},
         'inputs': int(len(arrays['mean'])),
         'state': int(state),  # the last `state` inputs are the observation.state; the rest the encoder's z
-        'outputs': int(len(_model(model, arrays).bias)),  # 6: position and rotation; 7: and the gripper trigger
+        # per step: 6 position and rotation; 7 and the gripper trigger
+        'outputs': int(len(_model(model, arrays).bias)) // max(int(steps), 1),
+        'steps': int(steps),
         **meta,
     }
     (path / META).write_text(json.dumps(entry, indent=2) + '\n')
@@ -123,7 +127,9 @@ class Nudge:
         self.alpha = float(alpha)
         self.state = int(meta.get('state', 0))
         self.outputs = int(meta.get('outputs', POSE))
-        self.z = self.offset = None  # of the last plan
+        self.steps = int(meta.get('steps', 0))
+        self.z = self.offset = None  # of the last plan; per step: its first step's (`offsets` all of them)
+        self.offsets = None
         encoder = policy.observation_encoder
         original = encoder.encode
 
@@ -137,16 +143,22 @@ class Nudge:
     def __call__(self, actions, state=None):
         """The plan (K, 7) relative actions plus alpha times the offset for the last encoded frame
         (and its observation.state `state`, when the adapter takes it), the trigger kept within 0 .. 1;
-        the offset (6 or 7,) applied is kept in `offset`."""
+        the offset (6 or 7,) applied is kept in `offset` (per step: at the first step, all in `offsets`)."""
         inputs = self.z
         if self.state:
             if state is None:
                 raise ValueError('this nudge adapter needs the observation.state')
             inputs = np.concatenate([self.z, np.asarray(state, np.float64).reshape(-1)])
         offset = self.alpha * self.model((inputs - self.mean) / self.std)
-        self.offset = offset
         out = np.array(actions, dtype=np.float64, copy=True)
-        out[:, : self.outputs] += offset
+        if self.steps:
+            offsets = offset.reshape(self.steps, self.outputs)
+            k = np.minimum(np.arange(len(out)), self.steps - 1)  # past the fitted steps: the last one's
+            out[:, : self.outputs] += offsets[k]
+            self.offsets, offset = offsets, offsets[0]
+        else:
+            out[:, : self.outputs] += offset
+        self.offset = offset
         if self.outputs > POSE:
             out[:, POSE] = np.clip(out[:, POSE], 0.0, 1.0)
         return out

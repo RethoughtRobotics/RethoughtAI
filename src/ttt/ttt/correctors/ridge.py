@@ -70,7 +70,7 @@ class Ridge:
     def summary(self):
         return {'lambda': self.lam}
 
-    def export(self, outputs):
-        """(model description, arrays) for the nudge adapter (inference.nudge), the first `outputs`."""
+    def export(self, columns):
+        """(model description, arrays) for the nudge adapter (inference.nudge): the target `columns`."""
         W, b, scaler = self.model
-        return {'type': 'linear'}, {'W': W[:, :outputs], 'b': b[:outputs], 'mean': scaler.mean, 'std': scaler.std}
+        return {'type': 'linear'}, {'W': W[:, columns], 'b': b[columns], 'mean': scaler.mean, 'std': scaler.std}
