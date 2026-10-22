@@ -89,13 +89,40 @@ def test_policy_frames_are_labelled_with_no_correction_and_corrections_weighted(
         'episode': torch.zeros(n, dtype=torch.int32),
         'frame': torch.arange(n, dtype=torch.int32),
     }
-    z, y, w, corrected = data.problem(tensors, fps=10)
+    z, y, w, corrected, untouched = data.problem(tensors, fps=10)
     assert z.shape == (n, 5)  # features and state
     np.testing.assert_allclose(y[40:50, 0], 0.05)
     np.testing.assert_allclose(y[:40], 0.0)  # the policy drove: no correction
     np.testing.assert_allclose(y[50:], 0.0)
     assert (w[40:50] == data.WEIGHT).all() and (w[30:40] == data.WEIGHT).all()  # and the 1 s before
     assert (w[:30] == 1.0).all() and (w[50:] == 1.0).all()
+
+
+def test_a_plan_running_into_a_correction_carries_the_nudge_of_its_corrected_steps():
+    import torch
+
+    n, steps = 60, 4
+    demo = torch.zeros(n, steps, 7)
+    demo[:, :, 0] = 0.05  # the person would be 5 cm further everywhere
+    intervention = torch.zeros(n)
+    intervention[40:50] = 1.0  # a correction from frame 40 to 49
+    k = torch.clamp(torch.arange(n)[:, None] + torch.arange(steps), max=n - 1)
+    tensors = {
+        'cond': torch.zeros(n, 3),
+        'chunk_pi': torch.zeros(n, steps, 7),
+        'chunk_demo': demo,
+        'intervention': intervention,
+        'step_intervention': intervention[k],
+        'episode': torch.zeros(n, dtype=torch.int32),
+        'frame': torch.arange(n, dtype=torch.int32),
+    }
+    z, y, w, corrected, untouched = data.problem(tensors)
+    # frames 37, 38, 39 plan 1, 2, 3 of their 4 steps into the correction; 36 none of them
+    np.testing.assert_allclose(y[36:41, 0], [0.0, 0.0125, 0.025, 0.0375, 0.05])
+    np.testing.assert_allclose(y[46:51, 0], [0.05, 0.0375, 0.025, 0.0125, 0.0])  # and out of it
+    assert (w[37:50] == data.WEIGHT).all() and (w[:37] == 1.0).all() and (w[50:] == 1.0).all()
+    assert corrected[40:50].all() and not corrected[37:40].any()  # scored as corrections: the frame's own
+    assert untouched[:37].all() and not untouched[37:50].any() and untouched[50:].all()
 
 
 def test_weighted_ridge_follows_the_heavier_rows():

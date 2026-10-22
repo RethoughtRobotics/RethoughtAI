@@ -15,7 +15,7 @@ plan' = plan + alpha * f(x)        x = the policy's own image features z and its
 ```
 rollout bags (VR takeovers or cuff squeezes)
   adapt corrections BAG... --out recorder/data/<Name> --whole     one episode per policy rollout
-  adapt lerobot recorder/data/<Name> --labels goal --intervention  LeRobot dataset, per-frame flag
+  adapt lerobot recorder/data/<Name> --labels goal --intervention --plans  per-frame flag, plans as run
   ttt correction-rows --model CKPT --dataset datasets/<Name> --repo-id ... --out ../data/corrector_rows/<name>
   ttt corrector --rows ../data/corrector_rows/<name> --method ridge|mlp [--gripper] [--save DIR]
   inference serve ... --model CKPT --adapter DIR --alpha A          (scripts/run_inference --adapter)
@@ -29,8 +29,9 @@ its features, its plan and the person's plan (`ttt/corrections.py`). Everything 
 | | |
 |---|---|
 | inputs | image features `z` (4130 for the Multi-Task DiT) and the 17-D state, standardised on the training rows; features that never vary there (the task text) are masked out |
-| target | the **whole-plan nudge**: the person's plan minus the policy's, averaged over its steps (7: position, rotation vector, gripper) where the person drove; **0 where the policy drove** |
-| weights | 4 on correction frames and on the 1 s before each correction starts, 1 elsewhere (CR-DAgger's `weighted_sampling` and `correction_horizon`) |
+| plan | the policy's plan as it ran on the robot (`adapt lerobot --plans`; rows only at the frames a plan was made from), else sampled again offline with a fixed seed |
+| target | the **whole-plan nudge**: the person's plan minus the policy's, averaged over its steps (7: position, rotation vector, gripper), **the steps the policy drove counting 0**: a plan running into a correction carries the part it overlaps (FlowCorrect's window label) |
+| weights | 4 on rows whose plan holds a corrected step, 1 elsewhere (CR-DAgger's `weighted_sampling`); rows without the per-step mask: 4 on correction frames and the 1 s before each |
 
 ## Methods
 

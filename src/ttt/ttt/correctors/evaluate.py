@@ -17,7 +17,7 @@ def leave_one_out(tensors, method, **options):
     One dict per held-out episode."""
     from . import METHODS
 
-    z, y, w, corrected = problem(tensors)
+    z, y, w, corrected, untouched = problem(tensors)
     pi = tensors['chunk_pi'].numpy().astype(np.float64)
     demo = tensors['chunk_demo'].numpy().astype(np.float64)
     episode = tensors['episode'].numpy()
@@ -31,7 +31,7 @@ def leave_one_out(tensors, method, **options):
             method: corrector.predict(z[test]),
             'true nudge': y[test],
         }
-        fix, keep = test & corrected, test & ~corrected
+        fix, keep = test & corrected, test & untouched
         row = {'held_out': int(held), 'frames': int(test.sum()), 'corrected': int(fix.sum()), **corrector.summary()}
         for name, offset in offsets.items():
             position, gripper, decision = plan_error(pi[fix], demo[fix], offset[corrected[test]])
@@ -41,7 +41,7 @@ def leave_one_out(tensors, method, **options):
                 'gripper_decision': float(decision.mean()),
             }
             if keep.any():
-                off = offset[~corrected[test]]
+                off = offset[untouched[test]]
                 row[name]['policy_frames_moved_cm'] = float(np.linalg.norm(off[:, :3], axis=1).mean() * 100)
                 row[name]['policy_frames_gripper_decision'] = float(plan_error(pi[keep], demo[keep], off)[2].mean())
         results.append(row)
@@ -55,7 +55,7 @@ def save_adapter(tensors, meta, path, model, results, method, gripper=False, **o
 
     from . import METHODS
 
-    z, y, w, corrected = problem(tensors)
+    z, y, w, corrected, _ = problem(tensors)
     episode = tensors['episode'].numpy()
     corrector = METHODS[method](**options).fit(z, y, w, episode)
     description, arrays = corrector.export(nudge_adapter.POSE + 1 if gripper else nudge_adapter.POSE)
@@ -76,10 +76,12 @@ def save_adapter(tensors, meta, path, model, results, method, gripper=False, **o
         fit={
             'method': method,
             **corrector.summary(),
-            'target': "whole-plan nudge: the person's plan minus the base's, averaged over the plan; 0 where the policy drove",
-            'weights': {'correction': WEIGHT, 'lead_up_s': LEAD_UP},
+            'target': "whole-plan nudge: the person's plan minus the base's, averaged over the plan"
+            + (', its steps the policy drove 0' if 'step_intervention' in tensors else '; 0 where the policy drove'),
+            'weights': {'correction': WEIGHT, **({} if 'step_intervention' in tensors else {'lead_up_s': LEAD_UP})},
             'n_action_steps': meta.get('n_action_steps'),
             'plan_seed': meta.get('plan_seed'),
+            'plans': meta.get('plans'),
         },
     )
     (Path(path) / 'results.json').write_text(json.dumps(results, indent=1) + '\n')

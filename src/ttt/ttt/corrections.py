@@ -2,8 +2,11 @@
 what the person did, in the base's own action space.
 
 The base is called as the robot's runtime calls it (inference.policies.LeRobotPolicy): the frame's
-cameras and state, the frame before as its history (n_obs_steps), noise seeded per frame (PLAN_SEED)
-so a plan is repeatable. Rows, one per frame:
+cameras and state, the frame before as its history (n_obs_steps). Its plan is the one it made on the
+robot where the dataset has it (adapt lerobot --plans: policy.plan), and the rows are then only the
+frames a plan was made from (every few frames); otherwise it plans again here at every frame, noise
+seeded per frame (PLAN_SEED) so a plan is repeatable, which is a new sample, not the plan that ran.
+Rows:
 
   cond        the base's observation encoder output for the frame, the corrector's input z_t
   chunk_pi    the base's plan from the frame on: n_action_steps x 7, relative to the TCP at the frame
@@ -12,6 +15,8 @@ so a plan is repeatable. Rows, one per frame:
   state       the base's 17-D state at the frame (labels.model_state)
   intervention  1 where the person drove (the dataset's `intervention`, adapt lerobot --intervention);
               a dataset without it is all corrections, 1 everywhere
+  step_intervention  the same at each step of the plan (n_action_steps; past the episode's end its
+              last frame): which of the plan's steps the person drove
   episode, frame
 
 The correction a corrector learns is chunk_demo - chunk_pi (ttt.correctors, its README.md). Datasets are the exporter's raw layout
@@ -80,8 +85,17 @@ def build(model, root, repo_id, device='cuda', task=None, log=print):
         intervention = np.stack(ds.hf_dataset['intervention']).reshape(-1).astype(np.float32)
     else:
         intervention = np.ones(len(ds), np.float32)
+    logged = 'policy.plan' in ds.features
+    if logged:
+        ran = np.stack(ds.hf_dataset['policy.plan']).reshape(len(ds), -1, 8).astype(np.float64)
+        planned = np.stack(ds.hf_dataset['policy.planned']).reshape(-1) > 0.5
+        if ran.shape[1] < steps:
+            raise ValueError(f'the logged plans have {ran.shape[1]} steps, the base plans {steps}')
+    else:
+        planned = np.ones(len(ds), bool)
 
-    rows = {'cond': [], 'chunk_pi': [], 'chunk_demo': [], 'state': [], 'episode': [], 'frame': []}
+    rows = {k: [] for k in ('cond', 'chunk_pi', 'chunk_demo', 'state', 'intervention', 'step_intervention')}
+    rows.update(episode=[], frame=[])
     previous = None
     for i in range(len(ds)):
         item = ds[i]
@@ -90,15 +104,21 @@ def build(model, root, repo_id, device='cuda', task=None, log=print):
         observation['observation.state'] = model_state(s[:3], s[3:7], s[7], s[8:15])
         if frames[i] == 0:
             previous = observation  # LeRobot starts an episode by repeating its first observation
+        history, previous = previous, observation
+        if not planned[i]:
+            continue
         torch.manual_seed(PLAN_SEED)
-        plan = lp(observation, history=[previous])[:steps]
-        previous = observation
+        plan = lp(observation, history=[history])[:steps]  # its encoder output is the row's z
+        if logged:
+            plan = relative(ran[i, :steps], s)
 
         last = np.flatnonzero(episodes == episodes[i]).max()
         k = np.minimum(np.arange(i, i + steps), last)
         rows['cond'].append(encoded.last[0].float().cpu())
         rows['chunk_pi'].append(torch.as_tensor(plan, dtype=torch.float32))
         rows['chunk_demo'].append(torch.as_tensor(relative(goals[k], s)))
+        rows['step_intervention'].append(torch.as_tensor(intervention[k]))
+        rows['intervention'].append(float(intervention[i]))
         rows['state'].append(torch.as_tensor(observation['observation.state'], dtype=torch.float32))
         rows['episode'].append(int(episodes[i]))
         rows['frame'].append(int(frames[i]))
@@ -110,7 +130,8 @@ def build(model, root, repo_id, device='cuda', task=None, log=print):
         'chunk_pi': torch.stack(rows['chunk_pi']),
         'chunk_demo': torch.stack(rows['chunk_demo']),
         'state': torch.stack(rows['state']),
-        'intervention': torch.as_tensor(intervention),
+        'intervention': torch.tensor(rows['intervention'], dtype=torch.float32),
+        'step_intervention': torch.stack(rows['step_intervention']),
         'episode': torch.tensor(rows['episode'], dtype=torch.int32),
         'frame': torch.tensor(rows['frame'], dtype=torch.int32),
     }
@@ -124,6 +145,7 @@ def build(model, root, repo_id, device='cuda', task=None, log=print):
         'frames': len(ds),
         'episodes': sorted({int(e) for e in episodes}),
         'n_action_steps': steps,
-        'plan_seed': PLAN_SEED,
+        'plan_seed': None if logged else PLAN_SEED,
+        'plans': 'logged: the plans the base made on the robot' if logged else 'resampled here, seeded',
     }
     return tensors, meta

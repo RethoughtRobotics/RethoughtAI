@@ -8,6 +8,9 @@ joints and gripper take their latest message at or before it, by recording time.
   action                    the goal the teleop servo chased [x y z qx qy qz qw] (the TCP while
                             the clutch was released), and the gripper trigger (0 open .. 1 closed);
                             kinesthetic (labels="measured"): the measured TCP and gripper opening
+  policy.plan, policy.planned  (plans) the policy's plan from this frame's observation as it ran,
+                            flattened (steps x [x y z qx qy qz qw trigger], absolute), and 1 where
+                            one was made (every few frames; labels.load_plans), else zeros and 0
 Several arms (kinesthetic, bimanual): both per arm, concatenated, names prefixed with the arm.
 Both poses are absolute: a policy's chunk observed at frame t is action[t + k] relative to the TCP
 in state[t] (labels.chunk_actions), which needs both frames, so it is formed at training time.
@@ -23,7 +26,7 @@ import rosbag2_py
 from rclpy.serialization import deserialize_message
 from rosidl_runtime_py.utilities import get_message
 
-from adapter.labels import load_episode, load_measured
+from adapter.labels import load_episode, load_measured, load_plans
 
 JOINTS = ('s0', 's1', 'e0', 'e1', 'w0', 'w1', 'w2')
 MAX_IMAGE_AGE = 0.15  # s: a frame whose image is older than this is reported (a recording stall)
@@ -53,7 +56,7 @@ def _continuous(q):
 
 def _drop_leading(ep, n):
     """The episode without its first n steps."""
-    fields = ('tcp_p', 'tcp_q', 'target_p', 'target_q', 'trigger', 't', 'intervention')
+    fields = ('tcp_p', 'tcp_q', 'target_p', 'target_q', 'trigger', 't', 'intervention', 'plan', 'planned')
     return replace(ep, **{f: getattr(ep, f)[n:] for f in fields if getattr(ep, f) is not None})
 
 
@@ -103,10 +106,11 @@ class StillRuns:
         return True
 
 
-def features(cameras, arms, image_shapes, gripper=True, intervention=False):
+def features(cameras, arms, image_shapes, gripper=True, intervention=False, plan_steps=0):
     """One arm: state tcp.*, gripper, joints; action goal.*, gripper. Several: each name prefixed
     with its arm (left.tcp.x ...), arms in order. Without `gripper`, no gripper in either. With
-    `intervention`, a per-frame `intervention` (1 while a person drives the arm, labels.Episode)."""
+    `intervention`, a per-frame `intervention` (1 while a person drives the arm, labels.Episode).
+    With `plan_steps`, the policy's plan of that many steps as it ran (policy.plan, policy.planned)."""
     arms = [arms] if isinstance(arms, str) else list(arms)
     pose = ['x', 'y', 'z', 'qx', 'qy', 'qz', 'qw']
     prefix = (lambda arm: f'{arm}.') if len(arms) > 1 else (lambda arm: '')
@@ -125,6 +129,10 @@ def features(cameras, arms, image_shapes, gripper=True, intervention=False):
     f['action'] = {'dtype': 'float32', 'shape': (len(action),), 'names': action}
     if intervention:
         f['intervention'] = {'dtype': 'float32', 'shape': (1,), 'names': ['intervention']}
+    if plan_steps:
+        names = [f'{k}.{x}' for k in range(plan_steps) for x in ['x', 'y', 'z', 'qx', 'qy', 'qz', 'qw', 'trigger']]
+        f['policy.plan'] = {'dtype': 'float32', 'shape': (len(names),), 'names': names}
+        f['policy.planned'] = {'dtype': 'float32', 'shape': (1,), 'names': ['planned']}
     return f
 
 
@@ -207,6 +215,7 @@ def export(
     trim_idle=None,
     trim_still=None,
     intervention=False,
+    plans=False,
 ):
     """Write every episode_* of `session` (in order) as one LeRobot dataset at `root`.
 
@@ -220,7 +229,8 @@ def export(
     each episode. `workers` > 1 exports runs of consecutive episodes in parallel processes, each to
     its own dataset, then joins them in order (LeRobot's aggregate_datasets: videos and data files
     concatenated, not re-encoded). `intervention` adds each frame's intervention flag (goal labels:
-    the policy rollouts of adapt corrections --whole, labels.Episode.intervention)."""
+    the policy rollouts of adapt corrections --whole, labels.Episode.intervention); `plans` the
+    policy's plans as they ran (labels.load_plans), for ttt correction-rows."""
     import shutil
     from concurrent.futures import ProcessPoolExecutor
     from multiprocessing import get_context
@@ -243,6 +253,7 @@ def export(
         trim_idle=trim_idle,
         trim_still=trim_still,
         intervention=intervention,
+        plans=plans,
     )
     if workers == 1:
         summary = _export_episodes(episodes, root=root, log=log, **args)
@@ -308,6 +319,7 @@ def _export_episodes(
     trim_idle=None,
     trim_still=None,
     intervention=False,
+    plans=False,
 ):
     """`episodes` as one LeRobot dataset at `root`; per episode, a summary of what was written."""
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -315,7 +327,13 @@ def _export_episodes(
     arm = arms[0]
 
     def load(path):  # arm -> Episode
-        return load_measured(path, arms, fps, lead) if labels == 'measured' else {arm: load_episode(path, arm, fps)}
+        if labels == 'measured':
+            return load_measured(path, arms, fps, lead)
+        ep = load_episode(path, arm, fps)
+        if plans:
+            plan, planned = load_plans(path, ep.t, arm)
+            ep = replace(ep, plan=plan, planned=planned)
+        return {arm: ep}
 
     first = load(episodes[0])[arms[0]]
     sample = read_frames(episodes[0], arms, cameras, first.t[-1:], gripper)[0][0]  # last frame: all streams are up
@@ -323,7 +341,7 @@ def _export_episodes(
     dataset = LeRobotDataset.create(
         repo_id,
         fps,
-        features(cameras, arms, shapes, gripper, intervention),
+        features(cameras, arms, shapes, gripper, intervention, first.plan.shape[1] if plans else 0),
         root=root,
         robot_type=robot_type,
         streaming_encoding=True,
@@ -370,6 +388,9 @@ def _export_episodes(
             ]).astype(np.float32)
             if intervention:
                 row['intervention'] = np.array([eps[arm].intervention[k]], dtype=np.float32)
+            if plans:
+                row['policy.plan'] = eps[arm].plan[k, : first.plan.shape[1]].reshape(-1)
+                row['policy.planned'] = np.array([eps[arm].planned[k]], dtype=np.float32)
             row['task'] = task
             dataset.add_frame(row)
             n += 1
