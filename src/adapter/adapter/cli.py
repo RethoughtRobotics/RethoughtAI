@@ -101,7 +101,14 @@ def adapt(config, sessions, output, hub_repo):
 @click.option(
     '--workers', default=6, show_default=True, help='Episodes exported in parallel processes, then joined in order'
 )
-def lerobot(session, config, repo_id, task, output, arms, labels, lead, gripper, trim_idle, trim_still, workers):
+@click.option(
+    '--intervention',
+    is_flag=True,
+    help="Add each frame's intervention flag (1 while a person drives: VR takeover, cuff), for adapt corrections --whole",
+)
+def lerobot(
+    session, config, repo_id, task, output, arms, labels, lead, gripper, trim_idle, trim_still, workers, intervention
+):
     """Convert a teleop session (every episode_*) to a LeRobot v3 dataset on labels.py's actions.
 
     \b
@@ -140,6 +147,7 @@ def lerobot(session, config, repo_id, task, output, arms, labels, lead, gripper,
         workers=workers,
         trim_idle=(trim_idle[0], math.radians(trim_idle[1])) if trim_idle else None,
         trim_still=(trim_still[0], math.radians(trim_still[1])) if trim_still else None,
+        intervention=intervention,
     )
     click.echo(f'Dataset written to {output}')
 
@@ -149,7 +157,8 @@ def lerobot(session, config, repo_id, task, output, arms, labels, lead, gripper,
 @click.option('--out', required=True, type=click.Path(path_type=Path), help='Session directory (created or added to)')
 @click.option('--arm', default='left', show_default=True)
 @click.option('--min-duration', default=2.0, show_default=True, help='s; shorter corrections are left out')
-def corrections(bags, out, arm, min_duration):
+@click.option('--whole', is_flag=True, help='One episode per policy rollout holding a correction, not per correction')
+def corrections(bags, out, arm, min_duration, whole):
     """Cut each correction (VR takeover, cuff squeeze) of rollout bags into its own episode.
 
     \b
@@ -159,7 +168,7 @@ def corrections(bags, out, arm, min_duration):
     """
     from adapter.corrections import extract
 
-    rows = extract(bags, out, arm, min_duration)
+    rows = extract(bags, out, arm, min_duration, whole)
     for r in rows:
         click.echo(
             f'{r["episode"]}  {r["kind"]:8s} {r["start_s"]:7.1f} s  {r["duration_s"]:5.1f} s  {Path(r["bag"]).name}'

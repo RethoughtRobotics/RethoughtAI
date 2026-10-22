@@ -6,6 +6,7 @@ from scipy.spatial.transform import Rotation
 
 pytest.importorskip('torch')
 from ttt import corrections  # noqa: E402
+from ttt.correctors import data, ridge  # noqa: E402
 
 
 def raw_state(p, q, gripper=0.0):
@@ -33,7 +34,7 @@ def test_the_nudge_is_the_mean_difference_over_the_plan():
     pi = np.zeros((2, 3, 7))
     demo = np.zeros((2, 3, 7))
     demo[0, :, 0] = [0.01, 0.02, 0.03]
-    np.testing.assert_allclose(corrections.nudge(pi, demo)[0], [0.02, 0, 0, 0, 0, 0, 0])
+    np.testing.assert_allclose(data.nudge(pi, demo)[0], [0.02, 0, 0, 0, 0, 0, 0])
 
 
 def test_ridge_recovers_a_linear_map():
@@ -41,21 +42,66 @@ def test_ridge_recovers_a_linear_map():
     z = rng.normal(size=(300, 20))
     W = rng.normal(size=(20, 3))
     y = z @ W + [0.1, -0.3, 0.2]
-    model = corrections.fit_ridge(z, y, lam=1e-6)
+    model = ridge.fit_ridge(z, y, lam=1e-6)
     z_new = rng.normal(size=(5, 20))
-    np.testing.assert_allclose(corrections.predict(model, z_new), z_new @ W + [0.1, -0.3, 0.2], atol=0.05)
+    np.testing.assert_allclose(ridge.predict(model, z_new), z_new @ W + [0.1, -0.3, 0.2], atol=0.05)
 
 
 def test_with_more_features_than_rows_ridge_fits_the_rows_it_saw():
     rng = np.random.default_rng(0)
     z, y = rng.normal(size=(60, 200)), rng.normal(size=(60, 2))
-    np.testing.assert_allclose(corrections.predict(corrections.fit_ridge(z, y, lam=1e-6), z), y, atol=1e-4)
+    np.testing.assert_allclose(ridge.predict(ridge.fit_ridge(z, y, lam=1e-6), z), y, atol=1e-4)
 
 
 def test_a_large_penalty_predicts_the_training_mean():
     rng = np.random.default_rng(1)
     z, y = rng.normal(size=(40, 30)), rng.normal(size=(40, 7))
-    model = corrections.fit_ridge(z, y, lam=1e9)
-    np.testing.assert_allclose(
-        corrections.predict(model, rng.normal(size=(3, 30))), np.tile(y.mean(0), (3, 1)), atol=1e-4
-    )
+    model = ridge.fit_ridge(z, y, lam=1e9)
+    np.testing.assert_allclose(ridge.predict(model, rng.normal(size=(3, 30))), np.tile(y.mean(0), (3, 1)), atol=1e-4)
+
+
+def test_a_feature_constant_in_training_gets_no_weight():
+    rng = np.random.default_rng(2)
+    z = np.c_[rng.normal(size=(50, 5)), np.full((50, 3), 0.25)]  # the last 3 never vary
+    y = z[:, :1] * [1.0, -1.0]
+    model = ridge.fit_ridge(z, y, lam=1.0)
+    np.testing.assert_array_equal(model[0][5:], 0.0)
+    live = z[:4].copy()
+    live[:, 5:] += 5e-4  # live float32 against rows cached as float16
+    np.testing.assert_allclose(ridge.predict(model, live), ridge.predict(model, z[:4]))
+
+
+def test_policy_frames_are_labelled_with_no_correction_and_corrections_weighted():
+    import torch
+
+    n, steps = 60, 4
+    pi = torch.zeros(n, steps, 7)
+    demo = torch.zeros(n, steps, 7)
+    demo[:, :, 0] = 0.05  # the person would be 5 cm further everywhere
+    intervention = torch.zeros(n)
+    intervention[40:50] = 1.0  # a correction from frame 40
+    tensors = {
+        'cond': torch.zeros(n, 3),
+        'state': torch.zeros(n, 2),
+        'chunk_pi': pi,
+        'chunk_demo': demo,
+        'intervention': intervention,
+        'episode': torch.zeros(n, dtype=torch.int32),
+        'frame': torch.arange(n, dtype=torch.int32),
+    }
+    z, y, w, corrected = data.problem(tensors, fps=10)
+    assert z.shape == (n, 5)  # features and state
+    np.testing.assert_allclose(y[40:50, 0], 0.05)
+    np.testing.assert_allclose(y[:40], 0.0)  # the policy drove: no correction
+    np.testing.assert_allclose(y[50:], 0.0)
+    assert (w[40:50] == data.WEIGHT).all() and (w[30:40] == data.WEIGHT).all()  # and the 1 s before
+    assert (w[:30] == 1.0).all() and (w[50:] == 1.0).all()
+
+
+def test_weighted_ridge_follows_the_heavier_rows():
+    rng = np.random.default_rng(3)
+    z = rng.normal(size=(200, 4))
+    y = np.where(np.arange(200)[:, None] < 100, 1.0, -1.0) * np.ones((200, 1))
+    w = np.where(np.arange(200) < 100, 9.0, 1.0)
+    model = ridge.fit_ridge(z, y, lam=1e6, w=w)  # all penalty: the weighted mean
+    np.testing.assert_allclose(model[1], [0.8])

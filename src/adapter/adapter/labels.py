@@ -7,6 +7,8 @@ or before it, by recording time (the robot's header clocks are not aligned with 
   target   what the teleop servo chased: its goal (/teleop/{arm}/goal) while clutched, the TCP
            while the clutch was released and the arm held still
   trigger  gripper as the VR trigger value (0 open .. 1 closed), from the last gripper command
+  intervention  1 while a person drives the arm in a policy rollout (the teleop's VR takeover,
+           /teleop/{arm}/takeover, or a cuff squeeze), else 0; zero without either topic
 
 Kinesthetic episodes (load_measured) have no goal: the target is the measured TCP.
 
@@ -37,6 +39,7 @@ class Episode:
     trigger: np.ndarray  # (N,)
     t: np.ndarray  # (N,) recording time, ns
     fps: float
+    intervention: np.ndarray | None = None  # (N,) 1 while a person drives (a policy rollout's corrections)
 
     def __len__(self):
         return len(self.t)
@@ -61,6 +64,8 @@ def load_episode(path, arm='left', fps=25.0) -> Episode:
         'tcp': f'/teleop/{arm}/tcp',
         'goal': f'/teleop/{arm}/goal',
         'gripper': f'/robot/end_effector/{arm}_gripper/command',
+        'takeover': f'/teleop/{arm}/takeover',
+        'cuff': f'/robot/digital_io/{arm}_lower_cuff/state',
     }
     reader = rosbag2_py.SequentialReader()
     reader.open(rosbag2_py.StorageOptions(uri=str(Path(path)), storage_id='mcap'), rosbag2_py.ConverterOptions('', ''))
@@ -75,7 +80,12 @@ def load_episode(path, arm='left', fps=25.0) -> Episode:
         topic, raw, t = reader.read_next()
         name = next(n for n, tp in topics.items() if tp == topic)
         msg = deserialize_message(raw, get_message(types[topic]))
-        data[name].append((t, _gripper_trigger(msg) if name == 'gripper' else _pose(msg)))
+        if name == 'gripper':
+            data[name].append((t, _gripper_trigger(msg)))
+        elif name in ('takeover', 'cuff'):
+            data[name].append((t, bool(msg.data if name == 'takeover' else msg.state)))
+        else:
+            data[name].append((t, _pose(msg)))
 
     if not data['goal']:
         raise NoTeleopGoal(f'{path}: no {topics["goal"]} message: a kinesthetic recording (load_measured)')
@@ -100,7 +110,14 @@ def load_episode(path, arm='left', fps=25.0) -> Episode:
         gr_t = np.array([x for x, _ in data['gripper']])
         gr = latest(gr_t, t)
         trigger = np.where(gr >= 0, np.array([v for _, v in data['gripper']])[np.maximum(gr, 0)], 0.0)
-    return Episode(tcp_p, tcp_q, target_p, target_q, trigger, t, fps)
+    intervention = np.zeros(len(t))
+    for name in ('takeover', 'cuff'):
+        if data[name]:
+            times = np.array([x for x, _ in data[name]])
+            i = latest(times, t)
+            on = np.array([v for _, v in data[name]])[np.maximum(i, 0)]
+            intervention = np.maximum(intervention, np.where(i >= 0, on, False).astype(float))
+    return Episode(tcp_p, tcp_q, target_p, target_q, trigger, t, fps, intervention)
 
 
 def load_measured(path, arms=('left',), fps=25.0, lead=1) -> dict[str, Episode]:

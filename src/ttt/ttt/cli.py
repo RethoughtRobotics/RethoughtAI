@@ -1,6 +1,7 @@
 import json
 
 import click
+import numpy as np
 
 from . import BASE, M0_POOL, TEST
 
@@ -336,20 +337,45 @@ def correction_rows(model, root, repo_id, out, device):
     click.echo(cache.save(tensors, meta, out))
 
 
+@main.command('corrector')
+@click.option('--rows', required=True, help='Rows directory (ttt correction-rows).')
+@click.option('--method', default='ridge', show_default=True, type=click.Choice(['ridge', 'mlp']))
+@click.option('--save', default=None, help='Also fit on every episode and write a nudge adapter here.')
+@click.option('--model', default=None, help="With --save: the base checkpoint (default: the rows').")
+@click.option('--gripper', is_flag=True, help='With --save: the adapter also offsets the gripper trigger.')
+def corrector(rows, method, save, model, gripper):
+    """A corrector (ttt.correctors), each episode held out in turn: on the correction frames, plan error
+    in cm / gripper decisions (open or closed now) that match the person's. With --save, the adapter
+    for the robot or the sim (inference serve --adapter), by convention
+    models/<policy>/adapters/<corrections>-<method>-r<round>."""
+    from . import cache
+    from .correctors.evaluate import leave_one_out, save_adapter
+
+    tensors, meta = cache.load(rows)
+    results = leave_one_out(tensors, method)
+    names = ('base', 'constant', method, 'true nudge')
+    click.echo('held out  ' + ''.join(f'{n:>14s}' for n in names) + '   policy frames moved (cm)')
+    for r in results:
+        cells = ''.join(f'{r[n]["position_cm"]:8.1f}/{r[n]["gripper_decision"]:4.0%}' for n in names)
+        moved = r[method].get('policy_frames_moved_cm')
+        click.echo(f'{r["held_out"]:8d}  {cells}' + (f'   {moved:.1f}' if moved is not None else ''))
+    mean = {n: np.mean([r[n]['position_cm'] for r in results]) for n in names}
+    click.echo('mean      ' + ''.join(f'{mean[n]:8.2f}      ' for n in names))
+    click.echo(json.dumps(results))
+    if save:
+        path = save_adapter(tensors, meta, save, model or meta['model'], results, method, gripper)
+        click.echo(f'nudge adapter: {path}')
+
+
 @main.command('linear')
 @click.option('--rows', required=True, help='Rows directory (ttt correction-rows).')
-def linear(rows):
-    """Ridge on the base's features, each correction held out in turn: plan error in cm / gripper."""
-    from . import cache, corrections
-
-    tensors, _ = cache.load(rows)
-    results = corrections.leave_one_out(tensors)
-    names = ('base', 'constant', 'linear', 'true nudge')
-    click.echo('held out  lambda     ' + ''.join(f'{n:>14s}' for n in names))
-    for r in results:
-        cells = ''.join(f'{r[n]["position_cm"]:8.1f}/{r[n]["gripper"]:.2f}' for n in names)
-        click.echo(f'{r["held_out"]:8d}  {r["lambda"]:9.0f}  {cells}')
-    click.echo(json.dumps(results))
+@click.option('--save', default=None, help='Also fit on every episode and write a nudge adapter here.')
+@click.option('--model', default=None, help="With --save: the base checkpoint (default: the rows').")
+@click.option('--gripper', is_flag=True, help='With --save: the adapter also offsets the gripper trigger.')
+@click.pass_context
+def linear(ctx, rows, save, model, gripper):
+    """ttt corrector --method ridge."""
+    ctx.invoke(corrector, rows=rows, method='ridge', save=save, model=model, gripper=gripper)
 
 
 if __name__ == '__main__':
