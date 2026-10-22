@@ -107,10 +107,12 @@ def build(model, root, repo_id, device='cuda', task=None, log=print):
         history, previous = previous, observation
         if not planned[i]:
             continue
-        torch.manual_seed(PLAN_SEED)
-        plan = lp(observation, history=[history])[:steps]  # its encoder output is the row's z
-        if logged:
+        if logged:  # the plan that ran; only the encoder is called
+            lp.encode(observation, history=[history])
             plan = relative(ran[i, :steps], s)
+        else:
+            torch.manual_seed(PLAN_SEED)
+            plan = lp(observation, history=[history])[:steps]
 
         last = np.flatnonzero(episodes == episodes[i]).max()
         k = np.minimum(np.arange(i, i + steps), last)
