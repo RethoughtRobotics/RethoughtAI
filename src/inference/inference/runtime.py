@@ -11,8 +11,8 @@ target change, vr_axes_policy.yaml's identity map). So the released target never
 to follow a sagging or homed arm (that would be a stroke), and engaged goals are mapped through
 that rule from the TCP and target at engage.
 Engaged: the deadman held (or the `engage` service) and a fresh TCP. Published on `engaged`.
-B (`home`, the teleop's home button) clears the run and opens the gripper; while still engaged it
-resumes fresh after homing.
+B (`home`, the teleop's home button) clears the run, opens the gripper and stops the policy, as
+scripts/stop does: it stays released until engaged again.
 A cuff squeeze (`cuff`, zero-g) is a physical correction, and the run stays engaged through it:
 the target follows the arm (zero-g overrides the teleop, and on release its goal is already where
 the hand left the arm, so nothing springs back), and only the newest chunk is kept. On release that
@@ -276,8 +276,9 @@ class Runtime:
         return response
 
     def _on_home(self, msg):
-        """B: the teleop homes the arm. Release once, so nothing carries over: the policy server
-        resets, and re-engaging (scripts/start still on, or the clutch held) starts from fresh chunks."""
+        """B: the teleop homes the arm. Release and stop, as scripts/stop does: the policy server
+        resets, and engaging again (scripts/start, the stick, the clutch) starts from fresh chunks."""
+        self.requested = False
         self.chunks, self.segment, self.entry, self.approach = [], None, None, None
         self.trigger = 0.0  # open: the teleop opens it to home, and follows this trigger after
         self.gripper_closed = False
@@ -287,9 +288,7 @@ class Runtime:
             self._released(self.tcp is not None)
         if self.settled - getattr(self, '_home_logged', -np.inf) > 1.0:  # B repeats while held
             self._home_logged = self.settled
-            self._log(
-                'B: cleared, gripper open; resumes fresh after homing while scripts/start is on or the clutch is held'
-            )
+            self._log('B: stopped, gripper open; engage again to start fresh')
 
     def _on_chunk(self, msg):
         t0 = msg.joint_trajectory.header.stamp
