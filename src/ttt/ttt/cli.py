@@ -338,11 +338,15 @@ def correction_rows(model, root, repo_id, out, device):
 
 @main.command('linear')
 @click.option('--rows', required=True, help='Rows directory (ttt correction-rows).')
-def linear(rows):
-    """Ridge on the base's features, each correction held out in turn: plan error in cm / gripper."""
+@click.option('--save', default=None, help='Also fit on every correction and write a nudge adapter here.')
+@click.option('--model', default=None, help="With --save: the base checkpoint (default: the rows').")
+def linear(rows, save, model):
+    """Ridge on the base's features, each correction held out in turn: plan error in cm / gripper.
+    With --save, the adapter for the robot (inference serve --adapter), conventionally
+    models/<policy>/adapters/<corrections>-linear-r<round>."""
     from . import cache, corrections
 
-    tensors, _ = cache.load(rows)
+    tensors, meta = cache.load(rows)
     results = corrections.leave_one_out(tensors)
     names = ('base', 'constant', 'linear', 'true nudge')
     click.echo('held out  lambda     ' + ''.join(f'{n:>14s}' for n in names))
@@ -350,6 +354,9 @@ def linear(rows):
         cells = ''.join(f'{r[n]["position_cm"]:8.1f}/{r[n]["gripper"]:.2f}' for n in names)
         click.echo(f'{r["held_out"]:8d}  {r["lambda"]:9.0f}  {cells}')
     click.echo(json.dumps(results))
+    if save:
+        path = corrections.save_adapter(tensors, meta, save, model or meta['model'], results)
+        click.echo(f'nudge adapter: {path}')
 
 
 if __name__ == '__main__':

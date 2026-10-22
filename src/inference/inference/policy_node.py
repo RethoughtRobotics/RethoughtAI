@@ -24,7 +24,7 @@ from collections import deque
 import numpy as np
 from baxter_core_msgs.msg import DigitalIOState, EndEffectorState
 from builtin_interfaces.msg import Duration
-from geometry_msgs.msg import PoseStamped, Transform
+from geometry_msgs.msg import PoseStamped, Transform, TwistStamped
 from moveit_msgs.msg import RobotTrajectory
 from nav_msgs.msg import Path
 from rclpy.qos import DurabilityPolicy, QoSProfile
@@ -87,6 +87,12 @@ class PolicyNode:
         if cfg.get('takeover'):
             node.create_subscription(Bool, cfg['takeover'], lambda m: self._by_hand('takeover', m.data), 10)
         self.chunk_pub = node.create_publisher(RobotTrajectory, cfg['chunk'], 10)
+        # A nudge adapter's offset of each plan (linear: position m, angular: rotation vector rad, base axes)
+        self.nudge_pub = (
+            node.create_publisher(TwistStamped, cfg['nudge'], 10)
+            if cfg.get('nudge') and getattr(policy, 'nudge', None)
+            else None
+        )
         self.path_pub = node.create_publisher(Path, cfg['chunk'] + '_path', 10)
         self.samples = deque(maxlen=2 * policy.n_obs_steps + 2)  # (time, observation), every half step
         if policy.n_obs_steps > 1:
@@ -221,11 +227,20 @@ class PolicyNode:
             self.last = Chunk(t + self.dt * np.arange(len(actions)), positions, rotations, actions[:, 6], t)
             self.anchor = (tcp_p, Rotation.from_quat(tcp_q))
             self._publish(t, positions, rotations, actions[:, 6])
+            if self.nudge_pub is not None:
+                self._publish_nudge(t, self.policy.nudge.offset)
             if self.count % max(1, round(LOG_EVERY * self.fps / self.every)) == 0:
                 self.node.get_logger().info(
                     f'{self.count} chunks; inference p50 {1000 * self.latency.percentile(0.5):.0f} ms, '
                     f'recent max {1000 * self.latency.percentile(0.99):.0f} ms ({self.dt * 1000:.0f} ms per step)'
                 )
+
+    def _publish_nudge(self, t, offset):
+        msg = TwistStamped()
+        msg.header.stamp, msg.header.frame_id = Time(nanoseconds=round(t * 1e9)).to_msg(), 'base'
+        msg.twist.linear.x, msg.twist.linear.y, msg.twist.linear.z = (float(x) for x in offset[:3])
+        msg.twist.angular.x, msg.twist.angular.y, msg.twist.angular.z = (float(x) for x in offset[3:6])
+        self.nudge_pub.publish(msg)
 
     def _publish(self, t, positions, rotations, triggers):
         stamp = Time(nanoseconds=round(t * 1e9)).to_msg()

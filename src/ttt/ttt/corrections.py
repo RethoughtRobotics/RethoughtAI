@@ -132,9 +132,15 @@ def nudge(chunk_pi, chunk_demo):
 def fit_ridge(z, y, lam):
     """W (d, k) and b (k,) minimising |z W + b - y|^2 + lam |W|^2 over standardised features; returns
     (W, b, mean, std) with mean and std of z for standardising new rows. Solved in the dual
-    (n x n), since the features (d) outnumber the rows."""
-    mean, std = z.mean(0), z.std(0) + 1e-6
-    x = (z - mean) / std
+    (n x n), since the features (d) outnumber the rows.
+
+    A feature that does not vary over the rows (e.g. the task text's embedding) carries no information:
+    it gets std 1 and weight exactly 0, so a live value that differs from the rows' by rounding (they
+    are cached as float16) cannot be amplified."""
+    mean, spread = z.mean(0), z.std(0)
+    varies = spread > CONSTANT
+    std = np.where(varies, spread, 1.0)
+    x = np.where(varies, (z - mean) / std, 0.0)
     b = y.mean(0)
     K = x @ x.T
     alpha = np.linalg.solve(K + lam * np.eye(len(x)), y - b)
@@ -156,6 +162,7 @@ def plan_error(chunk_pi, chunk_demo, offset):
 
 
 LAMBDAS = np.logspace(0, 6, 13)
+CONSTANT = 1e-6  # a feature's spread over the rows below this: it does not vary
 
 
 def leave_one_out(tensors):
@@ -197,3 +204,42 @@ def _choose_lambda(z, y, episode):
             e.append(np.linalg.norm(predict(fit_ridge(z[tr], y[tr], lam), z[te]) - y[te], axis=1).mean())
         errors.append(np.mean(e))
     return LAMBDAS[int(np.argmin(errors))]
+
+
+def save_adapter(tensors, meta, path, model, results):
+    """Fit ridge on every correction (lambda chosen by holding each out in turn) and write it as a
+    nudge adapter (inference.nudge) for `model`, with `results` (leave_one_out's) beside it."""
+    import json
+    from pathlib import Path
+
+    from inference import nudge as nudge_adapter
+
+    z = tensors['cond'].float().numpy().astype(np.float64)
+    y = nudge(tensors['chunk_pi'].numpy().astype(np.float64), tensors['chunk_demo'].numpy().astype(np.float64))
+    episode = tensors['episode'].numpy()
+    lam = _choose_lambda(z, y, episode)
+    W, b, mean, std = fit_ridge(z, y, lam)
+    path = nudge_adapter.save(
+        path,
+        W,
+        b,
+        mean,
+        std,
+        model,
+        corrections={
+            'repo_id': meta.get('repo_id'),
+            'root': meta.get('root'),
+            'task': meta.get('task'),
+            'episodes': [int(e) for e in np.unique(episode)],
+            'frames': int(len(episode)),
+        },
+        fit={
+            'method': 'ridge',
+            'lambda': float(lam),
+            'target': "whole-plan nudge: the person's plan minus the base's, averaged over the plan",
+            'n_action_steps': meta.get('n_action_steps'),
+            'plan_seed': meta.get('plan_seed'),
+        },
+    )
+    (Path(path) / 'results.json').write_text(json.dumps(results, indent=1) + '\n')
+    return path

@@ -180,6 +180,7 @@ inference:
   takeover: /teleop/left/takeover  # BaxterSDK run_teleop.sh --takeover: the operator's VR drives, as a cuff squeeze
   resume_ramp: 0.3  # s, crossfade into the re-anchored chunk after a correction
   chunk: /policy/left/chunk  # serve -> run
+  nudge: /policy/left/nudge  # a nudge adapter's offset of each plan (inference.nudge)
   joint_states: /robot/joint_states
   gripper: /robot/end_effector/left_gripper/state
   task: Pick up the blue cup and place it in the red container  # only if a checkpoint's dataset tasks are unreadable

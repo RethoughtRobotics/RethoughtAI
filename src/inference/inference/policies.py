@@ -256,11 +256,11 @@ def load_config(path):
 
 
 def check_adapter(policy_type, adapter):
-    """An adapter this policy type loads: any on VITA, a LoRA one on the Multi-Task DiT."""
+    """An adapter this policy type loads: any on VITA, a LoRA or nudge one on the Multi-Task DiT."""
     from inference import lora
 
     kind = lora.meta(adapter).get('kind')
-    if policy_type == 'vita' or (policy_type == 'multi_task_dit' and kind is None):
+    if policy_type == 'vita' or (policy_type == 'multi_task_dit' and kind in (None, 'nudge')):
         return
     raise ValueError(f'{adapter}: a {kind or "LoRA"} adapter is for VITA checkpoints, not {policy_type}')
 
@@ -292,7 +292,16 @@ class LeRobotPolicy:
     """
 
     def __init__(
-        self, model, device, task='', rtc=None, revision=None, overrides=None, adapter=None, alpha=1.0, explore=None
+        self,
+        model,
+        device,
+        task='',
+        rtc=None,
+        revision=None,
+        overrides=None,
+        adapter=None,
+        alpha=1.0,
+        explore=None,
     ):
         import torch
         from lerobot.policies import get_policy_class, make_pre_post_processors
@@ -337,11 +346,17 @@ class LeRobotPolicy:
             self.policy.config.rtc_config = RTCConfig(**rtc)
             self.policy.init_rtc_processor()
         self.policy.to(device).eval()
+        self.nudge = None  # inference.nudge.Nudge with a nudge adapter
         if adapter:
             from inference import lora
 
             check_adapter(cfg.type, adapter)
-            lora.load_policy(self.policy, adapter, alpha)
+            if lora.meta(adapter).get('kind') == 'nudge':
+                from inference.nudge import Nudge
+
+                self.nudge = Nudge(adapter, self.policy, path, alpha)
+            else:
+                lora.load_policy(self.policy, adapter, alpha)
         self.explorer = None
         if explore:
             from inference.explore import Explorer
@@ -469,4 +484,6 @@ class LeRobotPolicy:
             from adapter.labels import relative_actions
 
             actions = relative_actions(actions[:, :3], Rotation.from_quat(actions[:, 3:7]), actions[:, 7], *tcp)
+        if self.nudge is not None:
+            actions = self.nudge(actions)
         return actions

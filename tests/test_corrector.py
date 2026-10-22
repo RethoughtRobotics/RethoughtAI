@@ -59,3 +59,14 @@ def test_a_large_penalty_predicts_the_training_mean():
     np.testing.assert_allclose(
         corrections.predict(model, rng.normal(size=(3, 30))), np.tile(y.mean(0), (3, 1)), atol=1e-4
     )
+
+
+def test_a_feature_constant_in_training_gets_no_weight():
+    rng = np.random.default_rng(2)
+    z = np.c_[rng.normal(size=(50, 5)), np.full((50, 3), 0.25)]  # the last 3 never vary
+    y = z[:, :1] * [1.0, -1.0]
+    model = corrections.fit_ridge(z, y, lam=1.0)
+    np.testing.assert_array_equal(model[0][5:], 0.0)
+    live = z[:4].copy()
+    live[:, 5:] += 5e-4  # live float32 against rows cached as float16
+    np.testing.assert_allclose(corrections.predict(model, live), corrections.predict(model, z[:4]))
