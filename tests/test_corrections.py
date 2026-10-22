@@ -1,6 +1,7 @@
 """adapter.corrections: each takeover or cuff squeeze of a rollout bag becomes its own episode."""
 
 import json
+import shutil
 
 import pytest
 
@@ -101,3 +102,12 @@ def test_whole_rollouts_skip_the_discarded_and_carry_their_label(tmp_path):
         ('episode_000', 2.0, 2.0, 'success'),
         ('episode_001', 8.0, 2.0, 'unlabelled'),
     ]
+
+
+def test_numbering_continues_after_the_last_episode_when_some_were_removed(tmp_path):
+    for name in 'abc':
+        write_bag(tmp_path / name, [0] * 5 + [1] * 30)
+    corrections.extract([tmp_path / 'a', tmp_path / 'b'], tmp_path / 'session')
+    shutil.rmtree(tmp_path / 'session' / 'episode_000')  # discarded on review
+    rows = corrections.extract([tmp_path / 'c'], tmp_path / 'session')
+    assert [r['episode'] for r in rows] == ['episode_002']
