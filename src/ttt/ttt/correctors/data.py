@@ -2,9 +2,15 @@
 weights, and the plan error the evaluation scores.
 
 Trained as CR-DAgger trains its residual (Xu et al. 2025, github.com/yifan-hou/cr-dagger): on whole
-rollouts, the frames the policy drove labelled with no correction, so a corrector learns to leave the
-base alone there, and the correction frames weighted WEIGHT times (its weighted_sampling: 4), as are
-the LEAD_UP s before each correction starts, where the base goes wrong (its correction_horizon).
+rollouts, where the policy drove labelled with no correction, so a corrector learns to leave the base
+alone there, and the corrections weighted WEIGHT times (its weighted_sampling: 4).
+
+Which steps were corrected is decided per step of each row's plan (rows' step_intervention), as
+FlowCorrect labels a window positive when any of its steps is corrected (Welte et al. 2026): a row
+whose plan runs into a correction gets the part of the nudge its corrected steps carry, and its
+weight, so the target rises into each correction over one plan instead of jumping from a weighted 0.
+Rows built before step_intervention existed are labelled per frame, with the LEAD_UP s before each
+correction weighted as CR-DAgger's correction_horizon.
 """
 
 import numpy as np
@@ -14,30 +20,38 @@ LEAD_UP = 1.0  # s
 CONSTANT = 1e-6  # a feature's spread over the rows below this: it does not vary
 
 
-def nudge(chunk_pi, chunk_demo):
+def nudge(chunk_pi, chunk_demo, mask=None):
     """The whole-plan nudge per row: the person's plan minus the base's, averaged over the plan's
-    steps, (N, 7). Rotation vectors are subtracted directly, a first-order approximation for the
-    small angles of a correction."""
-    return (chunk_demo - chunk_pi).mean(axis=1)
+    steps, (N, 7); with `mask` (N, steps), the steps outside it count as 0 (the policy's own steps).
+    Rotation vectors are subtracted directly, a first-order approximation for the small angles of a
+    correction."""
+    difference = chunk_demo - chunk_pi
+    return (difference if mask is None else difference * mask[:, :, None]).mean(axis=1)
 
 
 def problem(tensors, fps=25):
-    """(inputs, targets, weights, corrected) of the rows: inputs the base's features and state;
-    targets the nudge where the person drove and 0 where the policy did; weights WEIGHT on the
-    correction frames and the LEAD_UP before each, 1 elsewhere."""
+    """(inputs, targets, weights, corrected, untouched) of the rows: inputs the base's features and
+    state; targets the nudge over the plan's corrected steps, 0 where none is; weights WEIGHT on rows
+    with a corrected step (rows without step_intervention: on correction frames and the LEAD_UP
+    before each), 1 elsewhere; corrected the rows whose frame the person drove, untouched those no
+    step of whose plan they did (what the evaluation scores)."""
     z = tensors['cond'].float().numpy().astype(np.float64)
     if 'state' in tensors:
         z = np.hstack([z, tensors['state'].numpy().astype(np.float64)])
-    y = nudge(tensors['chunk_pi'].numpy().astype(np.float64), tensors['chunk_demo'].numpy().astype(np.float64))
-    n = len(y)
+    pi, demo = (tensors[k].numpy().astype(np.float64) for k in ('chunk_pi', 'chunk_demo'))
+    n = len(pi)
     corrected = tensors['intervention'].numpy() > 0.5 if 'intervention' in tensors else np.ones(n, bool)
-    y = np.where(corrected[:, None], y, 0.0)
+    if 'step_intervention' in tensors:
+        steps = tensors['step_intervention'].numpy() > 0.5
+        y = nudge(pi, demo, steps)
+        touched = steps.any(axis=1)
+        return z, y, np.where(touched, WEIGHT, 1.0), corrected, ~touched
+    y = np.where(corrected[:, None], nudge(pi, demo), 0.0)
     episode, frame = tensors['episode'].numpy(), tensors['frame'].numpy()
     lead_up = np.zeros(n, bool)
     for i in np.flatnonzero(corrected & ~np.r_[False, corrected[:-1]]):  # where a correction starts
         lead_up |= (episode == episode[i]) & (frame >= frame[i] - LEAD_UP * fps) & (frame < frame[i])
-    w = np.where(corrected | lead_up, WEIGHT, 1.0)
-    return z, y, w, corrected
+    return z, y, np.where(corrected | lead_up, WEIGHT, 1.0), corrected, ~corrected
 
 
 class Scaler:
