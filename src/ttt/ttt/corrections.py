@@ -9,9 +9,12 @@ so a plan is repeatable. Rows, one per frame:
   chunk_pi    the base's plan from the frame on: n_action_steps x 7, relative to the TCP at the frame
   chunk_demo  the person's goals over the same steps, made relative to the same TCP (labels.chunk_actions;
               past the episode's end the last goal repeats, the arm holding, as training pads it)
+  state       the base's 17-D state at the frame (labels.model_state)
+  intervention  1 where the person drove (the dataset's `intervention`, adapt lerobot --intervention);
+              a dataset without it is all corrections, 1 everywhere
   episode, frame
 
-The correction a corrector learns is chunk_demo - chunk_pi. Datasets are the exporter's raw layout
+The correction a corrector learns is chunk_demo - chunk_pi (ttt.correctors, its README.md). Datasets are the exporter's raw layout
 (15-D state, 8-D absolute goal and trigger); this module turns them into the 17-D state and 7-D
 relative chunks of a relative checkpoint (training/TRAINING.md), the layout of the VR-trained bases.
 """
@@ -73,8 +76,12 @@ def build(model, root, repo_id, device='cuda', task=None, log=print):
     goals = np.stack(ds.hf_dataset['action']).astype(np.float64)
     episodes = np.asarray(ds.hf_dataset['episode_index'])
     frames = np.asarray(ds.hf_dataset['frame_index'])
+    if 'intervention' in ds.features:
+        intervention = np.stack(ds.hf_dataset['intervention']).reshape(-1).astype(np.float32)
+    else:
+        intervention = np.ones(len(ds), np.float32)
 
-    rows = {'cond': [], 'chunk_pi': [], 'chunk_demo': [], 'episode': [], 'frame': []}
+    rows = {'cond': [], 'chunk_pi': [], 'chunk_demo': [], 'state': [], 'episode': [], 'frame': []}
     previous = None
     for i in range(len(ds)):
         item = ds[i]
@@ -92,6 +99,7 @@ def build(model, root, repo_id, device='cuda', task=None, log=print):
         rows['cond'].append(encoded.last[0].float().cpu())
         rows['chunk_pi'].append(torch.as_tensor(plan, dtype=torch.float32))
         rows['chunk_demo'].append(torch.as_tensor(relative(goals[k], s)))
+        rows['state'].append(torch.as_tensor(observation['observation.state'], dtype=torch.float32))
         rows['episode'].append(int(episodes[i]))
         rows['frame'].append(int(frames[i]))
         if i % 100 == 0:
@@ -101,6 +109,8 @@ def build(model, root, repo_id, device='cuda', task=None, log=print):
         'cond': torch.stack(rows['cond']).half(),
         'chunk_pi': torch.stack(rows['chunk_pi']),
         'chunk_demo': torch.stack(rows['chunk_demo']),
+        'state': torch.stack(rows['state']),
+        'intervention': torch.as_tensor(intervention),
         'episode': torch.tensor(rows['episode'], dtype=torch.int32),
         'frame': torch.tensor(rows['frame'], dtype=torch.int32),
     }
@@ -117,129 +127,3 @@ def build(model, root, repo_id, device='cuda', task=None, log=print):
         'plan_seed': PLAN_SEED,
     }
     return tensors, meta
-
-
-# The first corrector: one nudge for the whole plan, linear in the base's features.
-
-
-def nudge(chunk_pi, chunk_demo):
-    """The whole-plan nudge per row: the person's plan minus the base's, averaged over the plan's
-    steps, (N, 7). Rotation vectors are subtracted directly, a first-order approximation for the
-    small angles of a correction."""
-    return (chunk_demo - chunk_pi).mean(axis=1)
-
-
-def fit_ridge(z, y, lam):
-    """W (d, k) and b (k,) minimising |z W + b - y|^2 + lam |W|^2 over standardised features; returns
-    (W, b, mean, std) with mean and std of z for standardising new rows. Solved in the dual
-    (n x n), since the features (d) outnumber the rows.
-
-    A feature that does not vary over the rows (e.g. the task text's embedding) carries no information:
-    it gets std 1 and weight exactly 0, so a live value that differs from the rows' by rounding (they
-    are cached as float16) cannot be amplified."""
-    mean, spread = z.mean(0), z.std(0)
-    varies = spread > CONSTANT
-    std = np.where(varies, spread, 1.0)
-    x = np.where(varies, (z - mean) / std, 0.0)
-    b = y.mean(0)
-    K = x @ x.T
-    alpha = np.linalg.solve(K + lam * np.eye(len(x)), y - b)
-    return x.T @ alpha, b, mean, std
-
-
-def predict(model, z):
-    W, b, mean, std = model
-    return ((z - mean) / std) @ W + b
-
-
-def plan_error(chunk_pi, chunk_demo, offset):
-    """Per row: the mean distance (cm) between the person's plan and the base's plan shifted by
-    `offset` (N, 7) over every step, and the mean gripper difference."""
-    shifted = chunk_pi + offset[:, None, :]
-    position = np.linalg.norm((shifted - chunk_demo)[:, :, :3], axis=2).mean(1) * 100
-    gripper = np.abs((shifted - chunk_demo)[:, :, 6]).mean(1)
-    return position, gripper
-
-
-LAMBDAS = np.logspace(0, 6, 13)
-CONSTANT = 1e-6  # a feature's spread over the rows below this: it does not vary
-
-
-def leave_one_out(tensors):
-    """Each correction held out in turn: ridge trained on the others (lambda chosen by leaving one of
-    those out in turn), and the corrected plan's error on the held-out one for the base alone, a
-    constant nudge (the training mean), the linear nudge and the true nudge (the best any one nudge
-    per row can do). Returns one dict per held-out correction."""
-    z = tensors['cond'].float().numpy().astype(np.float64)
-    pi = tensors['chunk_pi'].numpy().astype(np.float64)
-    demo = tensors['chunk_demo'].numpy().astype(np.float64)
-    episode = tensors['episode'].numpy()
-    y = nudge(pi, demo)
-    results = []
-    for held in np.unique(episode):
-        train, test = episode != held, episode == held
-        lam = _choose_lambda(z[train], y[train], episode[train])
-        model = fit_ridge(z[train], y[train], lam)
-        offsets = {
-            'base': np.zeros_like(y[test]),
-            'constant': np.broadcast_to(y[train].mean(0), y[test].shape),
-            'linear': predict(model, z[test]),
-            'true nudge': y[test],
-        }
-        row = {'held_out': int(held), 'frames': int(test.sum()), 'lambda': float(lam)}
-        for name, offset in offsets.items():
-            position, gripper = plan_error(pi[test], demo[test], offset)
-            row[name] = {'position_cm': float(position.mean()), 'gripper': float(gripper.mean())}
-        results.append(row)
-    return results
-
-
-def _choose_lambda(z, y, episode):
-    """The lambda with the lowest held-out nudge error, each training correction held out in turn."""
-    errors = []
-    for lam in LAMBDAS:
-        e = []
-        for held in np.unique(episode):
-            tr, te = episode != held, episode == held
-            e.append(np.linalg.norm(predict(fit_ridge(z[tr], y[tr], lam), z[te]) - y[te], axis=1).mean())
-        errors.append(np.mean(e))
-    return LAMBDAS[int(np.argmin(errors))]
-
-
-def save_adapter(tensors, meta, path, model, results):
-    """Fit ridge on every correction (lambda chosen by holding each out in turn) and write it as a
-    nudge adapter (inference.nudge) for `model`, with `results` (leave_one_out's) beside it."""
-    import json
-    from pathlib import Path
-
-    from inference import nudge as nudge_adapter
-
-    z = tensors['cond'].float().numpy().astype(np.float64)
-    y = nudge(tensors['chunk_pi'].numpy().astype(np.float64), tensors['chunk_demo'].numpy().astype(np.float64))
-    episode = tensors['episode'].numpy()
-    lam = _choose_lambda(z, y, episode)
-    W, b, mean, std = fit_ridge(z, y, lam)
-    path = nudge_adapter.save(
-        path,
-        W,
-        b,
-        mean,
-        std,
-        model,
-        corrections={
-            'repo_id': meta.get('repo_id'),
-            'root': meta.get('root'),
-            'task': meta.get('task'),
-            'episodes': [int(e) for e in np.unique(episode)],
-            'frames': int(len(episode)),
-        },
-        fit={
-            'method': 'ridge',
-            'lambda': float(lam),
-            'target': "whole-plan nudge: the person's plan minus the base's, averaged over the plan",
-            'n_action_steps': meta.get('n_action_steps'),
-            'plan_seed': meta.get('plan_seed'),
-        },
-    )
-    (Path(path) / 'results.json').write_text(json.dumps(results, indent=1) + '\n')
-    return path

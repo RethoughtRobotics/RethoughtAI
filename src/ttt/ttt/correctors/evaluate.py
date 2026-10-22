@@ -1,0 +1,86 @@
+"""Evaluation and export, the same for every corrector: each episode held out in turn, and the final
+fit on all episodes written as a nudge adapter (inference.nudge)."""
+
+import json
+from pathlib import Path
+
+import numpy as np
+
+from .data import LEAD_UP, WEIGHT, plan_error, problem, weighted_mean
+
+
+def leave_one_out(tensors, method, **options):
+    """Each episode held out in turn, `method` (a name in METHODS) fitted on the others. On its
+    correction frames: the plan's error against the person's, and its gripper decisions, for the base
+    alone, a constant nudge (the training mean), the corrector and the true nudge (the best one nudge
+    per row can do). On its policy frames: how far each moves the base where it was left to drive.
+    One dict per held-out episode."""
+    from . import METHODS
+
+    z, y, w, corrected = problem(tensors)
+    pi = tensors['chunk_pi'].numpy().astype(np.float64)
+    demo = tensors['chunk_demo'].numpy().astype(np.float64)
+    episode = tensors['episode'].numpy()
+    results = []
+    for held in np.unique(episode):
+        train, test = episode != held, episode == held
+        corrector = METHODS[method](**options).fit(z[train], y[train], w[train], episode[train])
+        offsets = {
+            'base': np.zeros_like(y[test]),
+            'constant': np.broadcast_to(weighted_mean(y[train], w[train]), y[test].shape),
+            method: corrector.predict(z[test]),
+            'true nudge': y[test],
+        }
+        fix, keep = test & corrected, test & ~corrected
+        row = {'held_out': int(held), 'frames': int(test.sum()), 'corrected': int(fix.sum()), **corrector.summary()}
+        for name, offset in offsets.items():
+            position, gripper, decision = plan_error(pi[fix], demo[fix], offset[corrected[test]])
+            row[name] = {
+                'position_cm': float(position.mean()),
+                'gripper': float(gripper.mean()),
+                'gripper_decision': float(decision.mean()),
+            }
+            if keep.any():
+                off = offset[~corrected[test]]
+                row[name]['policy_frames_moved_cm'] = float(np.linalg.norm(off[:, :3], axis=1).mean() * 100)
+                row[name]['policy_frames_gripper_decision'] = float(plan_error(pi[keep], demo[keep], off)[2].mean())
+        results.append(row)
+    return results
+
+
+def save_adapter(tensors, meta, path, model, results, method, gripper=False, **options):
+    """Fit `method` on every episode and write it as a nudge adapter for the checkpoint `model`, with
+    `results` (leave_one_out's) beside it. With `gripper` the adapter also offsets the trigger."""
+    from inference import nudge as nudge_adapter
+
+    from . import METHODS
+
+    z, y, w, corrected = problem(tensors)
+    episode = tensors['episode'].numpy()
+    corrector = METHODS[method](**options).fit(z, y, w, episode)
+    description, arrays = corrector.export(nudge_adapter.POSE + 1 if gripper else nudge_adapter.POSE)
+    path = nudge_adapter.save(
+        path,
+        description,
+        arrays,
+        model,
+        state=int(tensors['state'].shape[1]) if 'state' in tensors else 0,
+        corrections={
+            'repo_id': meta.get('repo_id'),
+            'root': meta.get('root'),
+            'task': meta.get('task'),
+            'episodes': [int(e) for e in np.unique(episode)],
+            'frames': int(len(episode)),
+            'corrected_frames': int(corrected.sum()),
+        },
+        fit={
+            'method': method,
+            **corrector.summary(),
+            'target': "whole-plan nudge: the person's plan minus the base's, averaged over the plan; 0 where the policy drove",
+            'weights': {'correction': WEIGHT, 'lead_up_s': LEAD_UP},
+            'n_action_steps': meta.get('n_action_steps'),
+            'plan_seed': meta.get('plan_seed'),
+        },
+    )
+    (Path(path) / 'results.json').write_text(json.dumps(results, indent=1) + '\n')
+    return path
