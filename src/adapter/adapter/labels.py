@@ -9,6 +9,8 @@ or before it, by recording time (the robot's header clocks are not aligned with 
   trigger  gripper as the VR trigger value (0 open .. 1 closed), from the last gripper command
   intervention  1 while a person drives the arm in a policy rollout (the teleop's VR takeover,
            /teleop/{arm}/takeover, or a cuff squeeze), else 0; zero without either topic
+  plan     (load_plans) the plan the policy made from the step's observation, as it ran: the
+           policy server's chunk (/policy/{arm}/chunk), stamped with its observation's time
 
 Kinesthetic episodes (load_measured) have no goal: the target is the measured TCP.
 
@@ -40,6 +42,8 @@ class Episode:
     t: np.ndarray  # (N,) recording time, ns
     fps: float
     intervention: np.ndarray | None = None  # (N,) 1 while a person drives (a policy rollout's corrections)
+    plan: np.ndarray | None = None  # (N, steps, 8) the policy's plan from the step's observation (load_plans)
+    planned: np.ndarray | None = None  # (N,) 1 where a plan was made from the step's observation
 
     def __len__(self):
         return len(self.t)
@@ -118,6 +122,50 @@ def load_episode(path, arm='left', fps=25.0) -> Episode:
             on = np.array([v for _, v in data[name]])[np.maximum(i, 0)]
             intervention = np.maximum(intervention, np.where(i >= 0, on, False).astype(float))
     return Episode(tcp_p, tcp_q, target_p, target_q, trigger, t, fps, intervention)
+
+
+def load_plans(path, t, arm='left'):
+    """(plan (N, steps, 8), planned (N,)) at the steps `t` (ns): each plan the policy server sent
+    (/policy/{arm}/chunk: absolute TCP goals [x y z qx qy qz qw] and trigger per step, stamped with the
+    time of the observation it was made from) at the step nearest that time, within half a step;
+    planned is 1 there. Plans arrive ~0.1 s after their observation, every few steps: the other
+    steps have none. A rollout with a nudge adapter sent the base's plan plus the nudge, not the
+    base's: refused."""
+    chunk, nudge = f'/policy/{arm}/chunk', f'/policy/{arm}/nudge'
+    reader = rosbag2_py.SequentialReader()
+    reader.open(rosbag2_py.StorageOptions(uri=str(Path(path)), storage_id='mcap'), rosbag2_py.ConverterOptions('', ''))
+    types = {x.name: x.type for x in reader.get_all_topics_and_types()}
+    if chunk not in types:
+        raise ValueError(f'{path}: no {chunk} (recorded without the policy server)')
+    reader.set_filter(rosbag2_py.StorageFilter(topics=[x for x in (chunk, nudge) if x in types]))
+    plans = []  # (observation time ns, (steps, 8))
+    while reader.has_next():
+        topic, raw, _ = reader.read_next()
+        if topic == nudge:
+            raise ValueError(f"{path}: the policy ran with a nudge adapter: its plans are not the base's")
+        msg = deserialize_message(raw, get_message(types[chunk]))
+        stamp = msg.joint_trajectory.header.stamp
+        tf = [p.transforms[0] for p in msg.multi_dof_joint_trajectory.points]
+        trigger = [p.positions[0] for p in msg.joint_trajectory.points] or [0.0] * len(tf)
+        plans.append((
+            stamp.sec * 1_000_000_000 + stamp.nanosec,
+            [
+                [x.translation.x, x.translation.y, x.translation.z, x.rotation.x, x.rotation.y, x.rotation.z]
+                + [x.rotation.w, g]
+                for x, g in zip(tf, trigger)
+            ],
+        ))
+    if not plans:
+        raise ValueError(f'{path}: no plan on {chunk}')
+    steps = min(len(p) for _, p in plans)
+    plan, planned = np.zeros((len(t), steps, 8), np.float32), np.zeros(len(t))
+    period = t[1] - t[0] if len(t) > 1 else 1
+    for stamp, p in plans:  # in arrival order: a later plan for the same step wins
+        k = int(np.searchsorted(t, stamp))
+        k = k - 1 if k == len(t) or (k > 0 and stamp - t[k - 1] < t[k] - stamp) else k
+        if 0 <= k < len(t) and abs(int(t[k]) - stamp) <= period / 2:
+            plan[k], planned[k] = np.asarray(p[:steps], np.float32), 1.0
+    return plan, planned
 
 
 def load_measured(path, arms=('left',), fps=25.0, lead=1) -> dict[str, Episode]:

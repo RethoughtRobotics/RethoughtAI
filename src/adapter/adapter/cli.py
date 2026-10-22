@@ -106,8 +106,26 @@ def adapt(config, sessions, output, hub_repo):
     is_flag=True,
     help="Add each frame's intervention flag (1 while a person drives: VR takeover, cuff), for adapt corrections --whole",
 )
+@click.option(
+    '--plans',
+    is_flag=True,
+    help="Add the policy's plans as they ran (/policy/{arm}/chunk), for ttt correction-rows; goal labels only",
+)
 def lerobot(
-    session, config, repo_id, task, output, arms, labels, lead, gripper, trim_idle, trim_still, workers, intervention
+    session,
+    config,
+    repo_id,
+    task,
+    output,
+    arms,
+    labels,
+    lead,
+    gripper,
+    trim_idle,
+    trim_still,
+    workers,
+    intervention,
+    plans,
 ):
     """Convert a teleop session (every episode_*) to a LeRobot v3 dataset on labels.py's actions.
 
@@ -148,6 +166,7 @@ def lerobot(
         trim_idle=(trim_idle[0], math.radians(trim_idle[1])) if trim_idle else None,
         trim_still=(trim_still[0], math.radians(trim_still[1])) if trim_still else None,
         intervention=intervention,
+        plans=plans,
     )
     click.echo(f'Dataset written to {output}')
 
