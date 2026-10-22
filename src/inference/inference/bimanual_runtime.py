@@ -100,7 +100,7 @@ class BimanualRuntime:
         self.arms = {}
         for name in self.cuffs:
             topics = {key: cfg['arms'][name].get(key) for key in ('tcp', 'target', 'path', 'trigger', 'home', 'cuff')}
-            arm_cfg = {**cfg, **topics, 'engaged': None}
+            arm_cfg = {**cfg, **topics, 'engaged': None, 'episodes': None}
             self.arms[name] = _ArmRuntime(self, arm_cfg, merge)
         self.dt = self.arms['left'].dt
         if any(arm.horizon is not None and arm.horizon < 2 for arm in self.arms.values()):
