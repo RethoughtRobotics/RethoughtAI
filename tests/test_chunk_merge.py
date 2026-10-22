@@ -136,13 +136,13 @@ def test_in_process_policy_chunks_run_through_the_same_merge():
     assert np.allclose(p, [0.52, 0, 0.1]) and trigger == pytest.approx(1.0) and len(rt.chunks) == 5
 
 
-def test_home_clears_but_keeps_the_run_on():
+def test_home_clears_and_stops_the_run():
     rt = runtime({'type': 'ensemble', 'coeff': 0.01})
     rt.requested, rt.chunks, rt.segment = True, [line(0.0, 0.0, 0.0, 0.1)], (0.0, None, None)
     rt.trigger_pub = type('Pub', (), {'publish': lambda self, msg: setattr(self, 'sent', msg.data)})()
     rt.trigger, rt._now = 1.0, lambda: 0.0
     rt._on_home(None)
-    assert rt.requested and rt.chunks == [] and rt.segment is None
+    assert not rt.requested and rt.chunks == [] and rt.segment is None  # as scripts/stop
     assert rt.trigger == 0.0 and rt.trigger_pub.sent == 0.0  # gripper open
 
 
