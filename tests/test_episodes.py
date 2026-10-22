@@ -88,3 +88,17 @@ def test_a_hold_fires_once(run):
     runtime.requested = False  # e.g. scripts/stop while the stick is still held
     episodes.check(now=2.0)
     assert not runtime.requested
+
+
+def test_a_nudge_counts_as_a_correction_while_the_policy_drives_on(run):
+    runtime, episodes = run
+    hold(episodes, 'north', 0.0)
+    runtime.engaged = True
+    episodes.check(now=2.0)
+    episodes.nudging = True  # the teleop's --takeover nudge: the runtime itself is not correcting
+    episodes.check(now=3.0)
+    episodes.nudging = False
+    episodes.check(now=4.0)
+    runtime.requested = runtime.engaged = False
+    episodes.check(now=5.0)
+    assert any('STOPPED (3.0 s, 1 corrections)' in line for line in runtime.node.lines)

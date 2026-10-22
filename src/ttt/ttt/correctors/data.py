@@ -9,6 +9,10 @@ Which steps were corrected is decided per step of each row's plan (rows' step_in
 FlowCorrect labels a window positive when any of its steps is corrected (Welte et al. 2026): a row
 whose plan runs into a correction gets the part of the nudge its corrected steps carry, and its
 weight, so the target rises into each correction over one plan instead of jumping from a weighted 0.
+Rows of nudge corrections (run_teleop.sh --takeover nudge) carry the offset the person added to the
+policy's goal at each step of its plan (rows' offset): the target's pose is that offset, averaged
+over the plan, as recorded, not the person's path minus a plan the policy made while watching them
+correct (a takeover's), and the rows weighted are those whose plan holds a nudge.
 Rows built before step_intervention existed are labelled per frame, with the LEAD_UP s before each
 correction weighted as CR-DAgger's correction_horizon.
 """
@@ -45,6 +49,10 @@ def problem(tensors, fps=25):
         steps = tensors['step_intervention'].numpy() > 0.5
         y = nudge(pi, demo, steps)
         touched = steps.any(axis=1)
+        if 'offset' in tensors:  # nudges: the offset as recorded; the gripper as the person drove it
+            offset = tensors['offset'].numpy().astype(np.float64)
+            y[:, :6] = offset.mean(axis=1)
+            touched |= np.abs(offset).max(axis=(1, 2)) > 0
         return z, y, np.where(touched, WEIGHT, 1.0), corrected, ~touched
     y = np.where(corrected[:, None], nudge(pi, demo), 0.0)
     episode, frame = tensors['episode'].numpy(), tensors['frame'].numpy()

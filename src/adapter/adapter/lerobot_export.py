@@ -8,6 +8,8 @@ joints and gripper take their latest message at or before it, by recording time.
   action                    the goal the teleop servo chased [x y z qx qy qz qw] (the TCP while
                             the clutch was released), and the gripper trigger (0 open .. 1 closed);
                             kinesthetic (labels="measured"): the measured TCP and gripper opening
+  correction.offset         (intervention, a bag of --takeover nudge) the nudge added to the policy's
+                            goal: translation (m) and rotation vector (rad), base frame
   policy.plan, policy.planned  (plans) the policy's plan from this frame's observation as it ran,
                             flattened (steps x [x y z qx qy qz qw trigger], absolute), and 1 where
                             one was made (every few frames; labels.load_plans), else zeros and 0
@@ -56,7 +58,7 @@ def _continuous(q):
 
 def _drop_leading(ep, n):
     """The episode without its first n steps."""
-    fields = ('tcp_p', 'tcp_q', 'target_p', 'target_q', 'trigger', 't', 'intervention', 'plan', 'planned')
+    fields = ('tcp_p', 'tcp_q', 'target_p', 'target_q', 'trigger', 't', 'intervention', 'offset', 'plan', 'planned')
     return replace(ep, **{f: getattr(ep, f)[n:] for f in fields if getattr(ep, f) is not None})
 
 
@@ -106,11 +108,12 @@ class StillRuns:
         return True
 
 
-def features(cameras, arms, image_shapes, gripper=True, intervention=False, plan_steps=0):
+def features(cameras, arms, image_shapes, gripper=True, intervention=False, plan_steps=0, offset=False):
     """One arm: state tcp.*, gripper, joints; action goal.*, gripper. Several: each name prefixed
     with its arm (left.tcp.x ...), arms in order. Without `gripper`, no gripper in either. With
     `intervention`, a per-frame `intervention` (1 while a person drives the arm, labels.Episode).
-    With `plan_steps`, the policy's plan of that many steps as it ran (policy.plan, policy.planned)."""
+    With `plan_steps`, the policy's plan of that many steps as it ran (policy.plan, policy.planned).
+    With `offset`, the nudge added to the policy's goal (correction.offset)."""
     arms = [arms] if isinstance(arms, str) else list(arms)
     pose = ['x', 'y', 'z', 'qx', 'qy', 'qz', 'qw']
     prefix = (lambda arm: f'{arm}.') if len(arms) > 1 else (lambda arm: '')
@@ -129,6 +132,9 @@ def features(cameras, arms, image_shapes, gripper=True, intervention=False, plan
     f['action'] = {'dtype': 'float32', 'shape': (len(action),), 'names': action}
     if intervention:
         f['intervention'] = {'dtype': 'float32', 'shape': (1,), 'names': ['intervention']}
+    if offset:
+        names = ['x', 'y', 'z', 'rx', 'ry', 'rz']
+        f['correction.offset'] = {'dtype': 'float32', 'shape': (6,), 'names': names}
     if plan_steps:
         names = [f'{k}.{x}' for k in range(plan_steps) for x in ['x', 'y', 'z', 'qx', 'qy', 'qz', 'qw', 'trigger']]
         f['policy.plan'] = {'dtype': 'float32', 'shape': (len(names),), 'names': names}
@@ -341,7 +347,15 @@ def _export_episodes(
     dataset = LeRobotDataset.create(
         repo_id,
         fps,
-        features(cameras, arms, shapes, gripper, intervention, first.plan.shape[1] if plans else 0),
+        features(
+            cameras,
+            arms,
+            shapes,
+            gripper,
+            intervention,
+            first.plan.shape[1] if plans else 0,
+            offset=intervention and first.offset is not None,
+        ),
         root=root,
         robot_type=robot_type,
         streaming_encoding=True,
@@ -388,6 +402,9 @@ def _export_episodes(
             ]).astype(np.float32)
             if intervention:
                 row['intervention'] = np.array([eps[arm].intervention[k]], dtype=np.float32)
+            if intervention and first.offset is not None:  # a takeover bag among nudge bags: no nudge
+                nudged = eps[arm].offset
+                row['correction.offset'] = (np.zeros(6) if nudged is None else nudged[k]).astype(np.float32)
             if plans:
                 row['policy.plan'] = eps[arm].plan[k, : first.plan.shape[1]].reshape(-1)
                 row['policy.planned'] = np.array([eps[arm].planned[k]], dtype=np.float32)

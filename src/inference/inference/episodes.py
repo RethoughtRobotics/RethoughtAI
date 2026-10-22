@@ -7,6 +7,8 @@ firing once, in the recorder's layout (configs/baxter.yaml trigger.thumbstick):
   south  stop: release the request
   east   save the last stopped episode (a success)
   west   discard it
+Corrections are counted from the runtime (a takeover or cuff squeeze) and, with `nudging`, from the
+teleop's nudges (run_teleop.sh --takeover nudge), during which the policy keeps driving.
 Each event goes out on `topic` as JSON ({"episode": N, "event": "start" | "stop" | "save" |
 "discard"}), so the bag carries it: adapt corrections --whole skips discarded rollouts and marks
 saved ones. The terminal and Baxter's head display (the recorder's session screens) show the state.
@@ -36,7 +38,12 @@ class Episodes:
         self.corrections = 0
         self.direction, self.since, self.fired = '', 0.0, False
         self.correcting = False
+        self.nudging = False
         node = runtime.node
+        if cfg.get('nudging'):
+            from std_msgs.msg import Bool
+
+            node.create_subscription(Bool, cfg['nudging'], lambda m: setattr(self, 'nudging', bool(m.data)), 10)
         self.pub = node.create_publisher(String, cfg['topic'], 10)
         stick = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)  # published on change
         node.create_subscription(String, cfg['stick'], lambda m: self.on_stick(m.data), stick)
@@ -65,8 +72,9 @@ class Episodes:
             self._began(now)
         elif not engaged and self.running:
             self._ended(now)
-        if self.running and self.runtime.correcting != self.correcting:
-            self.correcting = self.runtime.correcting
+        correcting = self.runtime.correcting or self.nudging
+        if self.running and correcting != self.correcting:
+            self.correcting = correcting
             if self.correcting:
                 self.corrections += 1
             self._log(f'  correction {self.corrections} {"started" if self.correcting else "ended"}')

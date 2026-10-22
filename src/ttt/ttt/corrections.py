@@ -17,6 +17,8 @@ Rows:
               a dataset without it is all corrections, 1 everywhere
   step_intervention  the same at each step of the plan (n_action_steps; past the episode's end its
               last frame): which of the plan's steps the person drove
+  offset      where the dataset has it (correction.offset: run_teleop.sh --takeover nudge), the nudge the
+              person added to the policy's goal at each step of the plan (n_action_steps x 6)
   episode, frame
 
 The correction a corrector learns is chunk_demo - chunk_pi (ttt.correctors, its README.md). Datasets are the exporter's raw layout
@@ -96,6 +98,11 @@ def build(model, root, repo_id, device='cuda', task=None, log=print):
 
     rows = {k: [] for k in ('cond', 'chunk_pi', 'chunk_demo', 'state', 'intervention', 'step_intervention')}
     rows.update(episode=[], frame=[])
+    nudged = (
+        np.stack(ds.hf_dataset['correction.offset']).astype(np.float32) if 'correction.offset' in ds.features else None
+    )
+    if nudged is not None:
+        rows['offset'] = []
     previous = None
     for i in range(len(ds)):
         item = ds[i]
@@ -121,6 +128,8 @@ def build(model, root, repo_id, device='cuda', task=None, log=print):
         rows['chunk_demo'].append(torch.as_tensor(relative(goals[k], s)))
         rows['step_intervention'].append(torch.as_tensor(intervention[k]))
         rows['intervention'].append(float(intervention[i]))
+        if nudged is not None:
+            rows['offset'].append(torch.as_tensor(nudged[k]))
         rows['state'].append(torch.as_tensor(observation['observation.state'], dtype=torch.float32))
         rows['episode'].append(int(episodes[i]))
         rows['frame'].append(int(frames[i]))
@@ -134,6 +143,7 @@ def build(model, root, repo_id, device='cuda', task=None, log=print):
         'state': torch.stack(rows['state']),
         'intervention': torch.tensor(rows['intervention'], dtype=torch.float32),
         'step_intervention': torch.stack(rows['step_intervention']),
+        **({'offset': torch.stack(rows['offset'])} if nudged is not None else {}),
         'episode': torch.tensor(rows['episode'], dtype=torch.int32),
         'frame': torch.tensor(rows['frame'], dtype=torch.int32),
     }
