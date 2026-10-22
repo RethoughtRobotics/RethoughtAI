@@ -65,3 +65,41 @@ def test_plans_with_a_nudge_adapter_are_refused(tmp_path):
     write(tmp_path / 'bag', [(t[1], t[2], 0.1)], nudge=True)
     with pytest.raises(ValueError, match='nudge'):
         load_plans(tmp_path / 'bag', np.array(t))
+
+
+def test_a_nudge_bags_offset_and_flag_reach_each_frame(tmp_path):
+    from geometry_msgs.msg import PoseStamped
+    from std_msgs.msg import Bool
+
+    from adapter.labels import load_episode
+
+    writer = rosbag2_py.SequentialWriter()
+    path = tmp_path / 'bag'
+    writer.open(rosbag2_py.StorageOptions(uri=str(path), storage_id='mcap'), rosbag2_py.ConverterOptions('', ''))
+    topics = [
+        ('/teleop/left/tcp', 'geometry_msgs/msg/PoseStamped'),
+        ('/teleop/left/goal', 'geometry_msgs/msg/PoseStamped'),
+        ('/teleop/left/nudging', 'std_msgs/msg/Bool'),
+        ('/teleop/left/correction_offset', 'geometry_msgs/msg/TwistStamped'),
+    ]
+    for i, (name, kind) in enumerate(topics):
+        writer.create_topic(rosbag2_py.TopicMetadata(i, name, kind, 'cdr'))
+    pose = PoseStamped()
+    pose.pose.orientation.w = 1.0
+    for k in range(100):  # 1 s at 100 Hz: a nudge of -2 cm in y from 0.5 s
+        t = S + k * S // 100
+        on = k >= 50
+        offset = TwistStamped()
+        offset.twist.linear.y = -0.02 if on else 0.0
+        writer.write('/teleop/left/tcp', serialize_message(pose), t)
+        writer.write('/teleop/left/goal', serialize_message(pose), t)
+        writer.write('/teleop/left/nudging', serialize_message(Bool(data=on)), t)
+        writer.write('/teleop/left/correction_offset', serialize_message(offset), t)
+    writer.close()
+    ep = load_episode(path)
+
+    assert ep.offset.shape == (len(ep), 6)
+    early, late = ep.t < S + S // 2, ep.t >= S + S // 2
+    assert not ep.offset[early].any() and not ep.intervention[early].any()
+    np.testing.assert_allclose(ep.offset[late, 1], -0.02)
+    assert ep.intervention[late].all()

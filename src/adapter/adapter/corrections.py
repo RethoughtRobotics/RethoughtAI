@@ -2,7 +2,7 @@
 
 A correction is a span in which a person drove the arm instead of the policy: a VR takeover
 (/teleop/{arm}/takeover true, BaxterSDK run_teleop.sh --takeover) or a cuff squeeze (the arm guided
-by hand in zero-g). Each becomes episode_NNN, every topic of the rollout cut to exactly that span, in
+by hand in zero-g); or nudged it while the policy drove on (/teleop/{arm}/nudging, --takeover nudge). Each becomes episode_NNN, every topic of the rollout cut to exactly that span, in
 the session layout `adapt lerobot` exports (--labels goal for a takeover: the teleop's goals are the
 operator's; a cuff correction has none, --labels measured) and recap browses one episode at a time.
 corrections.json lists each one: the rollout it came from, its kind, arm, start and end.
@@ -27,6 +27,7 @@ from rosidl_runtime_py.utilities import get_message
 # kind: (topic, field that is true while the person drives)
 SOURCES = {
     'takeover': ('/teleop/{arm}/takeover', 'data'),
+    'nudge': ('/teleop/{arm}/nudging', 'data'),  # run_teleop.sh --takeover nudge: the policy drives on
     'cuff': ('/robot/digital_io/{arm}_lower_cuff/state', 'state'),
 }
 # Published once (transient local), so an episode starting later would lack them: each episode gets

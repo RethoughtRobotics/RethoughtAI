@@ -132,3 +132,29 @@ def test_weighted_ridge_follows_the_heavier_rows():
     w = np.where(np.arange(200) < 100, 9.0, 1.0)
     model = ridge.fit_ridge(z, y, lam=1e6, w=w)  # all penalty: the weighted mean
     np.testing.assert_allclose(model[1], [0.8])
+
+
+def test_nudge_rows_take_the_recorded_offset_as_the_target():
+    import torch
+
+    n, steps = 20, 4
+    offset = torch.zeros(n, steps, 6)
+    offset[8:12, :, 1] = -0.03  # nudged 3 cm in -y at frames 8 to 14 (each row's plan covers 4)
+    pi = torch.zeros(n, steps, 7)
+    demo = torch.zeros(n, steps, 7)
+    demo[:, :, 1] = 0.02  # the person's path vs a plan made while watching them: +y, the wrong sign
+    tensors = {
+        'cond': torch.zeros(n, 3),
+        'chunk_pi': pi,
+        'chunk_demo': demo,
+        'intervention': torch.zeros(n),
+        'step_intervention': torch.zeros(n, steps),
+        'offset': offset,
+        'episode': torch.zeros(n, dtype=torch.int32),
+        'frame': torch.arange(n, dtype=torch.int32),
+    }
+    z, y, w, corrected, untouched = data.problem(tensors)
+    np.testing.assert_allclose(y[8:12, 1], -0.03)  # the offset, not the path difference
+    np.testing.assert_allclose(y[:8, :6], 0.0)
+    assert (w[8:12] == data.WEIGHT).all() and (w[:8] == 1.0).all()
+    assert not untouched[8:12].any() and untouched[:8].all()

@@ -31,6 +31,7 @@ its features, its plan and the person's plan (`ttt/corrections.py`). Everything 
 | inputs | image features `z` (4130 for the Multi-Task DiT) and the 17-D state, standardised on the training rows; features that never vary there (the task text) are masked out |
 | plan | the policy's plan as it ran on the robot (`adapt lerobot --plans`; rows only at the frames a plan was made from), else sampled again offline with a fixed seed |
 | target | the **whole-plan nudge**: the person's plan minus the policy's, averaged over its steps (7: position, rotation vector, gripper), **the steps the policy drove counting 0**: a plan running into a correction carries the part it overlaps (FlowCorrect's window label) |
+| nudges | with BaxterSDK `run_teleop.sh --takeover nudge` the policy keeps driving and the person's hand adds an offset to its goal (FlowCorrect's relative correction): the target's pose is then **the recorded offset** (`correction.offset`), averaged over the plan, not the person's path minus a plan made while the policy watched them correct, which a takeover's is and which can point the wrong way |
 | weights | 4 on rows whose plan holds a corrected step, 1 elsewhere (CR-DAgger's `weighted_sampling`); rows without the per-step mask: 4 on correction frames and the 1 s before each |
 
 ## Methods

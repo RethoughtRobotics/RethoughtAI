@@ -8,7 +8,10 @@ or before it, by recording time (the robot's header clocks are not aligned with 
            while the clutch was released and the arm held still
   trigger  gripper as the VR trigger value (0 open .. 1 closed), from the last gripper command
   intervention  1 while a person drives the arm in a policy rollout (the teleop's VR takeover,
-           /teleop/{arm}/takeover, or a cuff squeeze), else 0; zero without either topic
+           /teleop/{arm}/takeover, or a cuff squeeze) or nudges it (/teleop/{arm}/nudging), else 0
+  offset   the nudge added to the policy's goal (/teleop/{arm}/correction_offset: translation m and
+           rotation vector rad, base frame; run_teleop.sh --takeover nudge), zeros before the first;
+           None without the topic
   plan     (load_plans) the plan the policy made from the step's observation, as it ran: the
            policy server's chunk (/policy/{arm}/chunk), stamped with its observation's time
 
@@ -42,6 +45,7 @@ class Episode:
     t: np.ndarray  # (N,) recording time, ns
     fps: float
     intervention: np.ndarray | None = None  # (N,) 1 while a person drives (a policy rollout's corrections)
+    offset: np.ndarray | None = None  # (N, 6) the nudge added to the policy's goal (--takeover nudge)
     plan: np.ndarray | None = None  # (N, steps, 8) the policy's plan from the step's observation (load_plans)
     planned: np.ndarray | None = None  # (N,) 1 where a plan was made from the step's observation
 
@@ -69,6 +73,8 @@ def load_episode(path, arm='left', fps=25.0) -> Episode:
         'goal': f'/teleop/{arm}/goal',
         'gripper': f'/robot/end_effector/{arm}_gripper/command',
         'takeover': f'/teleop/{arm}/takeover',
+        'nudging': f'/teleop/{arm}/nudging',
+        'offset': f'/teleop/{arm}/correction_offset',
         'cuff': f'/robot/digital_io/{arm}_lower_cuff/state',
     }
     reader = rosbag2_py.SequentialReader()
@@ -86,8 +92,11 @@ def load_episode(path, arm='left', fps=25.0) -> Episode:
         msg = deserialize_message(raw, get_message(types[topic]))
         if name == 'gripper':
             data[name].append((t, _gripper_trigger(msg)))
-        elif name in ('takeover', 'cuff'):
-            data[name].append((t, bool(msg.data if name == 'takeover' else msg.state)))
+        elif name in ('takeover', 'nudging', 'cuff'):
+            data[name].append((t, bool(msg.state if name == 'cuff' else msg.data)))
+        elif name == 'offset':
+            v, w = msg.twist.linear, msg.twist.angular
+            data[name].append((t, [v.x, v.y, v.z, w.x, w.y, w.z]))
         else:
             data[name].append((t, _pose(msg)))
 
@@ -115,13 +124,20 @@ def load_episode(path, arm='left', fps=25.0) -> Episode:
         gr = latest(gr_t, t)
         trigger = np.where(gr >= 0, np.array([v for _, v in data['gripper']])[np.maximum(gr, 0)], 0.0)
     intervention = np.zeros(len(t))
-    for name in ('takeover', 'cuff'):
+    for name in ('takeover', 'nudging', 'cuff'):
         if data[name]:
             times = np.array([x for x, _ in data[name]])
             i = latest(times, t)
             on = np.array([v for _, v in data[name]])[np.maximum(i, 0)]
             intervention = np.maximum(intervention, np.where(i >= 0, on, False).astype(float))
-    return Episode(tcp_p, tcp_q, target_p, target_q, trigger, t, fps, intervention)
+    offset = None
+    if topics['offset'] in types:
+        offset = np.zeros((len(t), 6))
+        if data['offset']:
+            i = latest(np.array([x for x, _ in data['offset']]), t)
+            values = np.array([v for _, v in data['offset']])
+            offset = np.where((i >= 0)[:, None], values[np.maximum(i, 0)], 0.0)
+    return Episode(tcp_p, tcp_q, target_p, target_q, trigger, t, fps, intervention, offset)
 
 
 def load_plans(path, t, arm='left'):
