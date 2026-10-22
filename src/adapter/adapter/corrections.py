@@ -131,13 +131,13 @@ def _episodes(out):
 
 def extract(bags, out, arm='left', min_duration=2.0, whole=False):
     """Cut every correction of `bags` (with `whole`, every policy rollout holding one) into
-    out/episode_NNN, numbered on from the episodes already there, and add them to
+    out/episode_NNN, numbered on from the last episode already there, and add them to
     out/corrections.json. Returns the new rows."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     index = out / INDEX
     rows = json.loads(index.read_text()) if index.exists() else []
-    n = len(_episodes(out))
+    n = max((int(p.name.split('_')[1]) + 1 for p in _episodes(out)), default=0)  # after the last, gaps kept
     added = []
     for bag in bags:
         corrections = find(bag, arm, min_duration)
