@@ -451,6 +451,31 @@ class ClsAttention:
 
         model.forward = keep
 
+    def _weights(self):
+        """(cameras, patches) torch: the last layer's CLS attention over the current step's patches."""
+        import torch
+
+        n = len(self.cameras)
+        attn = self.layer.self_attn
+        with torch.no_grad():
+            h = self.layer.layer_norm1(self.states[-2][-n:])
+            q = attn.q_proj(h[:, :1]).view(n, 1, attn.num_heads, attn.head_dim).transpose(1, 2)
+            k = attn.k_proj(h).view(n, -1, attn.num_heads, attn.head_dim).transpose(1, 2)
+            return torch.softmax(q @ k.transpose(-1, -2) * attn.head_dim**-0.5, dim=-1)[:, :, 0, 1:].mean(1)
+
+    def pooled(self) -> dict[str, dict[str, np.ndarray]]:
+        """Camera -> the key's raw parts of the last call, float32: `weights` (patches,) the CLS attention,
+        and `pooled_l11` / `pooled_l12` (hidden,) the patch tokens entering / leaving the last layer
+        weighted by it (what the policy looked at, in its own features). Empty before the first call."""
+        if self.states is None:
+            return {}
+        n = len(self.cameras)
+        w = self._weights()
+        parts = {'weights': w}
+        for name, hs in (('pooled_l11', self.states[-2]), ('pooled_l12', self.states[-1])):
+            parts[name] = (w[:, :, None] * hs[-n:, 1:]).sum(1)
+        return {c: {k: v[i].float().cpu().numpy() for k, v in parts.items()} for i, c in enumerate(self.cameras)}
+
     def maps(self) -> dict[str, tuple[np.ndarray, np.ndarray]]:
         """Camera -> ((grid, grid) attention (the rest of 1 is on the CLS itself), (H, W, 3) uint8 view the CLIP saw) of the last
         call; empty before the first. The view is the normalized pixels stretched back to 0 .. 255 per
@@ -460,12 +485,8 @@ class ClsAttention:
         if self.states is None:
             return {}
         n = len(self.cameras)
-        attn = self.layer.self_attn
+        w = self._weights()
         with torch.no_grad():
-            h = self.layer.layer_norm1(self.states[-2][-n:])
-            q = attn.q_proj(h[:, :1]).view(n, 1, attn.num_heads, attn.head_dim).transpose(1, 2)
-            k = attn.k_proj(h).view(n, -1, attn.num_heads, attn.head_dim).transpose(1, 2)
-            w = torch.softmax(q @ k.transpose(-1, -2) * attn.head_dim**-0.5, dim=-1)[:, :, 0, 1:].mean(1)
             pixels = self.pixels[-n:].float()
             low = pixels.amin(dim=(2, 3), keepdim=True)
             view = (pixels - low) / (pixels.amax(dim=(2, 3), keepdim=True) - low).clamp_min(1e-6)

@@ -7,7 +7,8 @@ inference never blocks ROS callbacks, and publishes:
               (base frame) and the `{arm}_gripper` trigger, at k / fps
   chunk_path  nav_msgs/Path of the targets, for RViz
   attention   (MultiTask DiT, with `attention` set) per camera, `<attention>/<camera>`: the view its
-              CLIP saw, tinted where the CLS token attends (inference.attention.ClsAttention)
+              CLIP saw, tinted where the CLS token attends (inference.attention.ClsAttention), and
+              `<attention>/<camera>/{weights,pooled_l11,pooled_l12}` its raw parts (inference.tensor_image)
 With RTC, each chunk continues the last one over the measured inference delay.
 A policy that sees past steps (n_obs_steps > 1, MultiTask DiT) gets them one step apart, as in
 training, from observations sampled every half step, not from its previous inference (~100 ms back).
@@ -40,6 +41,8 @@ from adapter.labels import apply_actions, relative_actions
 from adapter.lerobot_export import JOINTS, image_rgb
 from inference.runtime import Chunk
 from inference.tensor_image import to_image
+
+ATTENTION_PARTS = ('weights', 'pooled_l11', 'pooled_l12')  # inference.attention.ClsAttention.pooled
 
 STALE = 0.5  # s: older inputs pause inference (camera stopped, bag paused)
 LOG_EVERY = 10.0  # s
@@ -106,6 +109,12 @@ class PolicyNode:
             self.attention = ClsAttention(policy.policy.observation_encoder)
             self.attention_pubs = {
                 c: node.create_publisher(Image, f'{cfg["attention"]}/{c}', 2) for c in self.attention.cameras
+            }
+            # its raw parts, for keys fitted from the bag: <attention>/<camera>/{weights,pooled_l11,pooled_l12}
+            self.attention_part_pubs = {
+                (c, part): node.create_publisher(Image, f'{cfg["attention"]}/{c}/{part}', 10)
+                for c in self.attention.cameras
+                for part in ATTENTION_PARTS
             }
         self.samples = deque(maxlen=2 * policy.n_obs_steps + 2)  # (time, observation), every half step
         if policy.n_obs_steps > 1:
@@ -269,6 +278,9 @@ class PolicyNode:
             msg.header.stamp, msg.header.frame_id = stamp, camera
             msg.data = image.tobytes()
             self.attention_pubs[camera].publish(msg)
+        for camera, parts in self.attention.pooled().items():
+            for part, array in parts.items():
+                self.attention_part_pubs[camera, part].publish(to_image(array, stamp))
 
     def _publish(self, t, positions, rotations, triggers):
         stamp = Time(nanoseconds=round(t * 1e9)).to_msg()

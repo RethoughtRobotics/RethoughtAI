@@ -75,6 +75,13 @@ topics:
     - /policy/left/engaged
     - /policy/left/attention/left
     - /policy/left/attention/third_eye
+    - /policy/left/attention/left/weights
+    - /policy/left/attention/left/pooled_l11
+    - /policy/left/attention/left/pooled_l12
+    - /policy/left/attention/third_eye/weights
+    - /policy/left/attention/third_eye/pooled_l11
+    - /policy/left/attention/third_eye/pooled_l12
+    - /policy/left/z
     - /policy/left/episode
     - /teleop/left/takeover
     - /teleop/left/nudging
