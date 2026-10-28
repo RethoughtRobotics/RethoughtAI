@@ -37,6 +37,7 @@ from trajectory_msgs.msg import JointTrajectoryPoint, MultiDOFJointTrajectoryPoi
 from adapter.labels import apply_actions, relative_actions
 from adapter.lerobot_export import JOINTS, image_rgb
 from inference.runtime import Chunk
+from inference.tensor_image import to_image
 
 STALE = 0.5  # s: older inputs pause inference (camera stopped, bag paused)
 LOG_EVERY = 10.0  # s
@@ -93,6 +94,8 @@ class PolicyNode:
             if cfg.get('nudge') and getattr(policy, 'nudge', None)
             else None
         )
+        # The policy's observation encoding of each plan, for correctors fitted from the bag (inference.tensor_image)
+        self.z_pub = node.create_publisher(Image, cfg['z'], 10) if cfg.get('z') and hasattr(policy, 'z') else None
         self.path_pub = node.create_publisher(Path, cfg['chunk'] + '_path', 10)
         self.samples = deque(maxlen=2 * policy.n_obs_steps + 2)  # (time, observation), every half step
         if policy.n_obs_steps > 1:
@@ -229,6 +232,8 @@ class PolicyNode:
             self._publish(t, positions, rotations, actions[:, 6])
             if self.nudge_pub is not None:
                 self._publish_nudge(t, self.policy.nudge.offset)
+            if self.z_pub is not None and self.policy.z is not None:
+                self.z_pub.publish(to_image(self.policy.z, Time(nanoseconds=round(t * 1e9)).to_msg()))
             if self.count % max(1, round(LOG_EVERY * self.fps / self.every)) == 0:
                 self.node.get_logger().info(
                     f'{self.count} chunks; inference p50 {1000 * self.latency.percentile(0.5):.0f} ms, '
