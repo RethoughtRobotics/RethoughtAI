@@ -20,16 +20,17 @@ def moved_cm(offset):
     return np.linalg.norm(offset[..., :3], axis=-1).reshape(len(offset), -1).mean(axis=1) * 100
 
 
-def leave_one_out(tensors, method, target='plan', weighted='plan', **options):
+def leave_one_out(tensors, method, target='plan', weighted='plan', key='z', **options):
     """Each episode held out in turn, `method` (a name in METHODS) fitted on the others. On its
     correction frames: the plan's error against the person's, and its gripper decisions, for the base
     alone, a constant nudge (the training mean), the corrector and the true nudge (the best one nudge
     per row can do). On its policy frames: how far each moves the base where it was left to drive.
-    `target`: 'plan' or 'step', `weighted`: 'plan' or 'frame' (data.problem). One dict per held-out
-    episode."""
+    `target`: 'plan' or 'step', `weighted`: 'plan' or 'frame', `key`: 'z' or 'attention' (data.problem).
+    One dict per held-out episode."""
     from . import METHODS
 
-    z, y, w, corrected, untouched = problem(tensors, target=target, weighted=weighted)
+    options = key_options(method, key, options)
+    z, y, w, corrected, untouched = problem(tensors, target=target, weighted=weighted, key=key)
     pi = tensors['chunk_pi'].numpy().astype(np.float64)
     demo = tensors['chunk_demo'].numpy().astype(np.float64)
     episode = tensors['episode'].numpy()
@@ -60,15 +61,29 @@ def leave_one_out(tensors, method, target='plan', weighted='plan', **options):
     return results
 
 
-def save_adapter(tensors, meta, path, model, results, method, gripper=False, target='plan', weighted='plan', **options):
+def key_options(method, key, options):
+    """`options` for `method` on `key`: the attention key is already on a common scale (each camera's part
+    unit length), so a kernel uses it as it is; only a kernel takes it."""
+    if key == 'attention':
+        if method != 'kernel':
+            raise ValueError(f'key attention: kernel only, not {method}')
+        return {'standardise': False, **options}
+    return options
+
+
+def save_adapter(
+    tensors, meta, path, model, results, method, gripper=False, target='plan', weighted='plan', key='z', **options
+):
     """Fit `method` on every episode and write it as a nudge adapter for the checkpoint `model`, with
     `results` (leave_one_out's) beside it. With `gripper` the adapter also offsets the trigger;
-    `target` 'step' makes it offset each step of the plan by its own; `weighted` as in data.problem."""
+    `target` 'step' makes it offset each step of the plan by its own; `weighted` and `key` as in
+    data.problem (an attention adapter records its cameras' order, meta `attention_cameras`)."""
     from inference import nudge as nudge_adapter
 
     from . import METHODS
 
-    z, y, w, corrected, _ = problem(tensors, target=target, weighted=weighted)
+    options = key_options(method, key, options)
+    z, y, w, corrected, _ = problem(tensors, target=target, weighted=weighted, key=key)
     episode = tensors['episode'].numpy()
     corrector = METHODS[method](**options).fit(z, y, w, episode)
     outputs = nudge_adapter.POSE + 1 if gripper else nudge_adapter.POSE
@@ -80,7 +95,9 @@ def save_adapter(tensors, meta, path, model, results, method, gripper=False, tar
         description,
         arrays,
         model,
-        state=int(tensors['state'].shape[1]) if 'state' in tensors else 0,
+        state=int(tensors['state'].shape[1]) if 'state' in tensors and key == 'z' else 0,
+        key=key,
+        **({'cameras': list(meta['attention_cameras'])} if key == 'attention' else {}),
         steps=steps,
         corrections={
             'repo_id': meta.get('repo_id'),

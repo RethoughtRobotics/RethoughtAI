@@ -4,7 +4,8 @@ nudges weighted by a compact-support kernel on the keys' cosine similarity s:
     f(x) = sum_i phi(u_i) v_i / max(1, sum_i phi(u_i)),   u_i = (1 - s_i) / (1 - s_min)
     phi(u) = (1 - u^3)^3 for u < 1, else 0              (tricube, phi(0) = 1)
 
-Keys are the standardised inputs, the constant features masked out, scaled to unit length.
+Keys are the standardised inputs, the constant features masked out, scaled to unit length; with
+`standardise` False, the inputs as they are, scaled to unit length (a key already on a common scale).
 
 What follows from the form, with no data:
   - f(x) = 0 exactly when every stored key has s <= s_min: the plan is the base's.
@@ -43,13 +44,14 @@ def recall(keys, values, s_min, x):
 class Kernel:
     name = 'kernel'
 
-    def __init__(self, s_min=None, s_mins=S_MINS):
+    def __init__(self, s_min=None, s_mins=S_MINS, standardise=True):
         self.fixed, self.s_mins = s_min, np.asarray(s_mins, float)
+        self.standardise = standardise
         self.s_min = s_min
         self.scaler = self.keys = self.values = None
 
     def _store(self, z, y, w):
-        self.scaler = Scaler(z)
+        self.scaler = Scaler(z, self.standardise)
         stored = w >= WEIGHT  # the rows whose plan holds a correction
         self.keys, self.values = unit(self.scaler(z[stored]), self.scaler.varies), y[stored]
 

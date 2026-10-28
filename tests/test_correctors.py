@@ -152,3 +152,70 @@ def test_weighted_frame_keeps_only_the_nudged_frames_not_the_lead_up_or_the_deca
     w_frame = data.problem(tensors, weighted='frame')[2]
     assert np.flatnonzero(w_plan == data.WEIGHT).tolist() == list(range(1, n))
     assert np.flatnonzero(w_frame == data.WEIGHT).tolist() == [3, 4, 5]
+
+
+class Attention:
+    """Stands in for inference.attention.ClsAttention: the pooled patches of the last plan."""
+
+    cameras = ['left', 'third_eye']
+
+    def __init__(self):
+        self.parts = None
+
+    def pooled(self):
+        return self.parts
+
+
+def test_an_attention_kernel_serves_what_it_was_fitted_on_and_is_zero_off_its_keys(tmp_path, checkpoint):
+    from ttt.correctors import data
+
+    rng = np.random.default_rng(4)
+    n, d = 40, 6
+    pooled = {c: rng.normal(size=(n, d)) for c in Attention.cameras}
+    keys = np.stack([
+        nudge.attention_key({c: {'pooled_l12': pooled[c][i]} for c in pooled}, Attention.cameras) for i in range(n)
+    ])
+    y = np.zeros((n, 7))
+    y[:, 0] = 0.03
+    corrector = kernel.Kernel(s_min=0.6, standardise=False).fit(keys, y, np.full(n, data.WEIGHT), np.arange(n) % 4)
+    description, arrays = corrector.export(list(range(6)))
+    path = nudge.save(tmp_path / 'adapter', description, arrays, checkpoint, key='attention', cameras=Attention.cameras)
+    attention = Attention()
+    encoder = types.SimpleNamespace(encode=lambda batch: batch)
+    loaded = nudge.Nudge(path, types.SimpleNamespace(observation_encoder=encoder), checkpoint, 1.0, attention)
+    for i in range(3):  # a stored situation: the fitted offset, from the live pooled patches
+        attention.parts = {c: {'pooled_l12': pooled[c][i]} for c in pooled}
+        loaded(np.zeros((3, 7)))
+        np.testing.assert_allclose(loaded.offset, corrector.predict(keys[i : i + 1])[0, :6], atol=1e-9)
+        assert loaded.model.s_max == pytest.approx(1.0)
+    plan = np.random.default_rng(5).normal(size=(3, 7))
+    for i in range(n):  # opposite to each key in turn: the plan is the base's exactly when no key is within s_min
+        attention.parts = {c: {'pooled_l12': -pooled[c][i]} for c in pooled}
+        out = loaded(plan)
+        assert np.array_equal(out, plan) == (loaded.model.s_max <= 0.6)
+
+
+def test_the_attention_key_needs_rows_with_it_and_skips_state_and_standardising():
+    import torch
+
+    from ttt.correctors import data, evaluate
+
+    n = 4
+    tensors = {
+        'cond': torch.zeros(n, 3),
+        'state': torch.ones(n, 2),
+        'attention': torch.eye(n, 5),
+        'chunk_pi': torch.zeros(n, 2, 7),
+        'chunk_demo': torch.zeros(n, 2, 7),
+        'intervention': torch.ones(n),
+        'step_intervention': torch.ones(n, 2),
+        'episode': torch.zeros(n, dtype=torch.int32),
+        'frame': torch.arange(n, dtype=torch.int32),
+    }
+    z = data.problem(tensors, key='attention')[0]
+    np.testing.assert_array_equal(z, np.eye(n, 5))  # the attention key alone, no state
+    with pytest.raises(ValueError):
+        data.problem({k: v for k, v in tensors.items() if k != 'attention'}, key='attention')
+    assert evaluate.key_options('kernel', 'attention', {}) == {'standardise': False}
+    with pytest.raises(ValueError):
+        evaluate.key_options('ridge', 'attention', {})

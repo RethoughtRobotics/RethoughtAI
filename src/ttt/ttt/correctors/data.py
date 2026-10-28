@@ -26,6 +26,7 @@ import numpy as np
 WEIGHT = 4.0
 TARGETS = ('plan', 'step')  # one offset for the whole plan, or one per step of it
 WEIGHTED = ('plan', 'frame')  # rows weighted: any step of their plan corrected, or their own frame
+KEYS = ('z', 'attention')  # the inputs: the base's conditioning and state, or its attention-pooled patches
 LEAD_UP = 1.0  # s
 CONSTANT = 1e-6  # a feature's spread over the rows below this: it does not vary
 
@@ -39,7 +40,7 @@ def nudge(chunk_pi, chunk_demo, mask=None):
     return (difference if mask is None else difference * mask[:, :, None]).mean(axis=1)
 
 
-def problem(tensors, fps=25, target='plan', weighted='plan'):
+def problem(tensors, fps=25, target='plan', weighted='plan', key='z'):
     """(inputs, targets, weights, corrected, untouched) of the rows: inputs the base's features and
     state; targets the nudge over the plan's corrected steps, 0 where none is (target 'plan': its
     average over the plan, (N, 7); 'step': at each step, flattened step by step, (N, steps x 7), which
@@ -47,10 +48,18 @@ def problem(tensors, fps=25, target='plan', weighted='plan'):
     with a corrected step (rows without step_intervention: on correction frames and the LEAD_UP
     before each), 1 elsewhere; with `weighted` 'frame' only on the rows whose frame the person drove;
     corrected the rows whose frame the person drove, untouched those no step of whose plan they did
-    (what the evaluation scores)."""
-    z = tensors['cond'].float().numpy().astype(np.float64)
-    if 'state' in tensors:
-        z = np.hstack([z, tensors['state'].numpy().astype(np.float64)])
+    (what the evaluation scores). Inputs with `key` 'z': the base's conditioning and state; 'attention':
+    the rows' attention key alone (rows' `attention`, inference.nudge.attention_key)."""
+    if key not in KEYS:
+        raise ValueError(f'key {key!r}: one of {KEYS}')
+    if key == 'attention':
+        if 'attention' not in tensors:
+            raise ValueError('key attention needs rows with `attention` (the attention key of each row)')
+        z = tensors['attention'].float().numpy().astype(np.float64)
+    else:
+        z = tensors['cond'].float().numpy().astype(np.float64)
+        if 'state' in tensors:
+            z = np.hstack([z, tensors['state'].numpy().astype(np.float64)])
     pi, demo = (tensors[k].numpy().astype(np.float64) for k in ('chunk_pi', 'chunk_demo'))
     n = len(pi)
     corrected = tensors['intervention'].numpy() > 0.5 if 'intervention' in tensors else np.ones(n, bool)
@@ -83,7 +92,10 @@ class Scaler:
     task text's embedding) carries no information: scale 1 and masked out, so a live value that differs
     from the rows' by rounding (they are cached as float16) cannot be amplified."""
 
-    def __init__(self, z):
+    def __init__(self, z, standardise=True):
+        if not standardise:  # the inputs as they are: a key already on a common scale
+            self.mean, self.std, self.varies = np.zeros(z.shape[1]), np.ones(z.shape[1]), np.ones(z.shape[1], bool)
+            return
         self.mean, spread = z.mean(0), z.std(0)
         self.varies = spread > CONSTANT
         self.std = np.where(self.varies, spread, 1.0)

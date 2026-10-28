@@ -110,10 +110,8 @@ class PolicyNode:
         self.z_pub = node.create_publisher(Image, cfg['z'], 10) if cfg.get('z') and hasattr(policy, 'z') else None
         self.path_pub = node.create_publisher(Path, cfg['chunk'] + '_path', 10)
         self.attention = self.attention_pubs = None
-        if cfg.get('attention') and policy.type == 'multi_task_dit':
-            from inference.attention import ClsAttention
-
-            self.attention = ClsAttention(policy.policy.observation_encoder)
+        if cfg.get('attention') and getattr(policy, 'attention', None) is not None:
+            self.attention = policy.attention
             self.attention_pubs = {
                 c: node.create_publisher(Image, f'{cfg["attention"]}/{c}', 2) for c in self.attention.cameras
             }

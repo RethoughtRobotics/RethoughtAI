@@ -359,8 +359,12 @@ class LeRobotPolicy:
             self.policy.init_rtc_processor()
         self.policy.to(device).eval()
         self.z = None  # MultiTask DiT: the observation encoding of the last plan (its denoiser's conditioning)
+        self.attention = None  # MultiTask DiT: where its CLIP looks each plan (inference.attention.ClsAttention)
         if cfg.type == 'multi_task_dit':
+            from inference.attention import ClsAttention
+
             record_encoding(self.policy.observation_encoder, self)
+            self.attention = ClsAttention(self.policy.observation_encoder)
         self.nudge = None  # inference.nudge.Nudge with a nudge adapter
         if adapter:
             from inference import lora
@@ -369,7 +373,7 @@ class LeRobotPolicy:
             if lora.meta(adapter).get('kind') == 'nudge':
                 from inference.nudge import Nudge
 
-                self.nudge = Nudge(adapter, self.policy, path, alpha)
+                self.nudge = Nudge(adapter, self.policy, path, alpha, self.attention)
             else:
                 lora.load_policy(self.policy, adapter, alpha)
         self.explorer = None

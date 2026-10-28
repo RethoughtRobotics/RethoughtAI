@@ -101,6 +101,18 @@ class _MLP:
         return x
 
 
+def attention_key(pooled, cameras):
+    """The attention key: each camera's attention-pooled patch tokens leaving the CLIP's last layer
+    (inference.attention.ClsAttention.pooled, `pooled_l12`) scaled to unit length, concatenated in
+    `cameras` order, scaled to unit length."""
+
+    def unit(x):
+        x = np.asarray(x, np.float64)
+        return x / max(float(np.linalg.norm(x)), 1e-12)
+
+    return unit(np.concatenate([unit(pooled[c]['pooled_l12']) for c in cameras]))
+
+
 class _Kernel:
     """ttt.correctors.kernel's recall, served."""
 
@@ -140,7 +152,7 @@ def _model(model, arrays):
 class Nudge:
     """A loaded nudge adapter on a policy: records the encoder's output of each plan and offsets it."""
 
-    def __init__(self, path, policy, model_dir, alpha):
+    def __init__(self, path, policy, model_dir, alpha, attention=None):
         from safetensors.numpy import load_file
 
         meta = json.loads((Path(path) / META).read_text())
@@ -156,6 +168,13 @@ class Nudge:
         self.state = int(meta.get('state', 0))
         self.outputs = int(meta.get('outputs', POSE))
         self.steps = int(meta.get('steps', 0))
+        self.key = meta.get('key', 'z')  # adapters written before `key` was recorded key on z
+        self.cameras, self.attention = meta.get('cameras'), attention
+        if self.key == 'attention':
+            if attention is None:
+                raise ValueError(f'{path} keys on attention: the policy has no ClsAttention (MultiTask DiT only)')
+            if sorted(self.cameras) != sorted(attention.cameras):
+                raise ValueError(f'{path} keys on cameras {self.cameras}, the policy has {attention.cameras}')
         self.z = self.offset = None  # of the last plan; per step: its first step's (`offsets` all of them)
         self.offsets = None
         encoder = policy.observation_encoder
@@ -172,7 +191,7 @@ class Nudge:
         """The plan (K, 7) relative actions plus alpha times the offset for the last encoded frame
         (and its observation.state `state`, when the adapter takes it), the trigger kept within 0 .. 1;
         the offset (6 or 7,) applied is kept in `offset` (per step: at the first step, all in `offsets`)."""
-        inputs = self.z
+        inputs = attention_key(self.attention.pooled(), self.cameras) if self.key == 'attention' else self.z
         if self.state:
             if state is None:
                 raise ValueError('this nudge adapter needs the observation.state')

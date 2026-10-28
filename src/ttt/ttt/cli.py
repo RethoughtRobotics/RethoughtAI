@@ -358,7 +358,15 @@ def correction_rows(model, root, repo_id, out, device):
     help='Rows weighted as corrections (a kernel stores exactly these): any step of their plan corrected, '
     'or their own frame (no lead-up, no decaying handback).',
 )
-def corrector(rows, method, save, model, gripper, target, weighted):
+@click.option(
+    '--key',
+    default='z',
+    show_default=True,
+    type=click.Choice(['z', 'attention']),
+    help="The inputs: the base's conditioning and state, or its attention-pooled patches (kernel only; "
+    'rows with `attention`).',
+)
+def corrector(rows, method, save, model, gripper, target, weighted, key):
     """A corrector (ttt.correctors), each episode held out in turn: on the correction frames, plan error
     in cm / gripper decisions (open or closed now) that match the person's. With --save, the adapter
     for the robot or the sim (inference serve --adapter), by convention
@@ -367,7 +375,7 @@ def corrector(rows, method, save, model, gripper, target, weighted):
     from .correctors.evaluate import leave_one_out, save_adapter
 
     tensors, meta = cache.load(rows)
-    results = leave_one_out(tensors, method, target, weighted)
+    results = leave_one_out(tensors, method, target, weighted, key)
     names = ('base', 'constant', method, 'true nudge')
     click.echo('held out  ' + ''.join(f'{n:>14s}' for n in names) + '   policy frames moved (cm)')
     for r in results:
@@ -378,7 +386,9 @@ def corrector(rows, method, save, model, gripper, target, weighted):
     click.echo('mean      ' + ''.join(f'{mean[n]:8.2f}      ' for n in names))
     click.echo(json.dumps(results))
     if save:
-        path = save_adapter(tensors, meta, save, model or meta['model'], results, method, gripper, target, weighted)
+        path = save_adapter(
+            tensors, meta, save, model or meta['model'], results, method, gripper, target, weighted, key
+        )
         click.echo(f'nudge adapter: {path}')
 
 
@@ -391,7 +401,15 @@ def corrector(rows, method, save, model, gripper, target, weighted):
 def linear(ctx, rows, save, model, gripper):
     """ttt corrector --method ridge."""
     ctx.invoke(
-        corrector, rows=rows, method='ridge', save=save, model=model, gripper=gripper, target='plan', weighted='plan'
+        corrector,
+        rows=rows,
+        method='ridge',
+        save=save,
+        model=model,
+        gripper=gripper,
+        target='plan',
+        weighted='plan',
+        key='z',
     )
 
 
