@@ -26,6 +26,8 @@ The correction a corrector learns is chunk_demo - chunk_pi (ttt.correctors, its 
 relative chunks of a relative checkpoint (training/TRAINING.md), the layout of the VR-trained bases.
 """
 
+from pathlib import Path
+
 import numpy as np
 import torch
 from scipy.spatial.transform import Rotation
@@ -159,5 +161,78 @@ def build(model, root, repo_id, device='cuda', task=None, log=print):
         'n_action_steps': steps,
         'plan_seed': None if logged else PLAN_SEED,
         'plans': 'logged: the plans the base made on the robot' if logged else 'resampled here, seeded',
+    }
+    return tensors, meta
+
+
+@torch.no_grad()
+def from_bags(model, bags, gate=3.0, lead=0, arm='left', device='cuda', task=None, log=print):
+    """Rows and meta of the base's own closed-loop attempts (the evaluator's bags, each with the scripted
+    expert's expert.npz, ttt.onpolicy): at every frame the expert planned from, the frame as the base
+    saw it, the base's plan resampled as in `build`, and as chunk_demo the expert's plan from that same
+    state, its pose `lead` steps ahead (onpolicy.relabel). The expert stands in for a person correcting
+    on-policy: intervention is 1 where the base's plan is on average more than `gate` cm from the
+    expert's over its n_action_steps (onpolicy's gate), and the person's correction is the expert's
+    plan there. `episode` is the attempt's seed."""
+    from adapter.labels import model_state
+    from inference.policies import LeRobotPolicy
+
+    from . import onpolicy
+
+    lp = LeRobotPolicy(str(model), device, task=task)
+    if lp.absolute or lp.policy.config.output_features['action'].shape[0] != 7:
+        raise ValueError(f'{model}: rows are built for relative (17-D state, 7-D action) checkpoints')
+    encoded = Encoded(lp.policy.observation_encoder)
+    steps = lp.policy.config.n_action_steps
+    cameras = onpolicy.cameras_of(lp)
+    keys = ('cond', 'chunk_pi', 'chunk_demo', 'state', 'intervention', 'step_intervention', 'episode', 'frame')
+    rows, sources = {k: [] for k in keys}, {}
+    for bag in bags:
+        e = onpolicy.load_expert(bag)
+        episode = onpolicy.seed(bag)
+        sources[episode] = str(Path(bag).resolve())
+        valid = np.flatnonzero(e['valid'])
+        goals = onpolicy.relabel(e['chunk'][valid], steps, lead).astype(np.float64)
+        previous = None
+        for k, (i, obs) in enumerate(zip(valid, onpolicy.observations(bag, e, valid, cameras, arm), strict=True)):
+            if obs is None:
+                continue
+            images, joints, (p, q), gripper = obs
+            observation = {CAMERA_PREFIX + key: images[key] for key in cameras.values()}
+            observation['observation.state'] = model_state(p, q, gripper, joints)
+            history, previous = previous or observation, observation
+            torch.manual_seed(PLAN_SEED)
+            plan = lp(observation, history=[history])[:steps]
+            demo = relative(goals[k], np.concatenate([p, q, [gripper]]))
+            corrected = float(np.linalg.norm(plan[:, :3] - demo[:, :3], axis=1).mean() > gate / 100)
+            rows['cond'].append(encoded.last[0].float().cpu())
+            rows['chunk_pi'].append(torch.as_tensor(plan, dtype=torch.float32))
+            rows['chunk_demo'].append(torch.as_tensor(demo))
+            rows['state'].append(torch.as_tensor(observation['observation.state']))
+            rows['intervention'].append(corrected)
+            rows['step_intervention'].append(torch.full((steps,), corrected))
+            rows['episode'].append(episode)
+            rows['frame'].append(int(i))
+        log(f'{bag}: {len(valid)} frames')
+    tensors = {
+        'cond': torch.stack(rows['cond']).half(),
+        **{k: torch.stack(rows[k]) for k in ('chunk_pi', 'chunk_demo', 'state', 'step_intervention')},
+        'intervention': torch.tensor(rows['intervention'], dtype=torch.float32),
+        'episode': torch.tensor(rows['episode'], dtype=torch.int32),
+        'frame': torch.tensor(rows['frame'], dtype=torch.int32),
+    }
+    meta = {
+        'model': str(model),
+        'type': lp.policy.config.type,
+        'source': 'on-policy',
+        'bags': sources,
+        'task': lp.task,
+        'fps': float(e['meta']['fps']),
+        'episodes': sorted(sources),
+        'n_action_steps': steps,
+        'lead_steps': lead,
+        'gate_cm': gate,
+        'plan_seed': PLAN_SEED,
+        'plans': 'resampled here, seeded',
     }
     return tensors, meta
