@@ -6,6 +6,8 @@ inference never blocks ROS callbacks, and publishes:
   chunk       moveit_msgs/RobotTrajectory stamped at observation time: `{arm}_tcp` targets
               (base frame) and the `{arm}_gripper` trigger, at k / fps
   chunk_path  nav_msgs/Path of the targets, for RViz
+  attention   (MultiTask DiT, with `attention` set) per camera, `<attention>/<camera>`: the view its
+              CLIP saw, tinted where the CLS token attends (inference.attention.ClsAttention)
 With RTC, each chunk continues the last one over the measured inference delay.
 A policy that sees past steps (n_obs_steps > 1, MultiTask DiT) gets them one step apart, as in
 training, from observations sampled every half step, not from its previous inference (~100 ms back).
@@ -94,6 +96,14 @@ class PolicyNode:
             else None
         )
         self.path_pub = node.create_publisher(Path, cfg['chunk'] + '_path', 10)
+        self.attention = self.attention_pubs = None
+        if cfg.get('attention') and policy.type == 'multi_task_dit':
+            from inference.attention import ClsAttention
+
+            self.attention = ClsAttention(policy.policy.observation_encoder)
+            self.attention_pubs = {
+                c: node.create_publisher(Image, f'{cfg["attention"]}/{c}', 2) for c in self.attention.cameras
+            }
         self.samples = deque(maxlen=2 * policy.n_obs_steps + 2)  # (time, observation), every half step
         if policy.n_obs_steps > 1:
             node.create_timer(self.dt / 2, self._sample)
@@ -229,6 +239,8 @@ class PolicyNode:
             self._publish(t, positions, rotations, actions[:, 6])
             if self.nudge_pub is not None:
                 self._publish_nudge(t, self.policy.nudge.offset)
+            if self.attention is not None:
+                self._publish_attention(t)
             if self.count % max(1, round(LOG_EVERY * self.fps / self.every)) == 0:
                 self.node.get_logger().info(
                     f'{self.count} chunks; inference p50 {1000 * self.latency.percentile(0.5):.0f} ms, '
@@ -241,6 +253,17 @@ class PolicyNode:
         msg.twist.linear.x, msg.twist.linear.y, msg.twist.linear.z = (float(x) for x in offset[:3])
         msg.twist.angular.x, msg.twist.angular.y, msg.twist.angular.z = (float(x) for x in offset[3:6])
         self.nudge_pub.publish(msg)
+
+    def _publish_attention(self, t):
+        from inference.attention import overlay
+
+        stamp = Time(nanoseconds=round(t * 1e9)).to_msg()
+        for camera, (weights, view) in self.attention.maps().items():
+            image = overlay(weights, view)
+            msg = Image(height=image.shape[0], width=image.shape[1], encoding='rgb8', step=3 * image.shape[1])
+            msg.header.stamp, msg.header.frame_id = stamp, camera
+            msg.data = image.tobytes()
+            self.attention_pubs[camera].publish(msg)
 
     def _publish(self, t, positions, rotations, triggers):
         stamp = Time(nanoseconds=round(t * 1e9)).to_msg()

@@ -7,6 +7,9 @@ Two methods, one output format:
   the action chunk re-predicted; the score is how far the chunk moves. Causal, but one inference
   per cell, so for fast policies.
 
+`ClsAttention` is a third, live one (MultiTask DiT): where its CLIP's CLS token attends in the last
+layer, kept from every inference the policy node runs anyway and published beside its chunks.
+
 `Maps.scores` has named `dims`, the last always "token"; `segments` say which tokens are which: a
 camera's are a grid of cells covering `extent` (top, left, bottom, right) of its frame, as fractions
 of the frame (beyond 0..1 where the grid covers padding); language and state tokens have no grid.
@@ -421,3 +424,62 @@ def _change(base, other) -> list[float]:
         float(np.degrees(np.linalg.norm(d[:, 3:6], axis=1)).mean()),
         float(np.abs(d[:, 6]).mean()),
     ]
+
+
+class ClsAttention:
+    """Where a MultiTask DiT's CLIP looks: the last layer's attention from the CLS token (the policy's
+    conditioning, per image) to each patch, mean of heads, recomputed from that layer's input with its
+    own layer norm and query and key projections (two small products; CLIP's forward is not rerun).
+
+    It wraps the encoder's CLIP forward to keep the hidden states and the pixels of every call, so it
+    costs nothing until `maps` is asked. Only the current step's images are mapped: the encoder
+    flattens images as (batch, step, camera), so they are the last `cameras` of the call.
+    """
+
+    def __init__(self, encoder):
+        self.cameras = [k.removeprefix('observation.images.') for k in encoder.camera_names]
+        model = encoder.vision_encoder.model
+        self.layer = model.vision_model.encoder.layers[-1]
+        self.patch = model.config.patch_size
+        self.pixels = self.states = None
+        original = model.forward
+
+        def keep(*args, pixel_values=None, **kwargs):
+            out = original(*args, pixel_values=pixel_values, **{**kwargs, 'output_hidden_states': True})
+            self.pixels, self.states = pixel_values, out.hidden_states
+            return out
+
+        model.forward = keep
+
+    def maps(self) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+        """Camera -> ((grid, grid) attention (the rest of 1 is on the CLS itself), (H, W, 3) uint8 view the CLIP saw) of the last
+        call; empty before the first. The view is the normalized pixels stretched back to 0 .. 255 per
+        channel: what the policy saw up to that channel's contrast."""
+        import torch
+
+        if self.states is None:
+            return {}
+        n = len(self.cameras)
+        attn = self.layer.self_attn
+        with torch.no_grad():
+            h = self.layer.layer_norm1(self.states[-2][-n:])
+            q = attn.q_proj(h[:, :1]).view(n, 1, attn.num_heads, attn.head_dim).transpose(1, 2)
+            k = attn.k_proj(h).view(n, -1, attn.num_heads, attn.head_dim).transpose(1, 2)
+            w = torch.softmax(q @ k.transpose(-1, -2) * attn.head_dim**-0.5, dim=-1)[:, :, 0, 1:].mean(1)
+            pixels = self.pixels[-n:].float()
+            low = pixels.amin(dim=(2, 3), keepdim=True)
+            view = (pixels - low) / (pixels.amax(dim=(2, 3), keepdim=True) - low).clamp_min(1e-6)
+        side = pixels.shape[-1] // self.patch
+        w = w.float().cpu().numpy().reshape(n, side, side)
+        view = (view.permute(0, 2, 3, 1) * 255).round().byte().cpu().numpy()
+        return {camera: (w[i], view[i]) for i, camera in enumerate(self.cameras)}
+
+
+def overlay(weights: np.ndarray, view: np.ndarray) -> np.ndarray:
+    """(H, W, 3) uint8: `view` dimmed where `weights` (grid, grid) is low and tinted magenta where it is
+    high (scaled to its maximum), each patch a flat block."""
+    scale = view.shape[0] // weights.shape[0]
+    heat = np.kron(weights / max(weights.max(), 1e-12), np.ones((scale, scale)))[..., None]
+    tint = 0.5 * heat
+    out = (1 - tint) * view * (0.3 + 0.7 * heat) + tint * np.array([255.0, 60.0, 255.0])
+    return out.clip(0, 255).astype(np.uint8)
