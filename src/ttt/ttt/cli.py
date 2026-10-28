@@ -339,7 +339,7 @@ def correction_rows(model, root, repo_id, out, device):
 
 @main.command('corrector')
 @click.option('--rows', required=True, help='Rows directory (ttt correction-rows).')
-@click.option('--method', default='ridge', show_default=True, type=click.Choice(['ridge', 'mlp']))
+@click.option('--method', default='ridge', show_default=True, type=click.Choice(['ridge', 'mlp', 'kernel']))
 @click.option('--save', default=None, help='Also fit on every episode and write a nudge adapter here.')
 @click.option('--model', default=None, help="With --save: the base checkpoint (default: the rows').")
 @click.option('--gripper', is_flag=True, help='With --save: the adapter also offsets the gripper trigger.')

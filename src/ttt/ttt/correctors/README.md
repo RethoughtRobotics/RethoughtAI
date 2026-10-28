@@ -39,6 +39,7 @@ its features, its plan and the person's plan (`ttt/corrections.py`). Everything 
 | name | model | chosen on held-out episodes | file |
 |---|---|---|---|
 | `ridge` | `W x + b`, L2 penalty | lambda (13 values, 1 to 1e6) | `ridge.py` |
+| `kernel` | memory of the corrected rows, tricube on cosine similarity, exactly 0 beyond `s_min` | s_min (0 to 0.95) | `kernel.py` |
 | `mlp` | CR-DAgger's residual head: 3 x 256, GELU, dropout 0.1; AdamW 3e-4, cosine, EMA, weighted MSE on normalised targets | nothing: settings fixed in advance | `mlp.py` |
 
 ## Evaluation (`evaluate.py`)
