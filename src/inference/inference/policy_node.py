@@ -24,7 +24,7 @@ from collections import deque
 import numpy as np
 from baxter_core_msgs.msg import DigitalIOState, EndEffectorState
 from builtin_interfaces.msg import Duration
-from geometry_msgs.msg import PoseStamped, Transform, TwistStamped
+from geometry_msgs.msg import PoseStamped, Transform, TwistStamped, Vector3Stamped
 from moveit_msgs.msg import RobotTrajectory
 from nav_msgs.msg import Path
 from rclpy.qos import DurabilityPolicy, QoSProfile
@@ -91,6 +91,13 @@ class PolicyNode:
         self.nudge_pub = (
             node.create_publisher(TwistStamped, cfg['nudge'], 10)
             if cfg.get('nudge') and getattr(policy, 'nudge', None)
+            else None
+        )
+        # A kernel adapter's evidence for each plan's offset: x the highest cosine similarity to a stored
+        # key, y s_min, z the keys within it; x <= y means the offset is exactly 0 (ttt.correctors.kernel)
+        self.similarity_pub = (
+            node.create_publisher(Vector3Stamped, cfg['nudge'] + '_similarity', 10)
+            if self.nudge_pub is not None and policy.nudge.kind == 'kernel'
             else None
         )
         self.path_pub = node.create_publisher(Path, cfg['chunk'] + '_path', 10)
@@ -229,6 +236,8 @@ class PolicyNode:
             self._publish(t, positions, rotations, actions[:, 6])
             if self.nudge_pub is not None:
                 self._publish_nudge(t, self.policy.nudge.offset)
+            if self.similarity_pub is not None:
+                self._publish_similarity(t, self.policy.nudge.model)
             if self.count % max(1, round(LOG_EVERY * self.fps / self.every)) == 0:
                 self.node.get_logger().info(
                     f'{self.count} chunks; inference p50 {1000 * self.latency.percentile(0.5):.0f} ms, '
@@ -241,6 +250,12 @@ class PolicyNode:
         msg.twist.linear.x, msg.twist.linear.y, msg.twist.linear.z = (float(x) for x in offset[:3])
         msg.twist.angular.x, msg.twist.angular.y, msg.twist.angular.z = (float(x) for x in offset[3:6])
         self.nudge_pub.publish(msg)
+
+    def _publish_similarity(self, t, kernel):
+        msg = Vector3Stamped()
+        msg.header.stamp, msg.header.frame_id = Time(nanoseconds=round(t * 1e9)).to_msg(), 'base'
+        msg.vector.x, msg.vector.y, msg.vector.z = kernel.s_max, kernel.s_min, float(kernel.active)
+        self.similarity_pub.publish(msg)
 
     def _publish(self, t, positions, rotations, triggers):
         stamp = Time(nanoseconds=round(t * 1e9)).to_msg()

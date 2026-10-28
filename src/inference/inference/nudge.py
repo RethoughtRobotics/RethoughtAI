@@ -109,12 +109,16 @@ class _Kernel:
         self.keys, self.values = a['keys'].astype(np.float64), a['values'].astype(np.float64)
         self.s_min = float(s_min)
         self.bias = np.zeros(self.values.shape[1])
+        self.s_max = self.active = None  # of the last call: the highest key similarity, keys within s_min
 
     def __call__(self, x):
         x = np.where(self.mask, x, 0.0)
         x = x / max(float(np.linalg.norm(x)), 1e-12)
-        u = (1.0 - self.keys @ x) / (1.0 - self.s_min)
+        s = self.keys @ x
+        u = (1.0 - s) / (1.0 - self.s_min)
         phi = np.where(u < 1.0, (1.0 - np.clip(u, 0.0, 1.0) ** 3) ** 3, 0.0)
+        self.s_max = float(s.max()) if len(s) else -1.0  # no keys: no similarity, the offset 0
+        self.active = int((phi > 0.0).sum())
         return (phi @ self.values) / max(1.0, float(phi.sum()))
 
 

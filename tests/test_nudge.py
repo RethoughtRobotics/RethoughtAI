@@ -130,3 +130,28 @@ def test_an_mlp_adapter_runs_its_layers_with_gelu_between(tmp_path, checkpoint):
     h = W0 @ [1.0, 0.0] + b0
     expected = W1 @ (0.5 * h * (1 + erf(h / np.sqrt(2)))) + b1
     np.testing.assert_allclose(n.offset, expected, rtol=1e-5)
+
+
+def kernel(tmp_path, checkpoint, s_min):
+    """A kernel adapter of one stored key (1, 0) holding the nudge (0.05, 0, 0, 0, 0, 0), inputs unscaled."""
+    arrays = {'mean': np.zeros(2), 'std': np.ones(2), 'mask': np.ones(2)}
+    arrays |= {'keys': np.array([[1.0, 0.0]]), 'values': np.array([[0.05, 0, 0, 0, 0, 0]])}
+    return nudge.save(tmp_path / 'adapter', {'type': 'kernel', 's_min': s_min}, arrays, checkpoint)
+
+
+@pytest.mark.parametrize('angle', [61.0, 90.0, 180.0])
+def test_a_kernel_adapter_leaves_the_plan_bit_identical_when_no_key_is_within_s_min(tmp_path, checkpoint, angle):
+    a = np.radians(angle)  # s_min 0.5 is 60 deg from the key
+    n = loaded(kernel(tmp_path, checkpoint, 0.5), checkpoint, z=(np.cos(a), np.sin(a)))
+    plan = np.random.default_rng(3).normal(size=(4, 7))
+    out = n(plan)
+    assert n.model.s_max <= n.model.s_min and n.model.active == 0
+    assert np.array_equal(out, plan)
+
+
+def test_a_kernel_adapter_offsets_the_plan_within_s_min(tmp_path, checkpoint):
+    a = np.radians(30.0)
+    n = loaded(kernel(tmp_path, checkpoint, 0.5), checkpoint, z=(np.cos(a), np.sin(a)))
+    n(np.zeros((4, 7)))
+    assert n.model.s_max == pytest.approx(np.cos(a)) and n.model.active == 1
+    assert 0.0 < n.offset[0] < 0.05
