@@ -265,6 +265,18 @@ def check_adapter(policy_type, adapter):
     raise ValueError(f'{adapter}: a {kind or "LoRA"} adapter is for VITA checkpoints, not {policy_type}')
 
 
+def record_encoding(encoder, sink):
+    """Wrap `encoder.encode` so each call also keeps its first item, as float32 numpy, in `sink.z`."""
+    original = encoder.encode
+
+    def encode(batch):
+        out = original(batch)
+        sink.z = out[0].float().cpu().numpy()
+        return out
+
+    encoder.encode = encode
+
+
 class LeRobotPolicy:
     """Any LeRobot policy (ACT, SmolVLA, ...) through LeRobot's own loading and processors.
 
@@ -346,6 +358,9 @@ class LeRobotPolicy:
             self.policy.config.rtc_config = RTCConfig(**rtc)
             self.policy.init_rtc_processor()
         self.policy.to(device).eval()
+        self.z = None  # MultiTask DiT: the observation encoding of the last plan (its denoiser's conditioning)
+        if cfg.type == 'multi_task_dit':
+            record_encoding(self.policy.observation_encoder, self)
         self.nudge = None  # inference.nudge.Nudge with a nudge adapter
         if adapter:
             from inference import lora

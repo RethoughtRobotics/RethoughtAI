@@ -192,6 +192,7 @@ inference:
     screen: true  # Baxter's head display, the recorder's session screens
     session: Policy rollout
   nudge: /policy/left/nudge  # a nudge adapter's offset of each plan (inference.nudge)
+  z: /policy/left/z  # the MultiTask DiT's observation encoding of each plan, stamped as the chunk (inference.tensor_image)
   joint_states: /robot/joint_states
   gripper: /robot/end_effector/left_gripper/state
   task: Pick up the blue cup and place it in the red container  # only if a checkpoint's dataset tasks are unreadable
