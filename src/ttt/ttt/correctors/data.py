@@ -15,12 +15,17 @@ over the plan, as recorded, not the person's path minus a plan the policy made w
 correct (a takeover's), and the rows weighted are those whose plan holds a nudge.
 Rows built before step_intervention existed are labelled per frame, with the LEAD_UP s before each
 correction weighted as CR-DAgger's correction_horizon.
+With weighted 'frame', only the rows whose own frame the person corrected are weighted: no rows before
+a correction whose plan runs into it, and none after it whose recorded offset is still decaying (the
+nudge interface's handback, not the person's correction). A kernel memory stores exactly the weighted
+rows, so this decides which situations count as corrected.
 """
 
 import numpy as np
 
 WEIGHT = 4.0
 TARGETS = ('plan', 'step')  # one offset for the whole plan, or one per step of it
+WEIGHTED = ('plan', 'frame')  # rows weighted: any step of their plan corrected, or their own frame
 LEAD_UP = 1.0  # s
 CONSTANT = 1e-6  # a feature's spread over the rows below this: it does not vary
 
@@ -34,14 +39,15 @@ def nudge(chunk_pi, chunk_demo, mask=None):
     return (difference if mask is None else difference * mask[:, :, None]).mean(axis=1)
 
 
-def problem(tensors, fps=25, target='plan'):
+def problem(tensors, fps=25, target='plan', weighted='plan'):
     """(inputs, targets, weights, corrected, untouched) of the rows: inputs the base's features and
     state; targets the nudge over the plan's corrected steps, 0 where none is (target 'plan': its
     average over the plan, (N, 7); 'step': at each step, flattened step by step, (N, steps x 7), which
     needs the per-step mask); weights WEIGHT on rows
     with a corrected step (rows without step_intervention: on correction frames and the LEAD_UP
-    before each), 1 elsewhere; corrected the rows whose frame the person drove, untouched those no
-    step of whose plan they did (what the evaluation scores)."""
+    before each), 1 elsewhere; with `weighted` 'frame' only on the rows whose frame the person drove;
+    corrected the rows whose frame the person drove, untouched those no step of whose plan they did
+    (what the evaluation scores)."""
     z = tensors['cond'].float().numpy().astype(np.float64)
     if 'state' in tensors:
         z = np.hstack([z, tensors['state'].numpy().astype(np.float64)])
@@ -50,6 +56,8 @@ def problem(tensors, fps=25, target='plan'):
     corrected = tensors['intervention'].numpy() > 0.5 if 'intervention' in tensors else np.ones(n, bool)
     if target not in TARGETS:
         raise ValueError(f'target {target!r}: one of {TARGETS}')
+    if weighted not in WEIGHTED:
+        raise ValueError(f'weighted {weighted!r}: one of {WEIGHTED}')
     if 'step_intervention' in tensors:
         steps = tensors['step_intervention'].numpy() > 0.5
         y = (demo - pi) * steps[:, :, None]  # per step, the policy's own steps 0
@@ -59,7 +67,7 @@ def problem(tensors, fps=25, target='plan'):
             y[:, :, :6] = offset
             touched |= np.abs(offset).max(axis=(1, 2)) > 0
         y = y.reshape(n, -1) if target == 'step' else y.mean(axis=1)
-        return z, y, np.where(touched, WEIGHT, 1.0), corrected, ~touched
+        return z, y, np.where(corrected if weighted == 'frame' else touched, WEIGHT, 1.0), corrected, ~touched
     if target == 'step':
         raise ValueError('per-step targets need rows with step_intervention (ttt correction-rows)')
     y = np.where(corrected[:, None], nudge(pi, demo), 0.0)
@@ -67,7 +75,7 @@ def problem(tensors, fps=25, target='plan'):
     lead_up = np.zeros(n, bool)
     for i in np.flatnonzero(corrected & ~np.r_[False, corrected[:-1]]):  # where a correction starts
         lead_up |= (episode == episode[i]) & (frame >= frame[i] - LEAD_UP * fps) & (frame < frame[i])
-    return z, y, np.where(corrected | lead_up, WEIGHT, 1.0), corrected, ~corrected
+    return z, y, np.where(corrected | (lead_up & (weighted == 'plan')), WEIGHT, 1.0), corrected, ~corrected
 
 
 class Scaler:

@@ -1,5 +1,5 @@
 """ttt.correctors: every method, fitted, exported and loaded as the robot loads it, predicts what it
-predicted when fitted; the MLP learns what a linear map cannot."""
+predicted when fitted; the MLP learns what a linear map cannot; the kernel memory keeps the guarantees its form gives."""
 
 import types
 
@@ -8,7 +8,7 @@ import pytest
 
 pytest.importorskip('torch')
 from inference import nudge  # noqa: E402
-from ttt.correctors import METHODS, mlp, ridge  # noqa: E402
+from ttt.correctors import METHODS, kernel, mlp, ridge  # noqa: E402
 
 
 def rows(n=600, d=6, seed=0):
@@ -109,3 +109,46 @@ def test_a_per_step_target_keeps_an_up_then_down_that_the_plan_average_loses():
     step = data.problem(tensors, target='step')[1].reshape(n, steps, 7)
     np.testing.assert_allclose(plan[:, 2], 0.0, atol=1e-12)  # averaged over the plan: nothing
     np.testing.assert_allclose(step[0, :, 2], [0.03, 0.03, -0.03, -0.03])
+
+
+def test_the_kernel_memory_is_zero_beyond_its_radius_bounded_and_continuous_at_its_edge():
+    keys = np.eye(4)[:3]  # the fourth direction holds no stored key
+    values = np.array([[0.02, 0.0], [0.0, -0.05], [0.01, 0.01]])
+    s_min = 0.8
+
+    def at(s):  # a unit query whose cosine similarity to the first key is s, 0 to the others
+        return kernel.recall(keys, values, s_min, np.array([[s, 0.0, 0.0, np.sqrt(1 - s * s)]]))[0]
+
+    assert np.all(at(0.8) == 0.0) and np.all(at(0.5) == 0.0)  # exactly 0: the base's plan
+    np.testing.assert_allclose(at(1.0), values[0])  # on a stored key: its own nudge
+    rng = np.random.default_rng(3)
+    x = kernel.unit(rng.normal(size=(500, 4)), np.ones(4, bool))
+    assert np.all(np.abs(kernel.recall(keys, values, s_min, x)) <= np.abs(values).max(axis=0) + 1e-12)
+    assert np.abs(at(0.8 + 1e-4)).max() < 1e-9  # no jump at the edge, as dividing by sum phi alone would
+
+
+def test_weighted_frame_keeps_only_the_nudged_frames_not_the_lead_up_or_the_decaying_handback():
+    import torch
+
+    from ttt.correctors import data
+
+    n, steps = 10, 4
+    nudging = torch.zeros(n)
+    nudging[3:6] = 1.0  # the person nudged frames 3 to 5
+    offset = torch.zeros(n, steps, 6)
+    offset[1:6, :, 0] = 0.02  # the plans from frame 1 run into the nudge
+    offset[6:, :, 0] = 0.02 * 0.5 ** torch.arange(1, n - 5).reshape(-1, 1)  # released: decaying, never 0
+    tensors = {
+        'cond': torch.zeros(n, 3),
+        'chunk_pi': torch.zeros(n, steps, 7),
+        'chunk_demo': torch.zeros(n, steps, 7),
+        'intervention': nudging,
+        'step_intervention': torch.zeros(n, steps),
+        'offset': offset,
+        'episode': torch.zeros(n, dtype=torch.int32),
+        'frame': torch.arange(n, dtype=torch.int32),
+    }
+    w_plan = data.problem(tensors, weighted='plan')[2]
+    w_frame = data.problem(tensors, weighted='frame')[2]
+    assert np.flatnonzero(w_plan == data.WEIGHT).tolist() == list(range(1, n))
+    assert np.flatnonzero(w_frame == data.WEIGHT).tolist() == [3, 4, 5]

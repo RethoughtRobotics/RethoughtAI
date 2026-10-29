@@ -9,7 +9,8 @@ A method is a class with
   export(outputs) -> (dict, dict)  its model description and arrays for the adapter
 """
 
+from .kernel import Kernel
 from .mlp import MLP
 from .ridge import Ridge
 
-METHODS = {cls.name: cls for cls in (Ridge, MLP)}
+METHODS = {cls.name: cls for cls in (Ridge, MLP, Kernel)}

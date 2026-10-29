@@ -20,15 +20,16 @@ def moved_cm(offset):
     return np.linalg.norm(offset[..., :3], axis=-1).reshape(len(offset), -1).mean(axis=1) * 100
 
 
-def leave_one_out(tensors, method, target='plan', **options):
+def leave_one_out(tensors, method, target='plan', weighted='plan', **options):
     """Each episode held out in turn, `method` (a name in METHODS) fitted on the others. On its
     correction frames: the plan's error against the person's, and its gripper decisions, for the base
     alone, a constant nudge (the training mean), the corrector and the true nudge (the best one nudge
     per row can do). On its policy frames: how far each moves the base where it was left to drive.
-    `target`: 'plan' or 'step' (data.problem). One dict per held-out episode."""
+    `target`: 'plan' or 'step', `weighted`: 'plan' or 'frame' (data.problem). One dict per held-out
+    episode."""
     from . import METHODS
 
-    z, y, w, corrected, untouched = problem(tensors, target=target)
+    z, y, w, corrected, untouched = problem(tensors, target=target, weighted=weighted)
     pi = tensors['chunk_pi'].numpy().astype(np.float64)
     demo = tensors['chunk_demo'].numpy().astype(np.float64)
     episode = tensors['episode'].numpy()
@@ -59,15 +60,15 @@ def leave_one_out(tensors, method, target='plan', **options):
     return results
 
 
-def save_adapter(tensors, meta, path, model, results, method, gripper=False, target='plan', **options):
+def save_adapter(tensors, meta, path, model, results, method, gripper=False, target='plan', weighted='plan', **options):
     """Fit `method` on every episode and write it as a nudge adapter for the checkpoint `model`, with
     `results` (leave_one_out's) beside it. With `gripper` the adapter also offsets the trigger;
-    `target` 'step' makes it offset each step of the plan by its own."""
+    `target` 'step' makes it offset each step of the plan by its own; `weighted` as in data.problem."""
     from inference import nudge as nudge_adapter
 
     from . import METHODS
 
-    z, y, w, corrected, _ = problem(tensors, target=target)
+    z, y, w, corrected, _ = problem(tensors, target=target, weighted=weighted)
     episode = tensors['episode'].numpy()
     corrector = METHODS[method](**options).fit(z, y, w, episode)
     outputs = nudge_adapter.POSE + 1 if gripper else nudge_adapter.POSE
@@ -95,7 +96,11 @@ def save_adapter(tensors, meta, path, model, results, method, gripper=False, tar
             **corrector.summary(),
             'target': "whole-plan nudge: the person's plan minus the base's, averaged over the plan"
             + (', its steps the policy drove 0' if 'step_intervention' in tensors else '; 0 where the policy drove'),
-            'weights': {'correction': WEIGHT, **({} if 'step_intervention' in tensors else {'lead_up_s': LEAD_UP})},
+            'weights': {
+                'correction': WEIGHT,
+                'weighted': weighted,
+                **({} if 'step_intervention' in tensors else {'lead_up_s': LEAD_UP}),
+            },
             'n_action_steps': meta.get('n_action_steps'),
             'plan_seed': meta.get('plan_seed'),
             'plans': meta.get('plans'),

@@ -11,6 +11,8 @@ conditioning vector), followed by the frame's observation.state when the adapter
 (adapter.json `state`, its length), and f is the fitted model (adapter.json `model`):
   linear  f(x) = x W + b
   mlp     layers of weight (out, in) and bias, GELU between them, none after the last
+  kernel  a memory of corrections (ttt.correctors.kernel): the stored nudges weighted by tricube on
+          the cosine similarity of x to their keys, exactly 0 when no key is within s_min
 The offset covers position and rotation (the first 6 of the 7 relative actions) and, in an adapter
 fitted with it (adapter.json `outputs` 7), the gripper trigger, kept within 0 (open) .. 1 (closed). It
 is not capped: what bounds the arm is the teleop's servo speed limits, the operator's takeover and the
@@ -21,7 +23,8 @@ On disk, next to the checkpoint it was fitted on (models/<policy>/adapters/<name
                        model.safetensors, which a load must match); `corrections` (the dataset it
                        learned from); `fit` (the method and what it chose)
   adapter.safetensors  mean and std of the inputs; linear: W (inputs x outputs), b; mlp:
-                       layer<i>.weight, layer<i>.bias
+                       layer<i>.weight, layer<i>.bias; kernel: mask (the inputs it compares),
+                       keys (stored x inputs, unit length), values (stored x outputs)
 """
 
 import hashlib
@@ -98,6 +101,27 @@ class _MLP:
         return x
 
 
+class _Kernel:
+    """ttt.correctors.kernel's recall, served."""
+
+    def __init__(self, a, s_min):
+        self.mask = a['mask'] > 0.5
+        self.keys, self.values = a['keys'].astype(np.float64), a['values'].astype(np.float64)
+        self.s_min = float(s_min)
+        self.bias = np.zeros(self.values.shape[1])
+        self.s_max = self.active = None  # of the last call: the highest key similarity, keys within s_min
+
+    def __call__(self, x):
+        x = np.where(self.mask, x, 0.0)
+        x = x / max(float(np.linalg.norm(x)), 1e-12)
+        s = self.keys @ x
+        u = (1.0 - s) / (1.0 - self.s_min)
+        phi = np.where(u < 1.0, (1.0 - np.clip(u, 0.0, 1.0) ** 3) ** 3, 0.0)
+        self.s_max = float(s.max()) if len(s) else -1.0  # no keys: no similarity, the offset 0
+        self.active = int((phi > 0.0).sum())
+        return (phi @ self.values) / max(1.0, float(phi.sum()))
+
+
 def _model(model, arrays):
     kind = (model or {}).get('type', 'linear')  # adapters written before `model` was recorded are linear
     if kind == 'linear':
@@ -106,7 +130,11 @@ def _model(model, arrays):
         if model.get('activation', 'gelu') != 'gelu':
             raise ValueError(f'nudge mlp activation {model["activation"]!r}: only gelu is served')
         return _MLP(arrays, int(model['layers']))
-    raise ValueError(f'nudge model type {kind!r}: linear or mlp')
+    if kind == 'kernel':
+        if model.get('kernel', 'tricube') != 'tricube':
+            raise ValueError(f'nudge kernel {model["kernel"]!r}: only tricube is served')
+        return _Kernel(arrays, model['s_min'])
+    raise ValueError(f'nudge model type {kind!r}: linear, mlp or kernel')
 
 
 class Nudge:
