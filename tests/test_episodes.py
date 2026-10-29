@@ -112,7 +112,7 @@ def test_after_a_save_or_discard_the_screen_returns_to_idle_on_the_next_episode(
     screen.decide = lambda length=None: shown.append(('decide', screen.episode))
     runtime = types.SimpleNamespace(node=Node(), requested=False, engaged=False, correcting=False)
     episodes = Episodes(runtime, {'stick': '/stick', 'topic': '/episode', 'hold': 1.0}, screen)
-    for start, label in ((0.0, 'east'), (20.0, 'west')):
+    for start, label in ((0.0, 'east'), (20.0, 'west'), (40.0, 'east')):
         hold(episodes, 'north', start)
         runtime.engaged = True
         episodes.check(now=start + 2.0)
@@ -121,6 +121,7 @@ def test_after_a_save_or_discard_the_screen_returns_to_idle_on_the_next_episode(
         hold(episodes, label, start + 4.0)  # fires at start + 5
         episodes.check(now=start + 5.9)  # the choice still shown
         episodes.check(now=start + 6.0)
+    # a discarded episode gives its number back: the next one records as 2 again
     assert shown == [
         ('idle', 0),
         ('recording', 1),
@@ -130,5 +131,14 @@ def test_after_a_save_or_discard_the_screen_returns_to_idle_on_the_next_episode(
         ('recording', 2),
         ('decide', 2),
         ('discarding', 2),
+        ('idle', 2),
+        ('recording', 2),
+        ('decide', 2),
+        ('saving', 2),
         ('idle', 3),
+    ]
+    assert [(m['episode'], m['event']) for m in runtime.node.sent if m['event'] in ('save', 'discard')] == [
+        (1, 'save'),
+        (2, 'discard'),
+        (2, 'save'),
     ]
