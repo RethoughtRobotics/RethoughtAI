@@ -22,6 +22,7 @@ from std_msgs.msg import String
 
 ACTIONS = ('start', 'stop', 'save', 'discard')
 CHECK = 0.05  # s between checks of the held direction and the runtime's state
+SHOWN = 1.0  # s a save or discard stays on the screen before it returns to idle, as the recorder's does
 
 
 class Episodes:
@@ -35,6 +36,7 @@ class Episodes:
         self.running = False
         self.pending = None  # a stopped episode awaiting save or discard
         self.started = None  # monotonic time the running episode started
+        self.back_at = None  # monotonic time the screen returns to idle after a save or discard
         self.corrections = 0
         self.direction, self.since, self.fired = '', 0.0, False
         self.correcting = False
@@ -67,6 +69,13 @@ class Episodes:
             self.fired = True
             if self._allowed(action):
                 getattr(self, f'_{action}')()
+                if action in ('save', 'discard'):
+                    self.back_at = now + SHOWN
+        if self.back_at is not None and now >= self.back_at:
+            self.back_at = None
+            if self.screen is not None and not self.running:
+                self.screen.episode = self.episode + 1  # the episode the next start records
+                self.screen.idle()
         engaged = self.runtime.engaged
         if engaged and not self.running:
             self._began(now)
@@ -110,6 +119,7 @@ class Episodes:
             self._log(f'  episode {self.pending} left unlabelled')
         self.episode += 1
         self.running, self.pending, self.started, self.corrections = True, None, now, 0
+        self.back_at = None
         self.correcting = False
         self._publish(self.episode, 'start')
         self._log(f'▶ EPISODE {self.episode} STARTED')
