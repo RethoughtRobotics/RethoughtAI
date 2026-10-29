@@ -6,6 +6,9 @@ inference never blocks ROS callbacks, and publishes:
   chunk       moveit_msgs/RobotTrajectory stamped at observation time: `{arm}_tcp` targets
               (base frame) and the `{arm}_gripper` trigger, at k / fps
   chunk_path  nav_msgs/Path of the targets, for RViz
+  attention   (MultiTask DiT, with `attention` set) per camera, `<attention>/<camera>`: the view its
+              CLIP saw, tinted where the CLS token attends (inference.attention.ClsAttention), and
+              `<attention>/<camera>/{weights,pooled_l11,pooled_l12}` its raw parts (inference.tensor_image)
 With RTC, each chunk continues the last one over the measured inference delay.
 A policy that sees past steps (n_obs_steps > 1, MultiTask DiT) gets them one step apart, as in
 training, from observations sampled every half step, not from its previous inference (~100 ms back).
@@ -38,6 +41,8 @@ from adapter.labels import apply_actions, relative_actions
 from adapter.lerobot_export import JOINTS, image_rgb
 from inference.runtime import Chunk
 from inference.tensor_image import to_image
+
+ATTENTION_PARTS = ('weights', 'pooled_l11', 'pooled_l12')  # inference.attention.ClsAttention.pooled
 
 STALE = 0.5  # s: older inputs pause inference (camera stopped, bag paused)
 LOG_EVERY = 10.0  # s
@@ -97,6 +102,20 @@ class PolicyNode:
         # The policy's observation encoding of each plan, for correctors fitted from the bag (inference.tensor_image)
         self.z_pub = node.create_publisher(Image, cfg['z'], 10) if cfg.get('z') and hasattr(policy, 'z') else None
         self.path_pub = node.create_publisher(Path, cfg['chunk'] + '_path', 10)
+        self.attention = self.attention_pubs = None
+        if cfg.get('attention') and policy.type == 'multi_task_dit':
+            from inference.attention import ClsAttention
+
+            self.attention = ClsAttention(policy.policy.observation_encoder)
+            self.attention_pubs = {
+                c: node.create_publisher(Image, f'{cfg["attention"]}/{c}', 2) for c in self.attention.cameras
+            }
+            # its raw parts, for keys fitted from the bag: <attention>/<camera>/{weights,pooled_l11,pooled_l12}
+            self.attention_part_pubs = {
+                (c, part): node.create_publisher(Image, f'{cfg["attention"]}/{c}/{part}', 10)
+                for c in self.attention.cameras
+                for part in ATTENTION_PARTS
+            }
         self.samples = deque(maxlen=2 * policy.n_obs_steps + 2)  # (time, observation), every half step
         if policy.n_obs_steps > 1:
             node.create_timer(self.dt / 2, self._sample)
@@ -232,6 +251,8 @@ class PolicyNode:
             self._publish(t, positions, rotations, actions[:, 6])
             if self.nudge_pub is not None:
                 self._publish_nudge(t, self.policy.nudge.offset)
+            if self.attention is not None:
+                self._publish_attention(t)
             if self.z_pub is not None and self.policy.z is not None:
                 self.z_pub.publish(to_image(self.policy.z, Time(nanoseconds=round(t * 1e9)).to_msg()))
             if self.count % max(1, round(LOG_EVERY * self.fps / self.every)) == 0:
@@ -246,6 +267,20 @@ class PolicyNode:
         msg.twist.linear.x, msg.twist.linear.y, msg.twist.linear.z = (float(x) for x in offset[:3])
         msg.twist.angular.x, msg.twist.angular.y, msg.twist.angular.z = (float(x) for x in offset[3:6])
         self.nudge_pub.publish(msg)
+
+    def _publish_attention(self, t):
+        from inference.attention import overlay
+
+        stamp = Time(nanoseconds=round(t * 1e9)).to_msg()
+        for camera, (weights, view) in self.attention.maps().items():
+            image = overlay(weights, view)
+            msg = Image(height=image.shape[0], width=image.shape[1], encoding='rgb8', step=3 * image.shape[1])
+            msg.header.stamp, msg.header.frame_id = stamp, camera
+            msg.data = image.tobytes()
+            self.attention_pubs[camera].publish(msg)
+        for camera, parts in self.attention.pooled().items():
+            for part, array in parts.items():
+                self.attention_part_pubs[camera, part].publish(to_image(array, stamp))
 
     def _publish(self, t, positions, rotations, triggers):
         stamp = Time(nanoseconds=round(t * 1e9)).to_msg()
