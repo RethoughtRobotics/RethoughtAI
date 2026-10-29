@@ -102,3 +102,33 @@ def test_a_nudge_counts_as_a_correction_while_the_policy_drives_on(run):
     runtime.requested = runtime.engaged = False
     episodes.check(now=5.0)
     assert any('STOPPED (3.0 s, 1 corrections)' in line for line in runtime.node.lines)
+
+
+def test_after_a_save_or_discard_the_screen_returns_to_idle_on_the_next_episode():
+    shown = []
+    screen = types.SimpleNamespace(episode=0)
+    for state in ('idle', 'recording', 'saving', 'discarding'):
+        setattr(screen, state, lambda state=state: shown.append((state, screen.episode)))
+    screen.decide = lambda length=None: shown.append(('decide', screen.episode))
+    runtime = types.SimpleNamespace(node=Node(), requested=False, engaged=False, correcting=False)
+    episodes = Episodes(runtime, {'stick': '/stick', 'topic': '/episode', 'hold': 1.0}, screen)
+    for start, label in ((0.0, 'east'), (20.0, 'west')):
+        hold(episodes, 'north', start)
+        runtime.engaged = True
+        episodes.check(now=start + 2.0)
+        runtime.requested = runtime.engaged = False
+        episodes.check(now=start + 3.0)
+        hold(episodes, label, start + 4.0)  # fires at start + 5
+        episodes.check(now=start + 5.9)  # the choice still shown
+        episodes.check(now=start + 6.0)
+    assert shown == [
+        ('idle', 0),
+        ('recording', 1),
+        ('decide', 1),
+        ('saving', 1),
+        ('idle', 2),
+        ('recording', 2),
+        ('decide', 2),
+        ('discarding', 2),
+        ('idle', 3),
+    ]
