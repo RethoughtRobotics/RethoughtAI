@@ -106,6 +106,7 @@ class Episodes:
 
     def _discard(self):
         self._label('discard', 'DISCARDED', 'discarding')
+        self.episode -= 1  # the next episode takes its number; labels match rollouts by time, not number
 
     def _label(self, event, word, show):
         self._publish(self.pending, event)
