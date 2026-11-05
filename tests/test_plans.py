@@ -67,7 +67,15 @@ def test_plans_with_a_nudge_adapter_are_refused(tmp_path):
         load_plans(tmp_path / 'bag', np.array(t))
 
 
-def test_a_nudge_bags_offset_and_flag_reach_each_frame(tmp_path):
+@pytest.mark.parametrize(
+    ('flag', 'offset_topic'),
+    [
+        ('/teleop/left/nudging', '/teleop/left/correction_offset'),  # VR nudge
+        ('/robot/digital_io/left_lower_cuff/state', '/kinesthetic/left/offset'),  # steered cuff
+    ],
+)
+def test_a_corrections_offset_and_flag_reach_each_frame(tmp_path, flag, offset_topic):
+    from baxter_core_msgs.msg import DigitalIOState
     from geometry_msgs.msg import PoseStamped
     from std_msgs.msg import Bool
 
@@ -76,11 +84,12 @@ def test_a_nudge_bags_offset_and_flag_reach_each_frame(tmp_path):
     writer = rosbag2_py.SequentialWriter()
     path = tmp_path / 'bag'
     writer.open(rosbag2_py.StorageOptions(uri=str(path), storage_id='mcap'), rosbag2_py.ConverterOptions('', ''))
+    cuff = flag.endswith('cuff/state')
     topics = [
         ('/teleop/left/tcp', 'geometry_msgs/msg/PoseStamped'),
         ('/teleop/left/goal', 'geometry_msgs/msg/PoseStamped'),
-        ('/teleop/left/nudging', 'std_msgs/msg/Bool'),
-        ('/teleop/left/correction_offset', 'geometry_msgs/msg/TwistStamped'),
+        (flag, 'baxter_core_msgs/msg/DigitalIOState' if cuff else 'std_msgs/msg/Bool'),
+        (offset_topic, 'geometry_msgs/msg/TwistStamped'),
     ]
     for i, (name, kind) in enumerate(topics):
         writer.create_topic(rosbag2_py.TopicMetadata(i, name, kind, 'cdr'))
@@ -93,8 +102,8 @@ def test_a_nudge_bags_offset_and_flag_reach_each_frame(tmp_path):
         offset.twist.linear.y = -0.02 if on else 0.0
         writer.write('/teleop/left/tcp', serialize_message(pose), t)
         writer.write('/teleop/left/goal', serialize_message(pose), t)
-        writer.write('/teleop/left/nudging', serialize_message(Bool(data=on)), t)
-        writer.write('/teleop/left/correction_offset', serialize_message(offset), t)
+        writer.write(flag, serialize_message(DigitalIOState(state=on) if cuff else Bool(data=on)), t)
+        writer.write(offset_topic, serialize_message(offset), t)
     writer.close()
     ep = load_episode(path)
 
