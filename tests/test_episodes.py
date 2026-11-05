@@ -110,6 +110,7 @@ def test_after_a_save_or_discard_the_screen_returns_to_idle_on_the_next_episode(
     for state in ('idle', 'recording', 'saving', 'discarding'):
         setattr(screen, state, lambda state=state: shown.append((state, screen.episode)))
     screen.decide = lambda length=None: shown.append(('decide', screen.episode))
+    screen.elapsed = lambda seconds: None
     runtime = types.SimpleNamespace(node=Node(), requested=False, engaged=False, correcting=False)
     episodes = Episodes(runtime, {'stick': '/stick', 'topic': '/episode', 'hold': 1.0}, screen)
     for start, label in ((0.0, 'east'), (20.0, 'west'), (40.0, 'east')):
@@ -142,3 +143,34 @@ def test_after_a_save_or_discard_the_screen_returns_to_idle_on_the_next_episode(
         (2, 'discard'),
         (2, 'save'),
     ]
+
+
+def test_the_screen_shows_each_elapsed_second_once_and_restarts_with_the_episode():
+    times = []
+    screen = types.SimpleNamespace(
+        episode=0,
+        idle=lambda: None,
+        recording=lambda: None,
+        decide=lambda length=None: None,
+        saving=lambda: None,
+        elapsed=times.append,
+    )
+    runtime = types.SimpleNamespace(node=Node(), requested=False, engaged=False, correcting=False)
+    episodes = Episodes(runtime, {'stick': '/stick', 'topic': '/episode', 'hold': 1.0}, screen)
+    hold(episodes, 'north', 0.0)
+    runtime.engaged = True
+    episodes.check(now=2.0)
+    for now in (2.5, 3.0, 3.2, 3.9, 4.1, 6.0):
+        episodes.check(now=now)
+    assert times == [1, 2, 4]
+    runtime.requested = runtime.engaged = False
+    episodes.check(now=7.0)
+    times.clear()
+    episodes.check(now=8.0)  # stopped: the clock no longer runs
+    assert times == []
+    hold(episodes, 'east', 8.0)
+    hold(episodes, 'north', 10.0)
+    runtime.engaged = True
+    episodes.check(now=12.0)
+    episodes.check(now=13.1)
+    assert times == [1]
