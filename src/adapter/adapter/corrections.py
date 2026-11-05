@@ -5,6 +5,7 @@ A correction is a span in which a person drove the arm instead of the policy: a 
 by hand in zero-g); or nudged it while the policy drove on (/teleop/{arm}/nudging, --takeover nudge). Each becomes episode_NNN, every topic of the rollout cut to exactly that span, in
 the session layout `adapt lerobot` exports (--labels goal for a takeover: the teleop's goals are the
 operator's; a cuff correction has none, --labels measured) and recap browses one episode at a time.
+With `whole`, a cuff rollout exports with --labels goal: labels.cuff_targets labels the squeezed steps.
 corrections.json lists each one: the rollout it came from, its kind, arm, start and end.
 
 With `whole`, an episode is instead a whole policy rollout (/policy/{arm}/engaged true to false) that

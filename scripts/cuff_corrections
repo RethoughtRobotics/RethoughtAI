@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Turn rollouts with cuff corrections into a LeRobot dataset, one command after collecting.
+# Usage: scripts/cuff_corrections NAME REPO_ID BAG [BAG ...]
+#   NAME     session under recorder/data/ (added to if it exists)
+#   REPO_ID  dataset id, e.g. andnetdeboer/BlueCup_cuff
+#   BAG      rollout bags from baxter_sdk scripts/record_teleop.sh
+# Environment:
+#   TASK          the language instruction (default: the blue cup task)
+#   MIN_DURATION  s, shorter squeezes do not count as corrections (default: 0.5)
+#   RAW_THIRD_EYE=1  export the raw third-eye camera, for rollouts without ros2_inpaint running
+#
+# One episode per rollout holding a correction, discarded rollouts skipped (adapter.corrections). Each
+# frame keeps its intervention flag and the policy's plan, so one dataset serves a retrain on the
+# corrected chunks and a residual on chunk minus plan. Squeezed frames are labelled by labels.cuff_targets.
+
+if [[ " $* " =~ \ (-h|--help)\  ]]; then sed -n '2,/^$/{/^#/s/^# \{0,1\}//p}' "$0"; exit 0; fi
+set -eo pipefail
+(( $# >= 3 )) || { sed -n '2,5p' "$0"; exit 2; }
+NAME="$1" REPO="$2"
+shift 2
+cd "$(dirname "$0")/.."
+TASK="${TASK:-Pick up the blue cup and place it in the red container}"
+
+.venv/bin/adapt corrections "$@" --out "recorder/data/${NAME}" --whole --min-duration "${MIN_DURATION:-0.5}"
+
+CONFIG=configs/baxter.yaml
+if [[ -z "$RAW_THIRD_EYE" ]]; then
+    CONFIG="$(mktemp --suffix=.yaml)"
+    trap 'rm -f "$CONFIG"' EXIT
+    sed 's#/cameras/third_eye/color/image_raw$#/cameras/third_eye/color/image_raw_inpainted#' configs/baxter.yaml > "$CONFIG"
+fi
+.venv/bin/adapt lerobot "recorder/data/${NAME}" --config "$CONFIG" --repo-id "$REPO" --task "$TASK" \
+    --labels goal --intervention --plans
