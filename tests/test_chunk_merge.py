@@ -3,7 +3,7 @@ import pytest
 from scipy.spatial.transform import Rotation
 
 from adapter.labels import apply_actions, model_state, relative_actions
-from inference.runtime import Chunk, Runtime, check_merge
+from inference.runtime import Chunk, Runtime, check_merge, correcting
 
 FPS = 25.0
 CFG = {
@@ -285,6 +285,14 @@ def test_reanchored_chunk_keeps_its_plan_relative_to_the_tcp():
     moved = c.reanchored(np.array([0.5, 0, 0]), Rotation.identity(), np.array([0.6, 0.2, 0.1]), R_turn, arrival=9.0)
     assert np.allclose(moved.positions - [0.6, 0.2, 0.1], c.positions - [0.5, 0, 0]) and moved.arrival == 9.0
     assert np.allclose((moved.rotations * R_turn.inv()).as_rotvec(), c.rotations.as_rotvec())
+
+
+def test_a_squeeze_that_steers_is_no_correction_but_zero_g_and_takeover_are():
+    assert correcting({'cuff': True})
+    assert not correcting({'cuff': True, 'steering': True})
+    assert correcting({'cuff': True, 'steering': False})
+    assert correcting({'cuff': True, 'steering': True, 'takeover': True})
+    assert not correcting({'steering': True})
 
 
 def test_cuff_correction_follows_the_arm_then_resumes_at_once_from_the_corrected_pose():

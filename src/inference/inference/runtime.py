@@ -20,6 +20,8 @@ chunk, re-anchored on the corrected pose, runs at once, crossfaded in over `resu
 The gripper likewise: during a correction the trigger follows what the operator commands the gripper
 (`gripper_command`), so the resumed chunk crossfades in from the gripper as the operator left it.
 A VR takeover (`takeover`, the teleop's --takeover: the operator's controller drives) is the same.
+While the teleop steers (`steering`, its --steer: a squeeze pushes the playing plan, position control
+kept), a squeeze is no correction and the run goes on; without a plan to steer the squeeze is zero-g.
 With `episodes`, one VR thumbstick starts, stops and labels runs (episodes.py).
 
 A chunk is a trajectory of TCP targets timed from its observation: from a policy called here (a
@@ -84,6 +86,14 @@ def continuous(q):
     flips = np.cumsum(np.r_[0, np.einsum('ij,ij->i', q[1:], q[:-1]) < 0]) % 2 == 1
     q[flips] *= -1
     return q
+
+
+def correcting(by_hand):
+    """Whether a person has the arm, from the sources in `by_hand`: the cuff counts unless it steers."""
+    sources = dict(by_hand)
+    if sources.pop('steering', False):
+        sources.pop('cuff', None)
+    return any(sources.values())
 
 
 @dataclass
@@ -225,6 +235,8 @@ class Runtime:
             node.create_subscription(DigitalIOState, cfg['cuff'], lambda m: self._by_hand('cuff', m.state), 10)
         if cfg.get('takeover'):
             node.create_subscription(Bool, cfg['takeover'], lambda m: self._by_hand('takeover', m.data), 10)
+        if cfg.get('steering'):
+            node.create_subscription(Bool, cfg['steering'], lambda m: self._by_hand('steering', m.data), 10)
         self.hand_trigger = None  # the gripper as the operator last commanded it, 0 open .. 1 closed
         if cfg.get('gripper_command'):
             node.create_subscription(EndEffectorCommand, cfg['gripper_command'], self._on_gripper_command, 10)
@@ -247,7 +259,7 @@ class Runtime:
 
     def _by_hand(self, source, on):
         self.by_hand[source] = bool(on)
-        self.squeezed = any(self.by_hand.values())
+        self.squeezed = correcting(self.by_hand)
 
     def _on_gripper_command(self, msg):
         """A gripper position command (0 closed .. 100 open %), whoever sent it, as a trigger."""

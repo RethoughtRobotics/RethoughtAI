@@ -39,7 +39,7 @@ from trajectory_msgs.msg import JointTrajectoryPoint, MultiDOFJointTrajectoryPoi
 
 from adapter.labels import apply_actions, relative_actions
 from adapter.lerobot_export import JOINTS, image_rgb
-from inference.runtime import Chunk
+from inference.runtime import Chunk, correcting
 from inference.tensor_image import to_image
 
 ATTENTION_PARTS = ('weights', 'pooled_l11', 'pooled_l12')  # inference.attention.ClsAttention.pooled
@@ -100,6 +100,8 @@ class PolicyNode:
             node.create_subscription(DigitalIOState, cfg['cuff'], lambda m: self._by_hand('cuff', m.state), 10)
         if cfg.get('takeover'):
             node.create_subscription(Bool, cfg['takeover'], lambda m: self._by_hand('takeover', m.data), 10)
+        if cfg.get('steering'):
+            node.create_subscription(Bool, cfg['steering'], lambda m: self._by_hand('steering', m.data), 10)
         self.chunk_pub = node.create_publisher(RobotTrajectory, cfg['chunk'], 10)
         # A nudge adapter's offset of each plan (linear: position m, angular: rotation vector rad, base axes)
         self.nudge_pub = (
@@ -138,7 +140,7 @@ class PolicyNode:
 
     def _by_hand(self, source, on):
         self.by_hand[source] = bool(on)
-        self.squeezed = any(self.by_hand.values())
+        self.squeezed = correcting(self.by_hand)
 
     def _now(self):
         return self.node.get_clock().now().nanoseconds * 1e-9
