@@ -33,7 +33,7 @@ from nav_msgs.msg import Path
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from rclpy.time import Time
 from scipy.spatial.transform import Rotation
-from sensor_msgs.msg import Image, JointState
+from sensor_msgs.msg import CompressedImage, Image, JointState
 from std_msgs.msg import Bool
 from trajectory_msgs.msg import JointTrajectoryPoint, MultiDOFJointTrajectoryPoint
 
@@ -43,6 +43,12 @@ from inference.runtime import Chunk
 from inference.tensor_image import to_image
 
 ATTENTION_PARTS = ('weights', 'pooled_l11', 'pooled_l12')  # inference.attention.ClsAttention.pooled
+
+
+def image_type(topic):
+    """The message on an image topic: image_transport's `/compressed` suffix names the JPEG form."""
+    return CompressedImage if topic.endswith('/compressed') else Image
+
 
 STALE = 0.5  # s: older inputs pause inference (camera stopped, bag paused)
 LOG_EVERY = 10.0  # s
@@ -78,7 +84,9 @@ class PolicyNode:
         if missing:
             raise ValueError(f'no camera topic configured for {", ".join(missing)}')
         for key, topic in self.cameras.items():
-            node.create_subscription(Image, topic, lambda m, k=key: self._store(k, np.array(image_rgb(m))), 2)
+            node.create_subscription(
+                image_type(topic), topic, lambda m, k=key: self._store(k, np.array(image_rgb(m))), 2
+            )
         node.create_subscription(PoseStamped, cfg['tcp'], self._on_tcp, 10)
         node.create_subscription(JointState, cfg['joint_states'], self._on_joints, 10)
         node.create_subscription(

@@ -22,12 +22,13 @@ from geometry_msgs.msg import PoseStamped, Transform
 from moveit_msgs.msg import RobotTrajectory
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from rclpy.time import Time
-from sensor_msgs.msg import Image, JointState
+from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, Empty
 from trajectory_msgs.msg import MultiDOFJointTrajectoryPoint
 
 from adapter.lerobot_export import JOINTS, image_rgb
 from inference.inpaint import soft_mask
+from inference.policy_node import image_type
 
 STALE = 0.5
 MAX_TCP_SKEW = 0.1
@@ -87,7 +88,7 @@ class BimanualPolicyNode:
         self._wake = threading.Event()
         self._stop = threading.Event()
         for key, topic in self.cameras.items():
-            node.create_subscription(Image, topic, lambda msg, key=key: self._on_image(key, msg), 2)
+            node.create_subscription(image_type(topic), topic, lambda msg, key=key: self._on_image(key, msg), 2)
         for arm in ARMS:
             arm_cfg = cfg['arms'][arm]
             node.create_subscription(PoseStamped, arm_cfg['tcp'], lambda msg, arm=arm: self._on_tcp(arm, msg), 10)
