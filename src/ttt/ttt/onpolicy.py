@@ -39,8 +39,8 @@ from . import corrector
 EXPERT = 'expert.npz'
 # Camera topic: key, as configs/baxter.yaml records them; the policy's are used
 CAMERAS = {
-    '/cameras/left_hand_camera/image': 'left',
-    '/cameras/right_hand_camera/image': 'right',
+    '/cameras/left_hand_camera/image/processed': 'left',
+    '/cameras/right_hand_camera/image/processed': 'right',
     '/cameras/third_eye/color/image_raw': 'third_eye',
 }
 SOURCES = 'meta/rethoughtai_sources.json'

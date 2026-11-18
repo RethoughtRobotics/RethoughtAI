@@ -1,0 +1,287 @@
+---
+robot: baxter
+
+topics:
+  images:
+    - topic: /cameras/left_hand_camera/image/processed
+      key: observation.images.left
+    - topic: /cameras/right_hand_camera/image/processed
+      key: observation.images.right
+    - topic: /cameras/third_eye/color/image_raw_inpainted_lamb/compressed
+      key: observation.images.third_eye
+  state:
+    - topic: /robot/joint_states
+      key: observation.state
+  extra:
+    # Teleop (BaxterSDK): measured TCP (state, delta anchor), the goal its servo chases
+    # (action labels; only while clutched), and its settings incl. the measured tcp_offset.
+    - /teleop/left/tcp
+    - /teleop/left/goal
+    - /teleop/left/config
+    - /teleop/right/tcp
+    - /teleop/right/goal
+    - /teleop/right/config
+    - /robot/end_effector/left_gripper/state
+    - /robot/end_effector/left_gripper/command
+    - /robot/end_effector/right_gripper/state
+    - /robot/end_effector/right_gripper/command
+    # Joint-space actions: the velocity command that reached the arm, and the teleop's IK
+    # (position: q, velocity: IK qdot, effort: qdot sent) and TCP twist.
+    - /robot/limb/left/joint_command
+    - /robot/limb/right/joint_command
+    - /teleop/left/ik
+    - /teleop/right/ik
+    - /teleop/left/tcp_twist
+    - /teleop/right/tcp_twist
+    # Contact and load: SEA commanded vs actual position/velocity/effort and gravity model,
+    # Baxter's endpoint pose/twist/wrench estimate, collision detection.
+    - /robot/limb/left/gravity_compensation_torques
+    - /robot/limb/right/gravity_compensation_torques
+    - /robot/limb/left/endpoint_state
+    - /robot/limb/right/endpoint_state
+    - /robot/limb/left/collision_detection_state
+    - /robot/limb/right/collision_detection_state
+    # Kinesthetic: the cuff squeezed (arm guided by hand, zero-g) and its gripper buttons (dash
+    # closes, circle opens: the teleop's cuff control; their commands are on .../gripper/command).
+    - /robot/digital_io/left_lower_cuff/state
+    - /robot/digital_io/right_lower_cuff/state
+    - /robot/digital_io/left_upper_button/state
+    - /robot/digital_io/left_lower_button/state
+    - /robot/digital_io/right_upper_button/state
+    - /robot/digital_io/right_lower_button/state
+    # What the controller holds the arm to, against where the hand moved it: in zero-g the commanded
+    # pose follows the hand; on release the arm springs back toward it. Reference joints likewise.
+    - /robot/limb/left/commanded_endpoint_state
+    - /robot/limb/right/commanded_endpoint_state
+    - /robot/ref_joint_states
+    # Two-arm demos: arm-arm avoidance engaging, each arm enabled/stopped/e-stopped, the right arm's
+    # navigator buttons and both shoulder buttons.
+    - /robot/limb/left/collision_avoidance_state
+    - /robot/limb/right/collision_avoidance_state
+    - /robot/limb/left/state
+    - /robot/limb/right/state
+    - /robot/digital_io/right_button_show/state
+    - /robot/digital_io/right_button_ok/state
+    - /robot/digital_io/right_button_back/state
+    - /robot/digital_io/left_shoulder_button/state
+    - /robot/digital_io/right_shoulder_button/state
+    # The person teaching: head sonar returns (who stands where around the robot), and third-eye
+    # depth aligned to colour (PNG-compressed) to mask them out of the images.
+    - /robot/sonar/head_sonar/state
+    - /cameras/third_eye/aligned_depth_to_color/image_raw/compressedDepth
+    - /cameras/third_eye/aligned_depth_to_color/camera_info
+    - /cameras/third_eye/color/image_raw_inpainted_lamb/compressed
+    - /cameras/third_eye/color/image_raw_inpainted_lamb_mask/compressed
+    # Policy corrections: the chunks the policy planned and when it drove the arm.
+    - /policy/left/chunk
+    - /policy/left/engaged
+    - /policy/left/attention/left
+    - /policy/left/attention/third_eye
+    - /policy/left/attention/left/weights
+    - /policy/left/attention/left/pooled_l11
+    - /policy/left/attention/left/pooled_l12
+    - /policy/left/attention/third_eye/weights
+    - /policy/left/attention/third_eye/pooled_l11
+    - /policy/left/attention/third_eye/pooled_l12
+    - /policy/left/z
+    - /policy/left/episode
+    - /teleop/left/takeover
+    - /teleop/left/steering
+    - /teleop/left/nudging
+    - /teleop/left/correction_offset
+    - /kinesthetic/left/active
+    - /kinesthetic/left/offset
+    - /policy/right/chunk
+    - /policy/right/engaged
+    # Log lines from the robot, teleop and policy nodes (homing, cuff control, errors).
+    - /rosout
+    # Mode/safety overrides: distinguish cuff presses from whether guidance was allowed.
+    # These are command events, not latched proof of the controller's current safety state.
+    - /robot/limb/left/suppress_cuff_interaction
+    - /robot/limb/right/suppress_cuff_interaction
+    - /robot/limb/left/suppress_collision_avoidance
+    - /robot/limb/right/suppress_collision_avoidance
+    - /robot/limb/left/suppress_contact_safety
+    - /robot/limb/right/suppress_contact_safety
+    - /robot/limb/left/suppress_hand_overwrench_safety
+    - /robot/limb/right/suppress_hand_overwrench_safety
+    - /robot/limb/left/suppress_gravity_compensation
+    - /robot/limb/right/suppress_gravity_compensation
+    - /robot/limb/left/set_speed_ratio
+    - /robot/limb/right/set_speed_ratio
+    # Teaching/session events and navigator wheels/buttons.
+    - /robot/navigators/left_navigator/state
+    - /robot/navigators/right_navigator/state
+    - /robot/digital_io/left_button_show/state
+    - /robot/digital_io/left_button_ok/state
+    - /robot/digital_io/left_button_back/state
+    # Explain assembly-state errors and identify the grippers/tools used in a demo.
+    - /diagnostics
+    - /robot/end_effector/left_gripper/properties
+    - /robot/end_effector/right_gripper/properties
+    # Hand sensors: IMU, IR range to what is below the gripper.
+    - /robot/accelerometer/left_accelerometer/state
+    - /robot/accelerometer/right_accelerometer/state
+    - /robot/range/left_hand_range/state
+    - /robot/range/right_hand_range/state
+    # Camera intrinsics, robot frames (for bag viewers; also rebuildable from joints + URDF),
+    # robot enable/estop state.
+    - /cameras/left_hand_camera/camera_info
+    - /cameras/right_hand_camera/camera_info
+    - /cameras/third_eye/color/camera_info
+    - /tf
+    - /tf_static
+    - /robot/state
+    # inference run (policy runtime): what it sent the teleop
+    - /policy/left/target
+    - /policy/left/trigger
+    - /policy/right/target
+    - /policy/right/trigger
+  # Operator inputs (libsurvive_ros2), never --excluded: with swap_hands the right controller
+  # drives the left arm. Replaying them re-runs the teleop offline.
+  operator:
+    - /vive/left/target
+    - /vive/right/target
+    - /vive/left/trigger
+    - /vive/right/trigger
+    - /vive/left/b_button
+    - /vive/right/b_button
+    - /vive/left/thumbstick
+    - /vive/right/thumbstick
+    - /libsurvive/joy
+    - /libsurvive/tf  # VR tracking tree, kept off /tf
+    - /libsurvive/tf_static
+
+trigger:
+  type: digital_io
+  msg_type: baxter_core_msgs/DigitalIOState
+  state_field: state
+  record: /robot/digital_io/left_button_show/state
+  success: /robot/digital_io/left_button_ok/state
+  discard: /robot/digital_io/left_button_back/state
+  screen: session  # drawn session screens; true for the image screens in assets/
+  light:
+    topic: /robot/digital_io/command
+    msg_type: baxter_core_msgs/DigitalOutputCommand
+    name: left_inner_light
+  # B on the same controller stops recording and sends the arm home, as in a policy rollout.
+  home: /vive/right/b_button
+  # One VR thumbstick (libsurvive_ros2) pushed one way for `hold` s, so one hand runs the session,
+  # as inference.episodes does for rollouts. With swap_hands the controller held in the left hand
+  # publishes on /vive/right/*.
+  thumbstick:
+    topics: [/vive/right/thumbstick]
+    hold: 1.0
+    start: north
+    stop: south
+    success: east
+    discard: west
+
+recording:
+  fps: 30
+  # Raw camera names above remain the live inference/viz inputs. The recorder publishes
+  # and bags JPEG copies on <topic>/compressed; use raw here for lossless source images.
+  image_transport: compressed
+  jpeg_quality: 90
+
+# inference: `serve` publishes a policy's chunks; `run` executes them (or a replay) through the
+# arm's teleop like its VR controller (BaxterSDK: scripts/run_teleop.sh --left --policy).
+inference:
+  arm: left
+  fps: 25  # policy steps per second, the dataset rate
+  publish_rate: 100  # target stream, Hz
+  tcp: /teleop/left/tcp
+  target: /policy/left/target
+  path: /policy/left/path  # timed plan per step, for the teleop's --input trajectory (feedforward)
+  trigger: /policy/left/trigger
+  engage: /policy/left/engage  # std_srvs/SetBool: engage without the deadman (scripts/start, scripts/stop)
+  engaged: /policy/left/engaged  # runtime -> policy server: start fresh on every change
+  home: /vive/right/b_button  # B: clear the policy, resume fresh (swap_hands: right controller drives left arm)
+  cuff: /robot/digital_io/left_lower_cuff/state  # squeezed = correcting by hand (zero-g), any policy
+  steering: /teleop/left/steering  # BaxterSDK run_teleop.sh --steer: a squeeze steers the plan, no correction
+  takeover: /teleop/left/takeover  # BaxterSDK run_teleop.sh --takeover: the operator's VR drives, as a cuff squeeze
+  gripper_command: /robot/end_effector/left_gripper/command  # what the operator commands it during a correction
+  resume_ramp: 1.0  # s, crossfade into the re-anchored chunk after a correction; VR-goal plans lead the arm by up to ~15 cm, which a shorter crossfade turns into a lunge
+  chunk: /policy/left/chunk  # serve -> run
+  episodes:  # the right thumbstick held `hold` s: north start, south stop, east save, west discard
+    stick: /vive/right/thumbstick
+    hold: 1.0
+    topic: /policy/left/episode  # {"episode": N, "event": ...} into the bag; adapt corrections reads it
+    nudging: /teleop/left/nudging  # run_teleop.sh --takeover nudge: counted as corrections, the policy driving on
+    screen: true  # Baxter's head display, the recorder's session screens
+    session: Policy rollout
+  nudge: /policy/left/nudge  # a nudge adapter's offset of each plan (inference.nudge)
+  # MultiTask DiT: <this>/<camera>, where its CLIP looks (inference.attention). Off by default: on the
+  # laptop GPU it makes each plan several times slower, which the arm feels as lag. Enable to study keys.
+  # attention: /policy/left/attention
+  z: /policy/left/z  # the MultiTask DiT's observation encoding of each plan, stamped as the chunk (inference.tensor_image)
+  joint_states: /robot/joint_states
+  gripper: /robot/end_effector/left_gripper/state
+  task: Pick up the blue cup and place it in the red container  # only if a checkpoint's dataset tasks are unreadable
+  deadman:  # held = run: the trackpad touch of the controller driving this arm
+    topic: /libsurvive/joy
+    frame_id: LHR-12D31191  # right_serial in libsurvive_ros2 vive_devices.yaml; swap_hands gives it the left arm
+    button: 17  # touch bit: SURVIVE_BUTTON_MAX (16) + SURVIVE_BUTTON_TRACKPAD (1)
+    alive: /vive/right/target  # released when that controller is no longer tracked
+  # Per checkpoint type: inference every `every` steps, chunk merge (runtime.py), optional RTC.
+  policies:
+    act:
+      every: 1
+      # held-out, vs the demonstrator's goal: 100 / +0.01 (ACT paper) 95 mm off; 30 / -0.05 65 mm,
+      # with 99th-percentile steps 10 -> 16 mm. Newest-favouring, last 1.2 s: reacts sooner.
+      merge: {type: ensemble, coeff: -0.05, horizon: 30}
+    smolvla:
+      every: 10
+      merge: {type: latest}
+      overrides: {num_steps: 10}  # flow steps; 5 matched 10's held-out error, ~170 ms faster
+      # execution_horizon > inference delay in steps (~13 next to the sim), or chunks seam
+      rtc: {execution_horizon: 25, max_guidance_weight: 10.0}
+    vita:
+      # chunks of 16 (of a 32-step plan); ~25 ms on the laptop GPU, so every step, merged as ACT
+      every: 1
+      merge: {type: ensemble, coeff: -0.05}
+    vita_absolute:
+      # Kinesthetic cup checkpoints: raw 15-D state, 8-D absolute pose + gripper.
+      # Replan every 16 frames (0.64 s). Publish all 32 trained targets to cover inference latency:
+      # returning only 16 ends at 0.60 s and would leave a gap before the next chunk arrives.
+      # No RTC and no extra lead: lead640ms already learned its 16-frame label shift.
+      # ramp: each new chunk crossfades in over 10 steps (0.4 s) within the 16-step overlap. With
+      # latest, a new chunk disagreeing with the last one about now (up to 17 mm on the robot) was a
+      # step in the plan, played as a joint setpoint jump (27 in 59 s, 2026-10-20 RealPolicy).
+      every: 16
+      merge: {type: ramp, ramp: 10}
+      overrides: {n_action_steps: 32}
+    multi_task_dit:
+      # chunks of 24 (of a 32-step plan) from the last 2 steps; ~100 ms on the laptop GPU (10 DDPM
+      # steps), so every 4 steps, ensembled as VITA. Offline on episode 4 it matches VITA's error.
+      # ramp: a new chunk's weight grows over 4 steps (one plan interval). Without it a chunk
+      # disagreeing with the others by 15 to 35 mm moved the target by up to half of that in one step
+      # right after an engage or a correction, while only one or two chunks overlapped.
+      # gripper_lead: the gripper labels are its measured opening at the same step, so a close sent on
+      # time starts once the demo's gripper had already closed, and the motor still has to travel;
+      # sending the opening planned 0.18 s later closes it as the gripper reaches the cup.
+      every: 4
+      merge: {type: ensemble, coeff: -0.05, ramp: 4, gripper_lead: 0.18}
+    multi_task_dit_absolute:
+      # Kinesthetic cup DiTs: raw 15-D state, 8-D absolute pose + gripper. 10 DDPM steps (~130 ms on
+      # the laptop GPU; its 100 gave the same offline error at 12x the time). A new plan every 4 frames
+      # (0.16 s), every step the average of the plans covering it (ACT's temporal ensembling, newest
+      # weighted most): no single plan moves the arm, so a plan's disagreement with the last is averaged
+      # out rather than played. No lead: the teleop's plan input plays the plan on its own timing
+      # (BaxterSDK --input plan), so goals are not sent ahead of when they are due.
+      # gripper_lead: the gripper labels are its measured opening at the same step, so a close sent on
+      # time starts once the demo's gripper had already closed, and the motor still has to travel;
+      # sending the opening planned 0.18 s later closes it as the gripper reaches the cup.
+      every: 4
+      merge: {type: ensemble, coeff: -0.05, gripper_lead: 0.18}
+      overrides: {num_inference_steps: 10, n_action_steps: 31}  # 31: its plan starts at the older of its 2 observations
+    groot:
+      # GR00T N1.7 3B: absolute goals in chunks of 16 (no RTC: it continues TCP-relative chunks).
+      # Needs a GPU with ~10 GB (bf16); the laptop's 4 GB can't hold it, and on the CPU (fp32) it
+      # takes ~6 s a chunk, longer than the 0.64 s chunk lasts. Untuned: every and merge as VITA's.
+      every: 4
+      merge: {type: ensemble, coeff: -0.05}
+  # --replay
+  chunk_size: 100
+  n_action_steps: 1
+  temporal_ensemble_coeff: 0.01

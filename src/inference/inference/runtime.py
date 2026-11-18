@@ -20,11 +20,16 @@ chunk, re-anchored on the corrected pose, runs at once, crossfaded in over `resu
 The gripper likewise: during a correction the trigger follows what the operator commands the gripper
 (`gripper_command`), so the resumed chunk crossfades in from the gripper as the operator left it.
 A VR takeover (`takeover`, the teleop's --takeover: the operator's controller drives) is the same.
+While the teleop steers (`steering`, its --steer: a squeeze pushes the playing plan, position control
+kept), a squeeze is no correction and the run goes on; without a plan to steer the squeeze is zero-g.
 With `episodes`, one VR thumbstick starts, stops and labels runs (episodes.py).
 
 A chunk is a trajectory of TCP targets timed from its observation: from a policy called here (a
 replay) or the `chunk` topic (policy_node). Each policy step merges the chunks covering it:
-  ensemble  ACT temporal ensembling, exp(-coeff * i), i = 0 the oldest
+  ensemble  ACT temporal ensembling, exp(-coeff * i), i = 0 the oldest; with `ramp`, each chunk's
+            weight grows over `ramp` steps from its arrival, so a new chunk's disagreement with the
+            others enters gradually instead of as a step (a step of up to half of it while few chunks
+            overlap, after an engage or a correction)
   latest    the newest chunk (RTC chunks already continue the last)
   ramp      each new chunk crossfades in over `ramp` steps, finishing within the overlap
 `horizon` keeps only a chunk's first steps: the merge reacts sooner, without retraining.
@@ -84,6 +89,14 @@ def continuous(q):
     flips = np.cumsum(np.r_[0, np.einsum('ij,ij->i', q[1:], q[:-1]) < 0]) % 2 == 1
     q[flips] *= -1
     return q
+
+
+def correcting(by_hand):
+    """Whether a person has the arm, from the sources in `by_hand`: the cuff counts unless it steers."""
+    sources = dict(by_hand)
+    if sources.pop('steering', False):
+        sources.pop('cuff', None)
+    return any(sources.values())
 
 
 @dataclass
@@ -155,6 +168,10 @@ def check_merge(merge, chunk_size, every=1, fps=25.0):
             f'lead {lead} s + ~0.2 s latency + every {every} steps exceeds a chunk ({chunk_size} steps): '
             "the arm waits at each chunk's end; predict more often or lower the lead"
         )
+    if kind == 'ensemble' and merge.get('ramp') is not None:
+        ramp = int(merge['ramp'])
+        if not 0 < ramp < chunk_size:
+            raise ValueError(f'ensemble ramp ({ramp}) must be in 1 .. chunk size - 1 ({chunk_size - 1})')
     if kind == 'ramp':
         ramp = int(merge['ramp'])
         if not 0 < ramp < chunk_size:
@@ -225,6 +242,8 @@ class Runtime:
             node.create_subscription(DigitalIOState, cfg['cuff'], lambda m: self._by_hand('cuff', m.state), 10)
         if cfg.get('takeover'):
             node.create_subscription(Bool, cfg['takeover'], lambda m: self._by_hand('takeover', m.data), 10)
+        if cfg.get('steering'):
+            node.create_subscription(Bool, cfg['steering'], lambda m: self._by_hand('steering', m.data), 10)
         self.hand_trigger = None  # the gripper as the operator last commanded it, 0 open .. 1 closed
         if cfg.get('gripper_command'):
             node.create_subscription(EndEffectorCommand, cfg['gripper_command'], self._on_gripper_command, 10)
@@ -247,7 +266,7 @@ class Runtime:
 
     def _by_hand(self, source, on):
         self.by_hand[source] = bool(on)
-        self.squeezed = any(self.by_hand.values())
+        self.squeezed = correcting(self.by_hand)
 
     def _on_gripper_command(self, msg):
         """A gripper position command (0 closed .. 100 open %), whoever sent it, as a trigger."""
@@ -389,6 +408,22 @@ class Runtime:
         R = Rotation.from_rotvec(turn * min(1.0, APPROACH_SPEED[1] * dt / max(np.linalg.norm(turn), 1e-9))) * R
         self.approach = (now, p, R)
         self._publish(p, R.as_quat(), None, engaged=True)
+        if self.path_pub is not None:
+            gq = R.as_quat()
+            path = Path()
+            path.header.frame_id = 'base'
+            dt_step = 1.0 / self.fps
+            for k in range(self.path_steps):
+                wp = PoseStamped()
+                wp.header.frame_id = 'base'
+                due = now + k * dt_step
+                wp.header.stamp = Time(sec=int(due), nanosec=int(round((due % 1.0) * 1e9)) % 1_000_000_000)
+                wp.pose.position.x, wp.pose.position.y, wp.pose.position.z = (float(x) for x in p)
+                wp.pose.orientation.x, wp.pose.orientation.y, wp.pose.orientation.z, wp.pose.orientation.w = (
+                    float(x) for x in gq
+                )
+                path.poses.append(wp)
+            self.path_pub.publish(path)
         if (
             np.linalg.norm(p_tcp - p_goal) < START_TOLERANCE[0]
             and (Rotation.from_quat(q_tcp).inv() * R_goal).magnitude() < START_TOLERANCE[1]
@@ -410,6 +445,8 @@ class Runtime:
             self.frozen, self.settled = (self.tcp[0], self.tcp[1]), self._now()
         if self.frozen is not None:
             self._publish(*self.frozen, self.trigger)
+            if self.path_pub is not None and self.tcp is not None:
+                self._publish_hold(self.tcp[0], self.tcp[1])
 
     def _policy_step(self, now):
         t = now if self.segment is None else self.segment[0] + self.dt  # this step's time
@@ -467,6 +504,24 @@ class Runtime:
             path.poses.append(pose)
         self.path_pub.publish(path)
 
+    def _publish_hold(self, position, quaternion):
+        """A path that holds the arm at one pose, for --policy-plan after release."""
+        now = self._now()
+        path = Path()
+        path.header.frame_id = 'base'
+        q = Rotation.from_quat(quaternion).as_quat()
+        for k in range(self.path_steps):
+            wp = PoseStamped()
+            wp.header.frame_id = 'base'
+            due = now + k * self.dt
+            wp.header.stamp = Time(sec=int(due), nanosec=int(round((due % 1.0) * 1e9)) % 1_000_000_000)
+            wp.pose.position.x, wp.pose.position.y, wp.pose.position.z = (float(x) for x in position)
+            wp.pose.orientation.x, wp.pose.orientation.y, wp.pose.orientation.z, wp.pose.orientation.w = (
+                float(x) for x in q
+            )
+            path.poses.append(wp)
+        self.path_pub.publish(path)
+
     def _entered(self, t, merged):
         """`merged`, crossfaded in from the hold."""
         start, hold, ramp = self.entry
@@ -505,6 +560,9 @@ class Runtime:
         if kind == 'ensemble':
             samples = [sample(c) for c in covering]
             w = np.exp(-float(self.merge['coeff']) * np.arange(len(samples)))
+            if self.merge.get('ramp'):
+                span = int(self.merge['ramp']) + 1.0
+                w = w * [min(1.0, ((t - c.arrival) * self.fps + 1.0) / span) for c in covering]
             w /= w.sum()
             trigger = None if samples[0][2] is None else float(w @ [s[2] for s in samples])
             return (

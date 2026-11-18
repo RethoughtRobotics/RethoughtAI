@@ -9,13 +9,18 @@ or before it, by recording time (the robot's header clocks are not aligned with 
   trigger  gripper as the VR trigger value (0 open .. 1 closed), from the last gripper command
   intervention  1 while a person drives the arm in a policy rollout (the teleop's VR takeover,
            /teleop/{arm}/takeover, or a cuff squeeze) or nudges it (/teleop/{arm}/nudging), else 0
-  offset   the nudge added to the policy's goal (/teleop/{arm}/correction_offset: translation m and
-           rotation vector rad, base frame; run_teleop.sh --takeover nudge), zeros before the first;
-           None without the topic
+  offset   the correction's TCP offset from the policy's plan, translation m and rotation vector rad,
+           base frame: a VR nudge's (/teleop/{arm}/correction_offset, run_teleop.sh --takeover nudge) or a
+           steered cuff's (/kinesthetic/{arm}/offset, --steer); zeros before the first; None
+           without either topic
   plan     (load_plans) the plan the policy made from the step's observation, as it ran: the
            policy server's chunk (/policy/{arm}/chunk), stamped with its observation's time
 
 Kinesthetic episodes (load_measured) have no goal: the target is the measured TCP.
+A cuff squeeze in a policy rollout has no goal either, and the policy's stream stops during it, so at
+those steps the target is the measured TCP CUFF_LEAD steps later (cuff_targets). After a steered squeeze
+the arm hands back while its offset decays, and the goal does not hold that offset, so at those steps the
+target is the goal plus the offset (handback_targets).
 
 The action chunk observed at step t is target[t + k] relative to tcp[t], k = 0..chunk_size-1:
 [dx dy dz] in base axes, [rx ry rz] the base-frame rotation vector with R_target = exp(r) R_tcp,
@@ -33,6 +38,7 @@ from rosidl_runtime_py.utilities import get_message
 from scipy.spatial.transform import Rotation, Slerp
 
 GOAL_HOLD = 0.05  # s: a goal older than this means the clutch was released (the teleop publishes ~60 Hz)
+CUFF_LEAD = 16  # steps at 25 Hz, 0.64 s: where a hand-guided arm goes next, as a teleop goal leads the arm
 
 
 @dataclass
@@ -45,7 +51,7 @@ class Episode:
     t: np.ndarray  # (N,) recording time, ns
     fps: float
     intervention: np.ndarray | None = None  # (N,) 1 while a person drives (a policy rollout's corrections)
-    offset: np.ndarray | None = None  # (N, 6) the nudge added to the policy's goal (--takeover nudge)
+    offset: np.ndarray | None = None  # (N, 6) a nudge's or a steered cuff's offset from the plan
     plan: np.ndarray | None = None  # (N, steps, 8) the policy's plan from the step's observation (load_plans)
     planned: np.ndarray | None = None  # (N,) 1 where a plan was made from the step's observation
 
@@ -67,6 +73,32 @@ class NoTeleopGoal(ValueError):
     """The recording has no teleop goal: the arm was guided by hand (load_measured reads it)."""
 
 
+def cuff_targets(t, squeezed, target_p, target_q, tcp_t, tcp_p, tcp_q, lead=CUFF_LEAD):
+    """Targets with each squeezed step replaced by the measured TCP `lead` steps later, interpolated.
+
+    The hand moves the arm directly, so there is no tracking error to separate intention from motion,
+    and the lead puts the label where the arm is going, as the base's labels are. The lead may run past
+    the release, into the policy's resumed motion; the last sample holds at the end of the recording."""
+    period = float(t[1] - t[0]) if len(t) > 1 else 0.0
+    times = np.asarray(tcp_t, dtype=float)
+    at = np.clip(np.asarray(t, dtype=float)[squeezed] + lead * period, times[0], times[-1])
+    p, q = np.array(target_p, dtype=float), np.array(target_q, dtype=float)
+    p[squeezed] = np.stack([np.interp(at, times, tcp_p[:, k]) for k in range(3)], axis=1)
+    q[squeezed] = Slerp(times, Rotation.from_quat(tcp_q))(at).as_quat()
+    return p, q
+
+
+def handback_targets(squeezed, target_p, target_q, offset):
+    """Targets with a steered cuff's offset (N, 6) added on the steps outside a squeeze: there the arm is
+    sent the goal plus the decaying offset, so that sum is where it was told to go. Squeezed steps are
+    cuff_targets' own."""
+    p, q = np.array(target_p, dtype=float), np.array(target_q, dtype=float)
+    free = ~np.asarray(squeezed, dtype=bool)
+    p[free] += offset[free, :3]
+    q[free] = (Rotation.from_rotvec(offset[free, 3:]) * Rotation.from_quat(q[free])).as_quat()
+    return p, q
+
+
 def load_episode(path, arm='left', fps=25.0) -> Episode:
     topics = {
         'tcp': f'/teleop/{arm}/tcp',
@@ -75,6 +107,7 @@ def load_episode(path, arm='left', fps=25.0) -> Episode:
         'takeover': f'/teleop/{arm}/takeover',
         'nudging': f'/teleop/{arm}/nudging',
         'offset': f'/teleop/{arm}/correction_offset',
+        'kinesthetic_offset': f'/kinesthetic/{arm}/offset',
         'cuff': f'/robot/digital_io/{arm}_lower_cuff/state',
     }
     reader = rosbag2_py.SequentialReader()
@@ -94,7 +127,7 @@ def load_episode(path, arm='left', fps=25.0) -> Episode:
             data[name].append((t, _gripper_trigger(msg)))
         elif name in ('takeover', 'nudging', 'cuff'):
             data[name].append((t, bool(msg.state if name == 'cuff' else msg.data)))
-        elif name == 'offset':
+        elif name in ('offset', 'kinesthetic_offset'):
             v, w = msg.twist.linear, msg.twist.angular
             data[name].append((t, [v.x, v.y, v.z, w.x, w.y, w.z]))
         else:
@@ -118,6 +151,14 @@ def load_episode(path, arm='left', fps=25.0) -> Episode:
     for k in np.where(clutched)[0]:
         target_p[k], target_q[k] = data['goal'][gi[k]][1]
 
+    squeezed = np.zeros(len(t), dtype=bool)
+    if any(on for _, on in data['cuff']):
+        cuff_t = np.array([x for x, _ in data['cuff']])
+        i = latest(cuff_t, t)
+        squeezed = (i >= 0) & np.array([on for _, on in data['cuff']])[np.maximum(i, 0)]
+        positions, quaternions = (np.array([v[n] for _, v in data['tcp']]) for n in (0, 1))
+        target_p, target_q = cuff_targets(t, squeezed, target_p, target_q, tcp_t, positions, quaternions)
+
     trigger = np.zeros(len(t))  # gripper open until the first command
     if data['gripper']:
         gr_t = np.array([x for x, _ in data['gripper']])
@@ -131,12 +172,16 @@ def load_episode(path, arm='left', fps=25.0) -> Episode:
             on = np.array([v for _, v in data[name]])[np.maximum(i, 0)]
             intervention = np.maximum(intervention, np.where(i >= 0, on, False).astype(float))
     offset = None
-    if topics['offset'] in types:
-        offset = np.zeros((len(t), 6))
-        if data['offset']:
-            i = latest(np.array([x for x, _ in data['offset']]), t)
-            values = np.array([v for _, v in data['offset']])
-            offset = np.where((i >= 0)[:, None], values[np.maximum(i, 0)], 0.0)
+    for name in ('offset', 'kinesthetic_offset'):  # one correction at a time: the two add
+        if topics[name] in types:
+            offset = np.zeros((len(t), 6)) if offset is None else offset
+            if data[name]:
+                i = latest(np.array([x for x, _ in data[name]]), t)
+                values = np.array([v for _, v in data[name]])
+                at_step = np.where((i >= 0)[:, None], values[np.maximum(i, 0)], 0.0)
+                offset = offset + at_step
+                if name == 'kinesthetic_offset':
+                    target_p, target_q = handback_targets(squeezed, target_p, target_q, at_step)
     return Episode(tcp_p, tcp_q, target_p, target_q, trigger, t, fps, intervention, offset)
 
 

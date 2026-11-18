@@ -60,3 +60,7 @@ models/
 
 # Private HPC checkout (cluster job scripts, paths, allocations). Never commit it here.
 hpc/
+
+# Private pipelines (cluster paths) live in hpc/pipelines; these are symlinks to them
+scripts/pipeline_BlueCupRedKin100.sh
+scripts/push_pusht_to_quest.sh

@@ -3,7 +3,7 @@ import pytest
 from scipy.spatial.transform import Rotation
 
 from adapter.labels import apply_actions, model_state, relative_actions
-from inference.runtime import Chunk, Runtime, check_merge
+from inference.runtime import Chunk, Runtime, check_merge, correcting
 
 FPS = 25.0
 CFG = {
@@ -75,6 +75,25 @@ def test_ensemble_of_identical_chunks_is_the_chunk():
     assert rt._combine(1.0)[0][0] == pytest.approx(0.1)
 
 
+def test_ensemble_ramp_fades_a_new_chunk_in_instead_of_stepping():
+    old = line(0.0, 0.0, 0.0, 0.0)  # holding at x = 0
+    new = line(1.0, 1.0, 0.02, 0.0)  # arrives 2 cm away, while only one other chunk overlaps
+    ts = 1.0 + np.arange(-2, 10) / FPS
+    steps = {}
+    for ramp in (None, 4):
+        rt = runtime({'type': 'ensemble', 'coeff': -0.05, **({'ramp': ramp} if ramp else {})})
+        rt.chunks = [old, new]
+        steps[ramp] = np.diff([rt._combine(t)[0][0] for t in ts])
+    assert steps[None].max() > 0.009  # about half of the 2 cm in one step
+    assert steps[4].max() < 0.4 * steps[None].max()  # spread over the ramp's steps
+    assert steps[4].sum() == pytest.approx(steps[None].sum())  # to the same place
+    rt = runtime({'type': 'ensemble', 'coeff': -0.05, 'ramp': 4})
+    rt.chunks = [old, new]
+    plain = runtime({'type': 'ensemble', 'coeff': -0.05})
+    plain.chunks = [old, new]
+    assert rt._combine(1.0 + 4 / FPS)[0][0] == pytest.approx(plain._combine(1.0 + 4 / FPS)[0][0])  # full weight after
+
+
 def test_chunks_are_used_only_from_their_arrival():
     rt = runtime({'type': 'latest'})
     rt.chunks = [line(0.0, 0.0, 0.0, 0.1), line(0.5, 0.7, 1.0, 0.1)]
@@ -89,6 +108,9 @@ def test_merge_guards():
         check_merge({'type': 'ensemble', 'coeff': 0.01}, 50, every=50)
     assert check_merge({'type': 'ramp', 'ramp': 40}, 50, every=25) is not None
     assert check_merge({'type': 'latest'}, 50, every=10) is None
+    with pytest.raises(ValueError):
+        check_merge({'type': 'ensemble', 'coeff': 0.01, 'ramp': 0}, 50)
+    assert check_merge({'type': 'ensemble', 'coeff': 0.01, 'ramp': 4}, 24, every=4) is None
 
 
 def test_relative_actions_invert_apply_actions():
@@ -285,6 +307,14 @@ def test_reanchored_chunk_keeps_its_plan_relative_to_the_tcp():
     moved = c.reanchored(np.array([0.5, 0, 0]), Rotation.identity(), np.array([0.6, 0.2, 0.1]), R_turn, arrival=9.0)
     assert np.allclose(moved.positions - [0.6, 0.2, 0.1], c.positions - [0.5, 0, 0]) and moved.arrival == 9.0
     assert np.allclose((moved.rotations * R_turn.inv()).as_rotvec(), c.rotations.as_rotvec())
+
+
+def test_a_squeeze_that_steers_is_no_correction_but_zero_g_and_takeover_are():
+    assert correcting({'cuff': True})
+    assert not correcting({'cuff': True, 'steering': True})
+    assert correcting({'cuff': True, 'steering': False})
+    assert correcting({'cuff': True, 'steering': True, 'takeover': True})
+    assert not correcting({'steering': True})
 
 
 def test_cuff_correction_follows_the_arm_then_resumes_at_once_from_the_corrected_pose():

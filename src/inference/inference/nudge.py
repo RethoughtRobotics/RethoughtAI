@@ -122,6 +122,36 @@ class _Kernel:
         return (phi @ self.values) / max(1.0, float(phi.sum()))
 
 
+class _EvidenceGate:
+    """Whether a kernel's offset applies: the evidence that the episode is in a corrected situation
+    rather than one the policy's demonstrations cover (reports 2026-10-28 evidence gate). A frame's
+    evidence is dim (log r_demo - log r_corrected), r the distance to the k-th nearest demonstration or
+    corrected frame in a whitened PCA space of z without its state (a k-nearest-neighbour density
+    ratio); summed over the episode (Wald's sequential test), the gate is open while the sum exceeds
+    `threshold`. A situation close to both, such as the approach the corrections and the
+    demonstrations share, adds no evidence, so the kernel cannot fire there on the base task."""
+
+    def __init__(self, a, gate):
+        self.keep = a['gate_keep'] > 0.5
+        self.mean, self.W = a['gate_mean'].astype(np.float64), a['gate_W'].astype(np.float64)
+        self.demo, self.corrected = a['gate_demo'].astype(np.float64), a['gate_corrected'].astype(np.float64)
+        self.dim, self.k, self.threshold = int(gate['dim']), int(gate['k']), float(gate['threshold'])
+        self.restart()
+
+    def restart(self):
+        """A new episode: no evidence yet, the gate shut."""
+        self.total, self.open = 0.0, False
+
+    def _log_r(self, p, ref):
+        return float(np.log(np.partition(np.linalg.norm(ref - p, axis=1), self.k - 1)[self.k - 1]))
+
+    def __call__(self, z):
+        p = (np.asarray(z, np.float64)[self.keep] - self.mean) @ self.W
+        self.total += self.dim * (self._log_r(p, self.demo) - self._log_r(p, self.corrected))
+        self.open = self.total > self.threshold
+        return self.open
+
+
 def _model(model, arrays):
     kind = (model or {}).get('type', 'linear')  # adapters written before `model` was recorded are linear
     if kind == 'linear':
@@ -152,6 +182,8 @@ class Nudge:
         self.mean, self.std = arrays['mean'].astype(np.float64), arrays['std'].astype(np.float64)
         self.model = _model(meta.get('model'), arrays)
         self.kind = (meta.get('model') or {}).get('type', 'linear')
+        gate = (meta.get('model') or {}).get('gate')
+        self.gate = _EvidenceGate(arrays, gate) if gate else None
         self.alpha = float(alpha)
         self.state = int(meta.get('state', 0))
         self.outputs = int(meta.get('outputs', POSE))
@@ -178,6 +210,8 @@ class Nudge:
                 raise ValueError('this nudge adapter needs the observation.state')
             inputs = np.concatenate([self.z, np.asarray(state, np.float64).reshape(-1)])
         offset = self.alpha * self.model((inputs - self.mean) / self.std)
+        if self.gate is not None and not self.gate(self.z):
+            offset = np.zeros_like(offset)  # gate shut: the plan is the policy's exactly
         out = np.array(actions, dtype=np.float64, copy=True)
         if self.steps:
             offsets = offset.reshape(self.steps, self.outputs)

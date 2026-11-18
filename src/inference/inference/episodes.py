@@ -37,6 +37,7 @@ class Episodes:
         self.pending = None  # a stopped episode awaiting save or discard
         self.started = None  # monotonic time the running episode started
         self.back_at = None  # monotonic time the screen returns to idle after a save or discard
+        self.shown = 0  # whole seconds of the episode on the screen
         self.corrections = 0
         self.direction, self.since, self.fired = '', 0.0, False
         self.correcting = False
@@ -76,6 +77,9 @@ class Episodes:
             if self.screen is not None and not self.running:
                 self.screen.episode = self.episode + 1  # the episode the next start records
                 self.screen.idle()
+        if self.running and self.screen is not None and int(now - self.started) != self.shown:
+            self.shown = int(now - self.started)
+            self.screen.elapsed(self.shown)
         engaged = self.runtime.engaged
         if engaged and not self.running:
             self._began(now)
@@ -119,7 +123,7 @@ class Episodes:
         if self.pending is not None:
             self._log(f'  episode {self.pending} left unlabelled')
         self.episode += 1
-        self.running, self.pending, self.started, self.corrections = True, None, now, 0
+        self.running, self.pending, self.started, self.corrections, self.shown = True, None, now, 0, 0
         self.back_at = None
         self.correcting = False
         self._publish(self.episode, 'start')

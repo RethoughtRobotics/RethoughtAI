@@ -3,8 +3,8 @@
 robot: baxter
 topics:
   images:
-    - {topic: /cameras/left_hand_camera/image, key: observation.images.left}
-    - {topic: /cameras/right_hand_camera/image, key: observation.images.right}
+    - {topic: /cameras/left_hand_camera/image/processed, key: observation.images.left}
+    - {topic: /cameras/right_hand_camera/image/processed, key: observation.images.right}
     - {topic: /cameras/third_eye/color/image_raw, key: observation.images.third_eye}
 trigger:
   light:

@@ -39,7 +39,8 @@ from trajectory_msgs.msg import JointTrajectoryPoint, MultiDOFJointTrajectoryPoi
 
 from adapter.labels import apply_actions, relative_actions
 from adapter.lerobot_export import JOINTS, image_rgb
-from inference.runtime import Chunk
+from inference.observation import Sampled, Stamps, seconds
+from inference.runtime import Chunk, correcting
 from inference.tensor_image import to_image
 
 ATTENTION_PARTS = ('weights', 'pooled_l11', 'pooled_l12')  # inference.attention.ClsAttention.pooled
@@ -67,7 +68,10 @@ class PolicyNode:
         self.dt = 1.0 / self.fps
         self.arm = cfg['arm']
         self.joint_names = [f'{self.arm}_{j}' for j in JOINTS]
-        self.latest = {}  # name -> (value, receive time)
+        self.latest = {}  # name -> (value, receive time, content time), see inference.observation
+        self.stamps = Stamps()
+        self.tcp_at, self.joints_at = Sampled(), Sampled()  # the state by content time
+        self.ages = {}  # camera -> age at the last observation, s
         self.lock = threading.Lock()
         self.last = None  # last chunk published, for RTC
         from lerobot.policies.rtc import LatencyTracker
@@ -85,7 +89,7 @@ class PolicyNode:
             raise ValueError(f'no camera topic configured for {", ".join(missing)}')
         for key, topic in self.cameras.items():
             node.create_subscription(
-                image_type(topic), topic, lambda m, k=key: self._store(k, np.array(image_rgb(m))), 2
+                image_type(topic), topic, lambda m, k=key: self._store(k, np.array(image_rgb(m)), m.header.stamp), 2
             )
         node.create_subscription(PoseStamped, cfg['tcp'], self._on_tcp, 10)
         node.create_subscription(JointState, cfg['joint_states'], self._on_joints, 10)
@@ -100,6 +104,8 @@ class PolicyNode:
             node.create_subscription(DigitalIOState, cfg['cuff'], lambda m: self._by_hand('cuff', m.state), 10)
         if cfg.get('takeover'):
             node.create_subscription(Bool, cfg['takeover'], lambda m: self._by_hand('takeover', m.data), 10)
+        if cfg.get('steering'):
+            node.create_subscription(Bool, cfg['steering'], lambda m: self._by_hand('steering', m.data), 10)
         self.chunk_pub = node.create_publisher(RobotTrajectory, cfg['chunk'], 10)
         # A nudge adapter's offset of each plan (linear: position m, angular: rotation vector rad, base axes)
         self.nudge_pub = (
@@ -138,14 +144,19 @@ class PolicyNode:
 
     def _by_hand(self, source, on):
         self.by_hand[source] = bool(on)
-        self.squeezed = any(self.by_hand.values())
+        self.squeezed = correcting(self.by_hand)
 
     def _now(self):
         return self.node.get_clock().now().nanoseconds * 1e-9
 
-    def _store(self, name, value):
+    def _store(self, name, value, stamp=None):
+        """Keep `value` with its receive time and content time (the stamp on this clock; the receive time
+        without a stamp). Returns the content time."""
+        receive = self._now()
+        content = receive if stamp is None else self.stamps.time(name, seconds(stamp), receive)
         with self.lock:
-            self.latest[name] = (value, self._now())
+            self.latest[name] = (value, receive, content)
+        return content
 
     def _on_engaged(self, msg):
         self.fresh.set()
@@ -155,24 +166,36 @@ class PolicyNode:
 
     def _on_tcp(self, msg):
         p, o = msg.pose.position, msg.pose.orientation
-        self._store('tcp', (np.array([p.x, p.y, p.z]), np.array([o.x, o.y, o.z, o.w])))
+        tcp = (np.array([p.x, p.y, p.z]), np.array([o.x, o.y, o.z, o.w]))
+        t = self._store('tcp', tcp, msg.header.stamp)
+        with self.lock:
+            self.tcp_at.add(t, tcp)
 
     def _on_joints(self, msg):
         if self.joint_names[0] in msg.name:
-            self._store('joints', np.array([msg.position[msg.name.index(n)] for n in self.joint_names]))
+            joints = np.array([msg.position[msg.name.index(n)] for n in self.joint_names])
+            t = self._store('joints', joints, msg.header.stamp)
+            with self.lock:
+                self.joints_at.add(t, joints)
 
     def _observation(self):
-        """(time, observation, TCP) from the latest inputs, or None while any is missing or stale."""
+        """(time, observation, TCP) from the latest inputs, or None while any is missing or stale. The
+        time is the oldest camera's content time and the TCP and joints are those nearest it
+        (inference.observation): the plan is due, and anchored, from when its images were true."""
         now = self._now()
         with self.lock:
             latest = dict(self.latest)
-        names = [*self.cameras, 'tcp', 'joints', 'gripper']
-        if any(n not in latest or now - latest[n][1] > STALE for n in names):
+            names = [*self.cameras, 'tcp', 'joints', 'gripper']
+            if any(n not in latest or now - latest[n][1] > STALE for n in names):
+                return None
+            t = min(latest[key][2] for key in self.cameras)
+            tcp, joints = self.tcp_at.at(t), self.joints_at.at(t)
+        if tcp is None or joints is None:  # stored, not yet sampled: the next tick has them
             return None
-        tcp = latest['tcp'][0]
+        self.ages = {key: now - latest[key][2] for key in self.cameras}
         obs = {key: latest[key][0] for key in self.cameras}
-        obs['observation.state'] = self.policy.state(*tcp, latest['gripper'][0], latest['joints'][0])
-        return now, obs, tcp
+        obs['observation.state'] = self.policy.state(*tcp, latest['gripper'][0], joints)
+        return t, obs, tcp
 
     def _sample(self):
         observed = self._observation()
@@ -275,7 +298,10 @@ class PolicyNode:
             if self.count % max(1, round(LOG_EVERY * self.fps / self.every)) == 0:
                 self.node.get_logger().info(
                     f'{self.count} chunks; inference p50 {1000 * self.latency.percentile(0.5):.0f} ms, '
-                    f'recent max {1000 * self.latency.percentile(0.99):.0f} ms ({self.dt * 1000:.0f} ms per step)'
+                    + ''.join(
+                        f'{k.removeprefix("observation.images.")} {1000 * v:.0f} ms old, ' for k, v in self.ages.items()
+                    )
+                    + f'recent max {1000 * self.latency.percentile(0.99):.0f} ms ({self.dt * 1000:.0f} ms per step)'
                 )
 
     def _publish_nudge(self, t, offset):

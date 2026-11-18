@@ -23,9 +23,20 @@ from launch.substitutions import EnvironmentVariable, LaunchConfiguration
 
 
 def processes(context):
-    model, episode, config, device, revision, adapter, alpha, replay = (
+    model, episode, config, device, revision, adapter, alpha, replay, serve, no_gripper = (
         LaunchConfiguration(n).perform(context)
-        for n in ('model', 'episode', 'config', 'device', 'revision', 'adapter', 'alpha', 'replay')
+        for n in (
+            'model',
+            'episode',
+            'config',
+            'device',
+            'revision',
+            'adapter',
+            'alpha',
+            'replay',
+            'serve',
+            'no_gripper',
+        )
     )
     sigma, seed, noise, record = (
         LaunchConfiguration(n).perform(context) for n in ('explore_sigma', 'explore_seed', 'flow_noise', 'record')
@@ -37,6 +48,7 @@ def processes(context):
         lora += (['--flow-noise', noise] if noise else []) + (['--record', record] if record else [])
     shadow = ['--start-at', episode, '--player', '/rosbag2_player'] if episode else []
     recording = ['--replay', replay] if replay else []
+    gripper = ['--no-gripper'] if no_gripper == 'true' else []
     actions = [
         # Respawned if it dies (e.g. it exits on a lost GPU context, bimanual_policy_node.device_lost):
         # the runtime holds the arm and resumes on the new server's chunks.
@@ -46,6 +58,7 @@ def processes(context):
                 *rev,
                 *lora,
                 *recording,
+                *gripper,
             ],
             name='serve',
             output='screen',
@@ -56,6 +69,8 @@ def processes(context):
             cmd=['uv', 'run', 'inference', 'run', config, '--model', model, *shadow, *rev], name='run', output='screen'
         ),
     ]
+    if serve == 'false':  # on a GPU machine (scripts/server)
+        actions.pop(0)
     if episode:
         cameras = [c['topic'] for c in yaml.safe_load(Path(config).read_text())['topics']['images']]
         actions.append(
@@ -77,6 +92,7 @@ def generate_launch_description():
             'replay', default_value='', description='two-arm kinesthetic recording served in place of the network'
         ),
         DeclareLaunchArgument('device', default_value='cuda'),
+        DeclareLaunchArgument('serve', default_value='true', description='false: chunks come from scripts/server'),
         DeclareLaunchArgument('revision', default_value='', description='Hub branch/tag/commit of the model'),
         DeclareLaunchArgument(
             'adapter', default_value='', description='VITA adapter directory (inference.lora): LoRA or tuned weights'
@@ -90,6 +106,7 @@ def generate_launch_description():
         DeclareLaunchArgument('explore_seed', default_value='0', description='with explore_sigma: the seed of eps'),
         DeclareLaunchArgument('flow_noise', default_value='', description='with explore_sigma: noise per flow step'),
         DeclareLaunchArgument('record', default_value='', description='with explore_sigma: file every plan goes to'),
+        DeclareLaunchArgument('no_gripper', default_value='false', description='zero out the gripper action'),
         # the robot stack's middleware, unless the shell sets one
         SetEnvironmentVariable(
             'RMW_IMPLEMENTATION', EnvironmentVariable('RMW_IMPLEMENTATION', default_value='rmw_zenoh_cpp')

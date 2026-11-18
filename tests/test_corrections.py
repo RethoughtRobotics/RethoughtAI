@@ -3,13 +3,17 @@
 import json
 import shutil
 
+import numpy as np
 import pytest
 
 rosbag2_py = pytest.importorskip('rosbag2_py')
+from baxter_core_msgs.msg import DigitalIOState  # noqa: E402
+from geometry_msgs.msg import PoseStamped  # noqa: E402
 from rclpy.serialization import serialize_message  # noqa: E402
 from std_msgs.msg import Bool, Float32, String  # noqa: E402
 
 from adapter import corrections  # noqa: E402
+from adapter.labels import cuff_targets, handback_targets, load_episode  # noqa: E402
 
 S = 1_000_000_000
 
@@ -111,3 +115,72 @@ def test_numbering_continues_after_the_last_episode_when_some_were_removed(tmp_p
     shutil.rmtree(tmp_path / 'session' / 'episode_000')  # discarded on review
     rows = corrections.extract([tmp_path / 'c'], tmp_path / 'session')
     assert [r['episode'] for r in rows] == ['episode_002']
+
+
+def _cuff_bag(path):
+    """A rollout: the policy's goal follows the arm, then 2 s of squeeze move the arm along y, untracked."""
+    writer = rosbag2_py.SequentialWriter()
+    writer.open(rosbag2_py.StorageOptions(uri=str(path), storage_id='mcap'), rosbag2_py.ConverterOptions('', ''))
+    for i, (topic, kind) in enumerate([
+        ('/teleop/left/tcp', 'geometry_msgs/msg/PoseStamped'),
+        ('/teleop/left/goal', 'geometry_msgs/msg/PoseStamped'),
+        ('/robot/digital_io/left_lower_cuff/state', 'baxter_core_msgs/msg/DigitalIOState'),
+    ]):
+        writer.create_topic(rosbag2_py.TopicMetadata(i, topic, kind, 'cdr'))
+
+    def pose(y):
+        msg = PoseStamped()
+        msg.pose.position.x, msg.pose.position.y, msg.pose.orientation.w = 0.5, y, 1.0
+        return serialize_message(msg)
+
+    y_at = lambda s: 0.1 * float(np.clip(s - 2.0, 0.0, 2.0))  # noqa: E731  # 10 cm/s while squeezed
+    for k in range(600):  # 6 s at 100 Hz
+        s, stamp = 0.01 * k, 1_000_000_000 + k * 10_000_000
+        writer.write('/teleop/left/tcp', pose(y_at(s)), stamp)
+        if not 2.0 <= s < 4.0:  # no goal during a squeeze
+            writer.write('/teleop/left/goal', pose(y_at(s)), stamp)
+        if k % 5 == 0:
+            writer.write(
+                '/robot/digital_io/left_lower_cuff/state',
+                serialize_message(DigitalIOState(state=int(2.0 <= s < 4.0))),
+                stamp,
+            )
+    del writer
+
+
+def test_a_squeeze_is_labelled_where_the_hand_goes_not_where_the_arm_is(tmp_path):
+    _cuff_bag(tmp_path / 'bag')
+    e = load_episode(tmp_path / 'bag')
+    assert e.intervention.sum() == pytest.approx(50, abs=2)  # 2 s at 25 Hz
+    k = np.nonzero(e.intervention)[0]
+    mid = k[10]  # 0.4 s in: the arm moves 10 cm/s, so 0.64 s ahead is 64 mm on
+    assert e.target_p[mid, 1] - e.tcp_p[mid, 1] == pytest.approx(0.064, abs=0.003)
+    before = k[0] - 10  # the policy's own steps keep its goals
+    assert e.target_p[before, 1] == pytest.approx(e.tcp_p[before, 1], abs=1e-6)
+    late = k[-1]  # the lead may run into the arm's stop after the release
+    assert e.target_p[late, 1] == pytest.approx(0.2, abs=0.003)
+
+
+def test_a_rollout_without_a_squeeze_keeps_its_labels():
+    t = np.arange(5) * 40_000_000
+    p, q = np.zeros((5, 3)), np.tile([0.0, 0.0, 0.0, 1.0], (5, 1))
+    out, _ = cuff_targets(t, np.zeros(5, bool), p, q, t.astype(float), p + 1.0, q)
+    assert np.array_equal(out, p)
+
+
+def test_a_handback_adds_the_decaying_offset_outside_the_squeeze_only():
+    p = np.zeros((3, 3))
+    q = np.tile([0.0, 0.0, 0.0, 1.0], (3, 1))
+    offset = np.zeros((3, 6))
+    offset[:, 0] = 0.1
+    offset[:, 5] = np.pi / 2
+    out_p, out_q = handback_targets(np.array([True, False, False]), p, q, offset)
+    assert np.allclose(out_p[:, 0], [0.0, 0.1, 0.1])
+    assert np.allclose(out_q[0], q[0])  # a squeezed step keeps the hand's label
+    assert np.allclose(out_q[1], [0.0, 0.0, np.sqrt(0.5), np.sqrt(0.5)])
+
+
+def test_a_handback_without_an_offset_leaves_the_targets():
+    p, q = np.ones((2, 3)), np.tile([0.0, 0.0, 0.0, 1.0], (2, 1))
+    out_p, out_q = handback_targets(np.zeros(2, bool), p, q, np.zeros((2, 6)))
+    assert np.allclose(out_p, p) and np.allclose(out_q, q)

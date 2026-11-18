@@ -154,3 +154,45 @@ def test_runtime_policy_with_an_adapter(tmp_path):
     assert len(lora.adapters(lora.flow_net(off.policy))) == 8
     assert np.array_equal(off(obs, tcp=tcp), base)
     assert not np.allclose(on(obs, tcp=tcp), base)
+
+
+def peft_lora(tmp_path, dim=8, rank=2, lora_alpha=4):
+    """A PEFT LoRA directory as train.py --lora_rank saves it: one adapted layer of a Multi-Task DiT's
+    denoiser, B nonzero, PEFT's scale lora_alpha / r = 2."""
+    from safetensors.torch import save_file
+
+    g = torch.Generator().manual_seed(0)
+    a, b = torch.randn(rank, dim, generator=g), torch.randn(dim, rank, generator=g)
+    prefix = 'base_model.model.noise_predictor.transformer_blocks.0.attn.qkv_proj'
+    path = tmp_path / 'lora_adapter'
+    path.mkdir()
+    save_file({f'{prefix}.lora_A.weight': a, f'{prefix}.lora_B.weight': b}, str(path / 'adapter_model.safetensors'))
+    config = {'peft_type': 'LORA', 'r': rank, 'lora_alpha': lora_alpha, 'rank_pattern': {}, 'alpha_pattern': {}}
+    (path / 'adapter_config.json').write_text(json.dumps(config))
+    return path, a, b, lora_alpha / rank
+
+
+def denoiser(dim=8):
+    torch.manual_seed(1)
+    attn = torch.nn.Module()
+    attn.qkv_proj = torch.nn.Linear(dim, dim)
+    block = torch.nn.Module()
+    block.attn = attn
+    root = torch.nn.Module()
+    root.transformer_blocks = torch.nn.ModuleList([block])
+    return root
+
+
+def test_a_converted_peft_lora_computes_peft_s_output_and_alpha_zero_the_base(tmp_path):
+    peft, a, b, scale = peft_lora(tmp_path)
+    path = lora.from_peft(peft, tmp_path / 'adapter')
+    x = torch.randn(5, 8)
+    for alpha in (1.0, 0.5, 0.0):
+        root = denoiser()
+        layer = root.transformer_blocks[0].attn.qkv_proj
+        expected = layer(x) + alpha * scale * x @ a.T @ b.T
+        lora.load(root, path, alpha=alpha)
+        with torch.no_grad():
+            got = root.transformer_blocks[0].attn.qkv_proj(x)
+        assert torch.allclose(got, expected, atol=1e-6), alpha
+    assert json.loads((path / 'adapter.json').read_text())['root'] == 'noise_predictor'

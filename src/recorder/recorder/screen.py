@@ -25,6 +25,9 @@ class BaxterScreen:
     def recording(self):
         self._show('recording.jpg')
 
+    def elapsed(self, seconds: float):
+        """The image screens have no clock."""
+
     def decide(self, length=None, frames=None):
         self._show('save_or_discard.jpg')
 
@@ -74,7 +77,11 @@ class SessionScreen(BaxterScreen):
         self._draw(('Start', 'Stop'))
 
     def recording(self):
-        self._draw(('Start', 'Stop'), selected='Start')
+        self.elapsed(0)
+
+    def elapsed(self, seconds: float):
+        minutes, rest = divmod(int(seconds), 60)
+        self._draw(('Start', 'Stop'), selected='Start', info=[f'Time: {minutes}:{rest:02d}'])
 
     def decide(self, length=None, frames=None):
         info = [
@@ -129,7 +136,7 @@ def render_previews(out_dir=ASSETS / 'session', session='CupInCube'):
     screen.session, screen.episode, screen._info = session, 1, []
     for name, show in [
         ('idle', screen.idle),
-        ('recording', screen.recording),
+        ('recording', lambda: screen.elapsed(83)),
         ('save_or_discard', lambda: screen.decide(45.23, 1200)),
         ('saving', screen.saving),
         ('discarding', screen.discarding),
