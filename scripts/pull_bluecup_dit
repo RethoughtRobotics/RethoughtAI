@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Pull the BlueCupToContainer DiT trained on N episodes into models/BlueCupDit_ep_<N>/step-030000/,
+# where run_inference finds it. Files already current are skipped, so a re-run gets the latest.
+# Usage: scripts/pull_bluecup_dit [N ...]   (default: every run in the sweep)
+# Then:  scripts/run_inference --BlueCupDit_ep_5
+
+set -eo pipefail
+cd "$(dirname "$0")/.."
+
+(( $# )) || set -- 1 2 5 10 20 30 40
+for n in "$@"; do
+    .venv/bin/hf download "andnetdeboer/multitaskdit_BlueCupToContainer_train${n}_s0" \
+        config.json model.safetensors normalization_stats.json \
+        --local-dir "models/BlueCupDit_ep_${n}/step-030000"
+done
