@@ -48,12 +48,13 @@ def load_minimax(root: Path):
 
     def run(frames: np.ndarray, masks: np.ndarray, steps: int) -> np.ndarray:
         t, h, w_ = masks.shape
+        h16, w16 = (h + 15) // 16 * 16, (w_ + 15) // 16 * 16
         out = pipe(
             images=torch.from_numpy(frames).float() / 127.5 - 1.0,
             masks=torch.from_numpy(masks[..., None].astype(np.float32)),
             num_frames=t,
-            height=h,
-            width=w_,
+            height=h16,
+            width=w16,
             num_inference_steps=steps,
             generator=torch.Generator(device='cuda').manual_seed(42),
             iterations=1,
