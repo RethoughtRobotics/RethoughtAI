@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# The policy server on a GPU machine: this machine keeps the runtime and the arm, the server gets the
+# cameras as JPEG through an SSH tunnel to the local Zenoh router and publishes chunks back.
+# Settings: hpc/server.yaml (the machine, its paths and GPU).
+# Usage: scripts/server up MODEL CONFIG [HOST] [--revision R]   sync, tunnel, cameras, serve
+#        scripts/server down [HOST]                             stop serving (the tunnel stays up)
+#        scripts/server status [HOST]
+#        scripts/server log [HOST]
+# scripts/run_inference --server runs `up` and `down` for you.
+
+set -eo pipefail
+cd "$(dirname "$0")/.."
+SETTINGS=hpc/server.yaml
+MARKER="${XDG_RUNTIME_DIR:-/tmp}/rai_server"
+COMPRESS="${BAXTER_WS:-$(realpath ../baxter_sdk)}/scripts/compress_images.py"
+SESSION=rai_serve
+
+[[ -f "$SETTINGS" ]] || { echo "No $SETTINGS: it names the GPU machine" >&2; exit 2; }
+setting() { python3 -c "import yaml,sys; print(yaml.safe_load(open(sys.argv[1]))[sys.argv[2]])" "$SETTINGS" "$1"; }
+REPO=$(setting repo) MODELS=$(setting models) GPU=$(setting gpu)
+TUNNEL=$(setting tunnel_port) ROUTER=$(setting router_port) TOLERANCE=$(setting clock_tolerance)
+SETUP=$(python3 -c "import yaml,sys; print('; '.join(yaml.safe_load(open(sys.argv[1]))['setup']))" "$SETTINGS")
+
+remote() { ssh -o BatchMode=yes -o ConnectTimeout=8 "$HOST" "$@"; }
+
+stop_compress() { [[ -f "$MARKER.compress" ]] && kill "$(cat "$MARKER.compress")" 2>/dev/null; rm -f "$MARKER.compress"; }
+
+tunnel() {
+    pgrep -f "ssh .*-R $TUNNEL:localhost:$ROUTER" >/dev/null && return
+    ssh -f -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
+        -R "$TUNNEL:localhost:$ROUTER" "$HOST"
+    echo "Tunnel up: $HOST:$TUNNEL to the local router"
+}
+
+check_clock() {
+    python3 - "$HOST" "$TOLERANCE" <<'PY'
+import subprocess
+import sys
+import time
+
+# Each sample is a round trip inside one SSH connection: connection setup would skew the midpoint.
+host, tolerance = sys.argv[1], float(sys.argv[2])
+ssh = subprocess.Popen(
+    ['ssh', '-o', 'BatchMode=yes', host, 'while read -r _; do date +%s.%N; done'],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
+)
+ssh.stdin.write('\n'); ssh.stdin.flush(); ssh.stdout.readline()
+samples = []
+for _ in range(20):
+    before = time.time()
+    ssh.stdin.write('\n'); ssh.stdin.flush()
+    server = float(ssh.stdout.readline())
+    after = time.time()
+    samples.append((after - before, server - (before + after) / 2))
+ssh.kill()
+rtt, offset = min(samples)
+print(f'Clock offset to the server: {offset * 1000:.1f} ms (round trip {rtt * 1000:.1f} ms)')
+if abs(offset) > tolerance:
+    sys.exit(f'Too far apart. Set this clock: sudo date -s "@$(ssh {host} date +%s.%N)"')
+PY
+}
+
+up() {
+    local model=$1 config=$2 served=$REPO/configs/served.yaml remote_model=$1
+    shift 2
+    check_clock
+    tunnel
+    remote "mkdir -p $REPO/configs $MODELS"
+    rsync -a --delete --exclude __pycache__ -e 'ssh -o BatchMode=yes' src/ "$HOST:$REPO/src/"
+    if [[ -d "$model" ]]; then
+        remote_model=$MODELS/$(basename "$(dirname "$model")")/$(basename "$model")
+        remote "mkdir -p $remote_model"
+        rsync -a -e 'ssh -o BatchMode=yes' "$model/" "$HOST:$remote_model/"
+    fi
+    # The server reads each camera as JPEG: raw frames would be about 27 MB/s through the tunnel.
+    python3 - "$config" <<'PY' | remote "cat > $served"
+import sys
+import yaml
+config = yaml.safe_load(open(sys.argv[1]))
+for image in config['topics']['images']:
+    if not image['topic'].endswith('/compressed'):
+        image['topic'] += '/compressed'
+print(yaml.safe_dump(config, sort_keys=False))
+PY
+    local raw=()
+    for topic in $(python3 -c "import yaml,sys; print(*(c['topic'] for c in yaml.safe_load(open(sys.argv[1]))['topics']['images']))" "$config"); do
+        [[ "$topic" == */compressed ]] && continue
+        [[ "$(timeout 5 ros2 topic info "$topic/compressed" 2>/dev/null)" =~ Publisher\ count:\ [1-9] ]] && continue
+        [[ "$(timeout 5 ros2 topic info "$topic" 2>/dev/null)" =~ Publisher\ count:\ [1-9] ]] && raw+=("$topic")
+    done
+    stop_compress
+    if (( ${#raw[@]} )); then
+        echo "Compressing: ${raw[*]}"
+        nohup python3 "$COMPRESS" "${raw[@]}" >/dev/null 2>&1 &
+        echo $! > "$MARKER.compress"
+    fi
+    # Respawned if it dies, as policy.launch.py does locally.
+    local serve="cd $REPO; $SETUP; unset ROS_DOMAIN_ID; ${ROS_DOMAIN_ID:+export ROS_DOMAIN_ID=$ROS_DOMAIN_ID;}"
+    serve+=" export RMW_IMPLEMENTATION=rmw_zenoh_cpp CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=$GPU;"
+    serve+=" export ZENOH_CONFIG_OVERRIDE='mode=\"client\";connect/endpoints=[\"tcp/localhost:$TUNNEL\"]';"
+    serve+=" while true; do .venv/bin/inference serve configs/served.yaml --model $remote_model $* 2>&1 | tee -a serve.log; sleep 1; done"
+    remote "tmux kill-session -t $SESSION 2>/dev/null; tmux new-session -d -s $SESSION $(printf %q "bash -c $(printf %q "$serve")")"
+    echo "$HOST" > "$MARKER"
+    echo "Serving on $HOST (GPU $GPU, tmux $SESSION): scripts/server log"
+}
+
+down() {
+    remote "tmux kill-session -t $SESSION 2>/dev/null" || true
+    stop_compress
+    rm -f "$MARKER"
+    echo "Stopped serving on $HOST"
+}
+
+case "${1:-}" in
+    up)
+        (( $# >= 3 )) || { sed -n '2,/^$/{/^#/s/^# \{0,1\}//p}' "$0"; exit 2; }
+        model=$2 config=$3 HOST=$(setting host); shift 3
+        [[ "${1:-}" != --* && -n "${1:-}" ]] && { HOST=$1; shift; }
+        up "$model" "$config" "$@" ;;
+    down|status|log)
+        action=$1 HOST=${2:-$(cat "$MARKER" 2>/dev/null || setting host)}
+        case "$action" in
+            down) down ;;
+            status) remote "tmux has-session -t $SESSION 2>/dev/null" && echo "Serving on $HOST" || echo "Not serving on $HOST" ;;
+            log) remote "tail -n 20 $REPO/serve.log" ;;
+        esac ;;
+    *) sed -n '2,/^$/{/^#/s/^# \{0,1\}//p}' "$0"; exit 2 ;;
+esac

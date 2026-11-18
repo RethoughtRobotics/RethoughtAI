@@ -401,6 +401,7 @@ class LeRobotPolicy:
         self.image_shapes = {
             k: tuple(f.shape[1:]) for k, f in cfg.input_features.items() if k.startswith('observation.images.')
         }
+        self._zero_gripper = False
 
     def reset(self):
         self.policy.reset()
@@ -431,6 +432,8 @@ class LeRobotPolicy:
 
     def state(self, tcp_p, tcp_q, gripper, joints):
         """observation.state for this checkpoint's layout."""
+        if self._zero_gripper:
+            gripper = 0.0
         if getattr(self, 'bimanual', False):
             # Dataset order is [left pose, left joints, right pose, right joints].
             # Signs are made continuous at TCP reception, not forced to qy >= 0.
@@ -512,6 +515,8 @@ class LeRobotPolicy:
             else:
                 actions = self.policy.predict_action_chunk(batch, **kwargs)
             actions = self.post(actions)[0].float().cpu().numpy().astype(np.float64)
+        if self._zero_gripper and actions.shape[-1] > 6:
+            actions[:, 6] = 0.0
         if self.absolute and not getattr(self, 'bimanual', False):
             from scipy.spatial.transform import Rotation
 

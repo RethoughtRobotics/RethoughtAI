@@ -95,6 +95,15 @@ def spin(name, setup, on_exit=None):
         rclpy.try_shutdown()
 
 
+MODEL_TOPIC = '/policy/model'
+
+
+def served_name(model, revision=None):
+    """A checkpoint's name without the machine's paths: Hub repo, or the last two folders of a local one."""
+    name = '/'.join(Path(model).parts[-2:])
+    return f'{name}@{revision}' if revision else name
+
+
 @click.group()
 @click.version_option(__version__)
 def main():
@@ -208,7 +217,21 @@ def adapted(policy, adapter):
     default=None,
     help="Two-arm config: serve this kinesthetic recording's chunks in place of the network, as --model runs",
 )
-def serve(config, model, device, revision, adapter, alpha, explore_sigma, explore_seed, flow_noise, record, episode):
+@click.option('--no-gripper', is_flag=True, default=False, help='Zero out the gripper action (tasks that never use it)')
+def serve(
+    config,
+    model,
+    device,
+    revision,
+    adapter,
+    alpha,
+    explore_sigma,
+    explore_seed,
+    flow_noise,
+    record,
+    episode,
+    no_gripper,
+):
     """Run a policy on the robot's topics, publishing its action chunks for `run`.
 
     \b
@@ -263,6 +286,7 @@ def serve(config, model, device, revision, adapter, alpha, explore_sigma, explor
             alpha=alpha,
             explore=explore,
         )
+        policy._zero_gripper = no_gripper
     check_merge(settings['merge'], policy.chunk_size, settings.get('every', 1))
     click.echo(
         f'Serving {model} ({policy.type}, chunks of {policy.chunk_size})'
@@ -277,11 +301,18 @@ def serve(config, model, device, revision, adapter, alpha, explore_sigma, explor
         f'{settings.get("every", 1)} step(s){", RTC" if policy.rtc else ""}, task {task!r}, chunks on {cfg["chunk"]}'
     )
 
+    from rclpy.qos import DurabilityPolicy, QoSProfile
+    from std_msgs.msg import String
+
     from inference.policy_node import PolicyNode, RecordingLight
 
-    lights, servers = [], []
+    lights, servers, names = [], [], []
 
     def setup(node):
+        # Latched, so a bag started after the policy still records which checkpoint ran, wherever it runs.
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        names.append(node.create_publisher(String, MODEL_TOPIC, latched))
+        names[0].publish(String(data=served_name(model, revision)))
         if policy.bimanual:
             from inference.bimanual_policy_node import BimanualPolicyNode
 
@@ -330,7 +361,8 @@ def serve(config, model, device, revision, adapter, alpha, explore_sigma, explor
     "episode's start and resume once the arm is there",
 )
 @click.option('--revision', default=None, help='Hub branch, tag or commit of --model (e.g. step-005000)')
-def run(config, episode, model, start_at, player, revision):
+@click.option('--bag', is_flag=True, default=False, help='Record a bag of all topics during the run')
+def run(config, episode, model, start_at, player, revision, bag):
     """Run a policy on the robot, through its teleop (the config's `inference:` section).
 
     \b
@@ -358,8 +390,15 @@ def run(config, episode, model, start_at, player, revision):
 
         if cfg.get('arm') == 'both':
             raise click.UsageError('Bimanual replay/start-pose loading is not supported; use live cameras')
-        merge, absolute = None, False
-        if model:
+        merge, absolute = {'type': 'latest'}, False
+        if model and model in cfg.get('policies', {}):
+            settings = cfg['policies'][model]
+            absolute = model.endswith('_absolute')
+            overrides = settings.get('overrides', {})
+            chunk = int(overrides.get('n_action_steps') or overrides.get('chunk_size') or cfg['chunk_size'])
+            cfg = {**cfg, 'chunk_size': chunk, 'n_action_steps': int(settings.get('every', 1))}
+            merge = settings['merge']
+        elif model:
             from inference.policies import model_config, trained_lead
 
             model_cfg = model_config(model, revision)
@@ -373,7 +412,7 @@ def run(config, episode, model, start_at, player, revision):
                 f' every {cfg["n_action_steps"]} steps, merge {merge}, {"absolute" if absolute else "relative"} goals'
                 f' (as {model})'
                 if model
-                else f', ensembling {cfg.get("temporal_ensemble_coeff")}'
+                else f', merge {merge}'
             )
         )
         start = policy.episode.tcp_p[0]
@@ -381,7 +420,54 @@ def run(config, episode, model, start_at, player, revision):
             f'Demo starts with the TCP at {start.round(3).tolist()} m (base). Hold the deadman '
             '(trackpad) to run, release to hold; B sends the arm home.'
         )
-        spin('policy_runtime', lambda node: Runtime(node, cfg, policy, merge=merge))
+        import signal
+        import subprocess
+        import time
+
+        bag_proc = None
+        bag_dir = None
+        if bag:
+            from recorder.cli import all_topics
+
+            full = yaml.safe_load(resolve_config(config).read_text())
+            topics = all_topics(full)
+            episode_name = Path(episode).name
+            bag_dir = Path(episode).resolve() / 'replay' / f'infer_{episode_name}'
+            bag_proc = subprocess.Popen(
+                [
+                    'ros2',
+                    'bag',
+                    'record',
+                    '--storage',
+                    'mcap',
+                    '--storage-preset-profile',
+                    'zstd_fast',
+                    '--compression-queue-size',
+                    '10',
+                    '--compression-threads',
+                    '2',
+                    '--output',
+                    str(bag_dir),
+                    '--topics',
+                    *topics,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            time.sleep(1.0)
+            click.echo(f'Recording bag to {bag_dir}')
+
+        def setup(node):
+            rt = Runtime(node, cfg, policy, merge=merge)
+            rt.requested = True
+
+        def on_exit():
+            if bag_proc is not None:
+                bag_proc.send_signal(signal.SIGINT)
+                bag_proc.wait(timeout=10)
+                click.echo(f'Bag saved to {bag_dir}')
+
+        spin('policy_runtime', setup, on_exit=on_exit if bag_proc else None)
         return
 
     from inference.policies import chunk_length, model_config, trained_lead
