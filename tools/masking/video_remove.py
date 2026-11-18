@@ -96,6 +96,7 @@ def load_effecterase(root: Path):
 
     def run(frames: np.ndarray, masks: np.ndarray, steps: int) -> np.ndarray:
         t, h, w_ = masks.shape
+        h16, w16 = (h + 15) // 16 * 16, (w_ + 15) // 16 * 16
 
         def to_t(x):  # T H W C to C T H W, in [-1, 1]
             return torch.from_numpy(x).float().permute(3, 0, 1, 2).cuda() / 127.5 - 1.0
@@ -116,10 +117,13 @@ def load_effecterase(root: Path):
                 cfg_scale=1.0,
                 seed=2025,
                 tiled=False,
-                height=h,
-                width=w_,
+                height=h16,
+                width=w16,
             )
-        return np.stack([np.asarray(f.convert('RGB')) for f in video])
+        out = np.stack([np.asarray(f.convert('RGB')) for f in video])
+        if h16 != h or w16 != w_:
+            out = out[:, :h, :w_]
+        return out
 
     return run
 
