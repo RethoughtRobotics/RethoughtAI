@@ -59,7 +59,10 @@ def load_minimax(root: Path):
             generator=torch.Generator(device='cuda').manual_seed(42),
             iterations=1,
         ).frames[0]
-        return (np.clip(out, 0, 1) * 255 + 0.5).astype(np.uint8)
+        out = (np.clip(out, 0, 1) * 255 + 0.5).astype(np.uint8)
+        if h16 != h or w16 != w_:
+            out = out[:, :h, :w_]
+        return out
 
     return run
 
