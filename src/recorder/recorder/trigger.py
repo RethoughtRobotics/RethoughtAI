@@ -93,6 +93,13 @@ class RecorderTriggerNode:
         sub(trig['success'], success_evt.set)
         sub(trig['discard'], discard_evt.set)
 
+        # Optional home button (a std_msgs/Empty, e.g. libsurvive_ros2 /vive/{hand}/b_button): it
+        # sends the arm home and stops recording, as it stops a policy rollout (inference.runtime).
+        if trig.get('home'):
+            from std_msgs.msg import Empty
+
+            self._node.create_subscription(Empty, trig['home'], lambda _: self._set_recording(False), 10)
+
         # Optional stick gestures -- every topic (a std_msgs/String direction, e.g. libsurvive_ros2
         # /vive/{hand}/thumbstick) at the same direction for `hold` seconds fires its action once.
         pad = trig.get('thumbstick')
