@@ -70,6 +70,8 @@ topics:
     - /robot/sonar/head_sonar/state
     - /cameras/third_eye/aligned_depth_to_color/image_raw/compressedDepth
     - /cameras/third_eye/aligned_depth_to_color/camera_info
+    - /cameras/third_eye/color/image_raw_inpainted_lamb/compressed
+    - /cameras/third_eye/color/image_raw_inpainted_lamb_mask/compressed
     # Policy corrections: the chunks the policy planned and when it drove the arm.
     - /policy/left/chunk
     - /policy/left/engaged
@@ -87,6 +89,8 @@ topics:
     - /teleop/left/steering
     - /teleop/left/nudging
     - /teleop/left/correction_offset
+    - /kinesthetic/left/active
+    - /kinesthetic/left/offset
     - /policy/right/chunk
     - /policy/right/engaged
     # Log lines from the robot, teleop and policy nodes (homing, cuff control, errors).
@@ -131,8 +135,10 @@ topics:
     # inference run (policy runtime): what it sent the teleop
     - /policy/left/target
     - /policy/left/trigger
+    - /policy/left/path
     - /policy/right/target
     - /policy/right/trigger
+    - /policy/right/path
   # Operator inputs (libsurvive_ros2), never --excluded: with swap_hands the right controller
   # drives the left arm. Replaying them re-runs the teleop offline.
   operator:
@@ -160,10 +166,14 @@ trigger:
     topic: /robot/digital_io/command
     msg_type: baxter_core_msgs/DigitalOutputCommand
     name: left_inner_light
-  # Both VR thumbsticks (libsurvive_ros2) pushed the same way for `hold` s.
+  # B on the same controller stops recording and sends the arm home, as in a policy rollout.
+  home: /vive/right/b_button
+  # One VR thumbstick (libsurvive_ros2) pushed one way for `hold` s, so one hand runs the session,
+  # as inference.episodes does for rollouts. With swap_hands the controller held in the left hand
+  # publishes on /vive/right/*.
   thumbstick:
-    topics: [/vive/left/thumbstick, /vive/right/thumbstick]
-    hold: 2.0
+    topics: [/vive/right/thumbstick]
+    hold: 1.0
     start: north
     stop: south
     success: east
@@ -246,8 +256,14 @@ inference:
     multi_task_dit:
       # chunks of 24 (of a 32-step plan) from the last 2 steps; ~100 ms on the laptop GPU (10 DDPM
       # steps), so every 4 steps, ensembled as VITA. Offline on episode 4 it matches VITA's error.
+      # ramp: a new chunk's weight grows over 4 steps (one plan interval). Without it a chunk
+      # disagreeing with the others by 15 to 35 mm moved the target by up to half of that in one step
+      # right after an engage or a correction, while only one or two chunks overlapped.
+      # gripper_lead: the gripper labels are its measured opening at the same step, so a close sent on
+      # time starts once the demo's gripper had already closed, and the motor still has to travel;
+      # sending the opening planned 0.18 s later closes it as the gripper reaches the cup.
       every: 4
-      merge: {type: ensemble, coeff: -0.05}
+      merge: {type: ensemble, coeff: -0.05, ramp: 4, gripper_lead: 0.18}
     multi_task_dit_absolute:
       # Kinesthetic cup DiTs: raw 15-D state, 8-D absolute pose + gripper. 10 DDPM steps (~130 ms on
       # the laptop GPU; its 100 gave the same offline error at 12x the time). A new plan every 4 frames
@@ -255,8 +271,11 @@ inference:
       # weighted most): no single plan moves the arm, so a plan's disagreement with the last is averaged
       # out rather than played. No lead: the teleop's plan input plays the plan on its own timing
       # (BaxterSDK --input plan), so goals are not sent ahead of when they are due.
+      # gripper_lead: the gripper labels are its measured opening at the same step, so a close sent on
+      # time starts once the demo's gripper had already closed, and the motor still has to travel;
+      # sending the opening planned 0.18 s later closes it as the gripper reaches the cup.
       every: 4
-      merge: {type: ensemble, coeff: -0.05}
+      merge: {type: ensemble, coeff: -0.05, gripper_lead: 0.18}
       overrides: {num_inference_steps: 10, n_action_steps: 31}  # 31: its plan starts at the older of its 2 observations
     groot:
       # GR00T N1.7 3B: absolute goals in chunks of 16 (no RTC: it continues TCP-relative chunks).
