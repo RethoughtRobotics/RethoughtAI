@@ -1,0 +1,7 @@
+Gate,Blue silent,"Paper, same layout",Container moved,Cup pose 1,Cup pose 2,Behavior
+Cosine on z,Yes,Yes,No,Yes,No,Matches the whole scene
+Cosine on attention,No,Yes,No,Yes,Yes,"Matches the attended location, not the object"
+Learned metric on z,Yes,Yes,No,No,No,Rarely fires
+Nearest rule,No,Yes,Yes,Yes,Yes,Always fires
+Frozen CLIP / DINOv2,Yes,No,No,No,No,Does not fire
+Evidence gate,Yes,Yes,No,Yes,Yes,Misses one layout
