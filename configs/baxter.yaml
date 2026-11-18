@@ -244,8 +244,11 @@ inference:
     multi_task_dit:
       # chunks of 24 (of a 32-step plan) from the last 2 steps; ~100 ms on the laptop GPU (10 DDPM
       # steps), so every 4 steps, ensembled as VITA. Offline on episode 4 it matches VITA's error.
+      # gripper_lead: the gripper labels are its measured opening at the same step, so a close sent on
+      # time starts once the demo's gripper had already closed, and the motor still has to travel;
+      # sending the opening planned 0.18 s later closes it as the gripper reaches the cup.
       every: 4
-      merge: {type: ensemble, coeff: -0.05}
+      merge: {type: ensemble, coeff: -0.05, gripper_lead: 0.18}
     multi_task_dit_absolute:
       # Kinesthetic cup DiTs: raw 15-D state, 8-D absolute pose + gripper. 10 DDPM steps (~130 ms on
       # the laptop GPU; its 100 gave the same offline error at 12x the time). A new plan every 4 frames
@@ -253,8 +256,11 @@ inference:
       # weighted most): no single plan moves the arm, so a plan's disagreement with the last is averaged
       # out rather than played. No lead: the teleop's plan input plays the plan on its own timing
       # (BaxterSDK --input plan), so goals are not sent ahead of when they are due.
+      # gripper_lead: the gripper labels are its measured opening at the same step, so a close sent on
+      # time starts once the demo's gripper had already closed, and the motor still has to travel;
+      # sending the opening planned 0.18 s later closes it as the gripper reaches the cup.
       every: 4
-      merge: {type: ensemble, coeff: -0.05}
+      merge: {type: ensemble, coeff: -0.05, gripper_lead: 0.18}
       overrides: {num_inference_steps: 10, n_action_steps: 31}  # 31: its plan starts at the older of its 2 observations
     groot:
       # GR00T N1.7 3B: absolute goals in chunks of 16 (no RTC: it continues TCP-relative chunks).
