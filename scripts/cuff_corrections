@@ -8,6 +8,7 @@
 #   TASK          the language instruction (default: the blue cup task)
 #   MIN_DURATION  s, shorter squeezes do not count as corrections (default: 0.5)
 #   RAW_THIRD_EYE=1  export the raw third-eye camera, for rollouts without ros2_inpaint running
+#   INPAINTED     the third-eye topic ros2_inpaint published (default: image_raw_inpainted_lamb, served on lamb)
 #
 # One episode per rollout holding a correction, discarded rollouts skipped (adapter.corrections). Each
 # frame keeps its intervention flag and the policy's plan, so one dataset serves a retrain on the
@@ -27,7 +28,7 @@ CONFIG=configs/baxter.yaml
 if [[ -z "$RAW_THIRD_EYE" ]]; then
     CONFIG="$(mktemp --suffix=.yaml)"
     trap 'rm -f "$CONFIG"' EXIT
-    sed 's#/cameras/third_eye/color/image_raw$#/cameras/third_eye/color/image_raw_inpainted#' configs/baxter.yaml > "$CONFIG"
+    sed "s#/cameras/third_eye/color/image_raw\$#/cameras/third_eye/color/${INPAINTED:-image_raw_inpainted_lamb}#" configs/baxter.yaml > "$CONFIG"
 fi
 .venv/bin/adapt lerobot "recorder/data/${NAME}" --config "$CONFIG" --repo-id "$REPO" --task "$TASK" \
     --labels goal --intervention --plans

@@ -161,6 +161,34 @@ def load(root, path, alpha=1.0):
     return wrapped
 
 
+def from_peft(peft_dir, path, root=DIT_ROOT):
+    """Write the Hugging Face PEFT LoRA at `peft_dir` (adapter_config.json, adapter_model.safetensors, as
+    rethought-lerobot's train.py --lora_rank saves it next to the merged checkpoint) as an adapter here at
+    `path`, named relative to `root`, so the runtime can run it unmerged at any alpha (--adapter
+    --alpha). PEFT computes W x + (lora_alpha / r) B A x with lora_A the A (r x in) and lora_B the B
+    (out x r); PEFT's scale is folded into B, so alpha 1 here is the PEFT adapter exactly."""
+    from safetensors.torch import load_file, save_file
+
+    peft_dir, path = Path(peft_dir), Path(path)
+    config = json.loads((peft_dir / 'adapter_config.json').read_text())
+    if config.get('peft_type') != 'LORA' or config.get('rank_pattern') or config.get('alpha_pattern'):
+        raise ValueError(f'{peft_dir}: only a plain LoRA (one rank and alpha) converts')
+    rank, scale = int(config['r']), config['lora_alpha'] / config['r']
+    prefix = f'base_model.model.{root}.'
+    tensors = {}
+    for key, value in load_file(str(peft_dir / 'adapter_model.safetensors')).items():
+        if not key.startswith(prefix):
+            raise ValueError(f'{peft_dir}: {key} is not under {root}')
+        name, part = key[len(prefix) :].rsplit('.lora_', 1)  # e.g. transformer_blocks.0.attn.qkv_proj, A.weight
+        tensors[f'{name}.{part[0]}'] = (value * scale if part[0] == 'B' else value).contiguous()
+    targets = sorted({k.rsplit('.', 1)[0] for k in tensors})
+    path.mkdir(parents=True, exist_ok=True)
+    save_file(tensors, str(path / WEIGHTS))
+    meta = {'rank': rank, 'targets': targets, 'root': root, 'peft': str(peft_dir)}
+    (path / META).write_text(json.dumps(meta, indent=2) + '\n')
+    return path
+
+
 def meta(path):
     """The adapter's adapter.json."""
     return json.loads((Path(path) / META).read_text())

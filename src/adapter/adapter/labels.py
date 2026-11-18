@@ -18,7 +18,9 @@ or before it, by recording time (the robot's header clocks are not aligned with 
 
 Kinesthetic episodes (load_measured) have no goal: the target is the measured TCP.
 A cuff squeeze in a policy rollout has no goal either, and the policy's stream stops during it, so at
-those steps the target is the measured TCP CUFF_LEAD steps later (cuff_targets).
+those steps the target is the measured TCP CUFF_LEAD steps later (cuff_targets). After a steered squeeze
+the arm hands back while its offset decays, and the goal does not hold that offset, so at those steps the
+target is the goal plus the offset (handback_targets).
 
 The action chunk observed at step t is target[t + k] relative to tcp[t], k = 0..chunk_size-1:
 [dx dy dz] in base axes, [rx ry rz] the base-frame rotation vector with R_target = exp(r) R_tcp,
@@ -86,6 +88,17 @@ def cuff_targets(t, squeezed, target_p, target_q, tcp_t, tcp_p, tcp_q, lead=CUFF
     return p, q
 
 
+def handback_targets(squeezed, target_p, target_q, offset):
+    """Targets with a steered cuff's offset (N, 6) added on the steps outside a squeeze: there the arm is
+    sent the goal plus the decaying offset, so that sum is where it was told to go. Squeezed steps are
+    cuff_targets' own."""
+    p, q = np.array(target_p, dtype=float), np.array(target_q, dtype=float)
+    free = ~np.asarray(squeezed, dtype=bool)
+    p[free] += offset[free, :3]
+    q[free] = (Rotation.from_rotvec(offset[free, 3:]) * Rotation.from_quat(q[free])).as_quat()
+    return p, q
+
+
 def load_episode(path, arm='left', fps=25.0) -> Episode:
     topics = {
         'tcp': f'/teleop/{arm}/tcp',
@@ -138,6 +151,7 @@ def load_episode(path, arm='left', fps=25.0) -> Episode:
     for k in np.where(clutched)[0]:
         target_p[k], target_q[k] = data['goal'][gi[k]][1]
 
+    squeezed = np.zeros(len(t), dtype=bool)
     if any(on for _, on in data['cuff']):
         cuff_t = np.array([x for x, _ in data['cuff']])
         i = latest(cuff_t, t)
@@ -164,7 +178,10 @@ def load_episode(path, arm='left', fps=25.0) -> Episode:
             if data[name]:
                 i = latest(np.array([x for x, _ in data[name]]), t)
                 values = np.array([v for _, v in data[name]])
-                offset = offset + np.where((i >= 0)[:, None], values[np.maximum(i, 0)], 0.0)
+                at_step = np.where((i >= 0)[:, None], values[np.maximum(i, 0)], 0.0)
+                offset = offset + at_step
+                if name == 'kinesthetic_offset':
+                    target_p, target_q = handback_targets(squeezed, target_p, target_q, at_step)
     return Episode(tcp_p, tcp_q, target_p, target_q, trigger, t, fps, intervention, offset)
 
 

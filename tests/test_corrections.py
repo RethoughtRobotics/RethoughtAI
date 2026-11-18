@@ -13,7 +13,7 @@ from rclpy.serialization import serialize_message  # noqa: E402
 from std_msgs.msg import Bool, Float32, String  # noqa: E402
 
 from adapter import corrections  # noqa: E402
-from adapter.labels import cuff_targets, load_episode  # noqa: E402
+from adapter.labels import cuff_targets, handback_targets, load_episode  # noqa: E402
 
 S = 1_000_000_000
 
@@ -166,3 +166,21 @@ def test_a_rollout_without_a_squeeze_keeps_its_labels():
     p, q = np.zeros((5, 3)), np.tile([0.0, 0.0, 0.0, 1.0], (5, 1))
     out, _ = cuff_targets(t, np.zeros(5, bool), p, q, t.astype(float), p + 1.0, q)
     assert np.array_equal(out, p)
+
+
+def test_a_handback_adds_the_decaying_offset_outside_the_squeeze_only():
+    p = np.zeros((3, 3))
+    q = np.tile([0.0, 0.0, 0.0, 1.0], (3, 1))
+    offset = np.zeros((3, 6))
+    offset[:, 0] = 0.1
+    offset[:, 5] = np.pi / 2
+    out_p, out_q = handback_targets(np.array([True, False, False]), p, q, offset)
+    assert np.allclose(out_p[:, 0], [0.0, 0.1, 0.1])
+    assert np.allclose(out_q[0], q[0])  # a squeezed step keeps the hand's label
+    assert np.allclose(out_q[1], [0.0, 0.0, np.sqrt(0.5), np.sqrt(0.5)])
+
+
+def test_a_handback_without_an_offset_leaves_the_targets():
+    p, q = np.ones((2, 3)), np.tile([0.0, 0.0, 0.0, 1.0], (2, 1))
+    out_p, out_q = handback_targets(np.zeros(2, bool), p, q, np.zeros((2, 6)))
+    assert np.allclose(out_p, p) and np.allclose(out_q, q)
