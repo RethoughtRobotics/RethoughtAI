@@ -236,7 +236,14 @@ def push(dataset, repo_id, private, collection):
     )
     api = HfApi()
     # LeRobotDataset loads the revision tagged with its format version; upload-large-folder does not tag.
-    api.create_tag(repo_id, tag=CODEBASE_VERSION, repo_type='dataset', exist_ok=True)
+    # The tag goes on the commit just pushed: create_tag(exist_ok=True) leaves an existing tag where it was,
+    # so a re-pushed dataset would keep serving its previous files.
+    head = api.dataset_info(repo_id).sha
+    tags = {t.name: t.target_commit for t in api.list_repo_refs(repo_id, repo_type='dataset').tags}
+    if tags.get(CODEBASE_VERSION) not in (None, head):
+        api.delete_tag(repo_id, tag=CODEBASE_VERSION, repo_type='dataset')
+    if tags.get(CODEBASE_VERSION) != head:
+        api.create_tag(repo_id, tag=CODEBASE_VERSION, revision=head, repo_type='dataset')
     if collection:
         api.add_collection_item(collection, item_id=repo_id, item_type='dataset', exists_ok=True)
     click.echo(f'Done -> https://huggingface.co/datasets/{repo_id} (tag {CODEBASE_VERSION})')
