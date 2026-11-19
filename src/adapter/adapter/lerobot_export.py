@@ -251,6 +251,8 @@ def export(
     intervention=False,
     plans=False,
     capture_time=(),
+    speed_to=None,
+    speed_max=1.6,
 ):
     """Write every episode_* of `session` (in order) as one LeRobot dataset at `root`.
 
@@ -265,7 +267,9 @@ def export(
     its own dataset, then joins them in order (LeRobot's aggregate_datasets: videos and data files
     concatenated, not re-encoded). `intervention` adds each frame's intervention flag (goal labels:
     the policy rollouts of adapt corrections --whole, labels.Episode.intervention); `plans` the
-    policy's plans as they ran (labels.load_plans), for ttt correction-rows."""
+    policy's plans as they ran (labels.load_plans), for ttt correction-rows. `speed_to` (m/s, measured
+    labels): each episode is played back sped up toward that median moving TCP speed, by at most
+    `speed_max` (labels.load_measured); each episode's factor is in the summary."""
     import shutil
     from concurrent.futures import ProcessPoolExecutor
     from multiprocessing import get_context
@@ -290,6 +294,8 @@ def export(
         trim_still=trim_still,
         intervention=intervention,
         plans=plans,
+        speed_to=speed_to,
+        speed_max=speed_max,
     )
     if workers == 1:
         summary = _export_episodes(episodes, root=root, log=log, **args)
@@ -329,6 +335,7 @@ def export(
                 'labels': labels,
                 'fps': fps,
                 **({'lead_steps': lead} if labels == 'measured' else {}),
+                **({'speed_to_m_s': speed_to, 'speed_max': speed_max} if speed_to is not None else {}),
                 'gripper': gripper,
                 **({'trim_idle': list(trim_idle)} if trim_idle else {}),
                 **({'trim_still': list(trim_still)} if trim_still else {}),
@@ -357,6 +364,8 @@ def _export_episodes(
     intervention=False,
     plans=False,
     capture_time=(),
+    speed_to=None,
+    speed_max=1.6,
 ):
     """`episodes` as one LeRobot dataset at `root`; per episode, a summary of what was written."""
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -365,7 +374,7 @@ def _export_episodes(
 
     def load(path):  # arm -> Episode
         if labels == 'measured':
-            return load_measured(path, arms, fps, lead)
+            return load_measured(path, arms, fps, lead, speed_to, speed_max)
         ep = load_episode(path, arm, fps)
         if plans:
             plan, planned = load_plans(path, ep.t, arm)
@@ -453,6 +462,7 @@ def _export_episodes(
             'idle_start_frames': idle,
             **({'still_frames_cut': k + 1 - n} if still is not None else {}),
             'stale_image_frames': int(stale),
+            **({'speedup': round(eps[arm].speedup, 3)} if speed_to is not None else {}),
         })
         log(
             f'{path.name}: {n} frames ({n / fps:.1f} s)'

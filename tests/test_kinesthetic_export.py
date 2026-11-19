@@ -92,6 +92,19 @@ def test_measured_labels_are_interpolated_to_each_steps_time(tmp_path):
     assert np.allclose(np.diff(left.tcp_p[:, 0]), 0.04, atol=1e-6)  # evenly 40 mm per 40 ms step
 
 
+def test_a_slow_recording_is_played_back_at_the_demonstrations_pace(tmp_path):
+    """speed_to steps through the recording faster, labels rebuilt at the new spacing; never slowed down."""
+    _bag(tmp_path / 'ep')  # the left TCP at 1 m/s
+    plain = load_measured(tmp_path / 'ep', ['left'], fps=25)['left']
+    fast = load_measured(tmp_path / 'ep', ['left'], fps=25, speed_to=1.5)['left']
+    assert plain.speedup == 1.0 and np.isclose(fast.speedup, 1.5, atol=0.01)
+    assert np.allclose(np.diff(fast.t), 60_000_000, atol=1)  # a step every 1.5 x 40 ms of the recording
+    assert np.allclose(np.diff(fast.tcp_p[:, 0]), 0.06, atol=1e-3)  # so 60 mm per step: 1.5 m/s at 25 fps
+    assert np.allclose(fast.target_p[:-1], fast.tcp_p[1:])  # the label is still the TCP one step on
+    assert load_measured(tmp_path / 'ep', ['left'], fps=25, speed_to=0.5)['left'].speedup == 1.0  # not slowed
+    assert load_measured(tmp_path / 'ep', ['left'], fps=25, speed_to=9, speed_max=1.6)['left'].speedup == 1.6
+
+
 def _still_then_moving(still, n=20, step=0.01):
     p = np.zeros((n, 3))
     p[still:, 0] = step * np.arange(1, n - still + 1)
