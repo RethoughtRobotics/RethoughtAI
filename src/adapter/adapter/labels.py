@@ -234,11 +234,22 @@ def load_measured(path, arms=('left',), fps=25.0, lead=1) -> dict[str, Episode]:
     the measured TCP `lead` steps later (the last step holds), so even the first action of a chunk is
     where the hand took the arm next, as a teleop goal leads the arm. The trigger is the measured
     gripper opening (0 open .. 1 closed). Steps span the time every arm's TCP is recorded, on one
-    clock for all arms. The TCP is interpolated to each step's time."""
+    clock for all arms. The TCP is interpolated to each step's time. `intervention` is 1 while a person
+    drives the arm (cuff squeezed, VR takeover or nudge), as load_episode's, for policy rollouts with
+    corrections; a recording without those topics gets zeros."""
+    drivers = {
+        'cuff': '/robot/digital_io/{arm}_lower_cuff/state',
+        'takeover': '/teleop/{arm}/takeover',
+        'nudging': '/teleop/{arm}/nudging',
+    }
     topics = {
         (arm, kind): tp
         for arm in arms
-        for kind, tp in (('tcp', f'/teleop/{arm}/tcp'), ('gripper', f'/robot/end_effector/{arm}_gripper/state'))
+        for kind, tp in (
+            ('tcp', f'/teleop/{arm}/tcp'),
+            ('gripper', f'/robot/end_effector/{arm}_gripper/state'),
+            *((k, v.format(arm=arm)) for k, v in drivers.items()),
+        )
     }
     reader = rosbag2_py.SequentialReader()
     reader.open(rosbag2_py.StorageOptions(uri=str(Path(path)), storage_id='mcap'), rosbag2_py.ConverterOptions('', ''))
@@ -253,7 +264,12 @@ def load_measured(path, arms=('left',), fps=25.0, lead=1) -> dict[str, Episode]:
         topic, raw, t = reader.read_next()
         key = by_topic[topic]
         msg = deserialize_message(raw, get_message(types[topic]))
-        data[key].append((t, _pose(msg) if key[1] == 'tcp' else 1.0 - float(msg.position) / 100.0))
+        if key[1] == 'tcp':
+            data[key].append((t, _pose(msg)))
+        elif key[1] == 'gripper':
+            data[key].append((t, 1.0 - float(msg.position) / 100.0))
+        else:  # a driver: the cuff's DigitalIOState.state, or a Bool
+            data[key].append((t, bool(msg.state if key[1] == 'cuff' else msg.data)))
 
     start = max(data[(arm, 'tcp')][0][0] for arm in arms)
     end = min(data[(arm, 'tcp')][-1][0] for arm in arms)
@@ -276,7 +292,15 @@ def load_measured(path, arms=('left',), fps=25.0, lead=1) -> dict[str, Episode]:
         grip = data[(arm, 'gripper')]
         trigger = np.array([grip[k][1] for k in latest(grip)]) if grip else np.zeros(len(t))
         ahead = np.minimum(np.arange(len(t)) + lead, len(t) - 1)
-        out[arm] = Episode(p, q, p[ahead], q[ahead], trigger, t, fps)
+        intervention = np.zeros(len(t))
+        for kind in drivers:
+            rows = data[(arm, kind)]
+            if rows:
+                times = np.array([x for x, _ in rows])
+                i = np.searchsorted(times, t, side='right') - 1  # the latest state at or before each step
+                on = np.array([v for _, v in rows])
+                intervention = np.maximum(intervention, np.where(i >= 0, on[np.maximum(i, 0)], False).astype(float))
+        out[arm] = Episode(p, q, p[ahead], q[ahead], trigger, t, fps, intervention)
     return out
 
 
