@@ -140,6 +140,7 @@ def lerobot(
 
     cfg = yaml.safe_load(Path(config).read_text())
     cameras = {i['topic']: i['key'].removeprefix('observation.images.') for i in cfg['topics']['images']}
+    capture_time = [i['topic'] for i in cfg['topics']['images'] if i.get('time') == 'capture']
     arm, fps = cfg['inference']['arm'], cfg['inference']['fps']
     arms = arms.split(',') if arms else [arm]
     others = {'left', 'right'} - set(arms)
@@ -167,6 +168,7 @@ def lerobot(
         trim_still=(trim_still[0], math.radians(trim_still[1])) if trim_still else None,
         intervention=intervention,
         plans=plans,
+        capture_time=capture_time,
     )
     click.echo(f'Dataset written to {output}')
 

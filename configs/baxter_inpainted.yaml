@@ -7,8 +7,11 @@ topics:
       key: observation.images.left
     - topic: /cameras/right_hand_camera/image/processed
       key: observation.images.right
+    # time: capture: frames come back from live inpainting on lamb ~0.3 s after they were taken; the export
+    # times them by their header stamp (the raw frame's capture time), so images and labels stay in step
     - topic: /cameras/third_eye/color/image_raw_inpainted_lamb/compressed
       key: observation.images.third_eye
+      time: capture
   state:
     - topic: /robot/joint_states
       key: observation.state

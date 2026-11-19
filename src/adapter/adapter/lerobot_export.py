@@ -142,14 +142,32 @@ def features(cameras, arms, image_shapes, gripper=True, intervention=False, plan
     return f
 
 
-def read_frames(path, arms, cameras, t, gripper=True):
+def read_frames(path, arms, cameras, t, gripper=True, capture_time=()):
     """Latest camera images, each arm's joints and gripper position at each time in t (ns): per frame
     (images, joints, gripper, image age), joints and gripper concatenated over `arms`; None for the
-    leading times before every stream has started (recording began while the clutch was held)."""
-    return list(iter_frames(path, arms, cameras, t, gripper))
+    leading times before every stream has started (recording began while the clutch was held).
+    A camera topic in `capture_time` is timed by its header stamp, when the image was taken, instead of
+    when it reached the bag: a camera processed on another machine (live inpainting) arrives hundreds of
+    ms after its capture, and each frame then gets the newest image taken at or before it."""
+    return list(iter_frames(path, arms, cameras, t, gripper, capture_time))
 
 
-def iter_frames(path, arms, cameras, t, gripper=True):
+def _by_capture_time(path, topic):
+    """(header stamps in ns, sorted; the serialized messages in that order) of one topic in a bag."""
+    reader = rosbag2_py.SequentialReader()
+    reader.open(rosbag2_py.StorageOptions(uri=str(path), storage_id='mcap'), rosbag2_py.ConverterOptions('', ''))
+    msg_type = get_message({x.name: x.type for x in reader.get_all_topics_and_types()}[topic])
+    reader.set_filter(rosbag2_py.StorageFilter(topics=[topic]))
+    stamped = []
+    while reader.has_next():
+        _, raw, _ = reader.read_next()
+        h = deserialize_message(raw, msg_type).header.stamp
+        stamped.append((h.sec * 1_000_000_000 + h.nanosec, raw))
+    stamped.sort(key=lambda x: x[0])
+    return np.array([x[0] for x in stamped], np.int64), [x[1] for x in stamped], msg_type
+
+
+def iter_frames(path, arms, cameras, t, gripper=True, capture_time=()):
     """read_frames, one frame at a time: an episode's decoded images need not all fit in memory."""
     arms = [arms] if isinstance(arms, str) else list(arms)
     joint_topic = '/robot/joint_states'
@@ -163,13 +181,23 @@ def iter_frames(path, arms, cameras, t, gripper=True):
     missing = set(cameras) - types.keys()
     if missing:
         raise ValueError(f'{path}: missing camera topics: {sorted(missing)}')
-    reader.set_filter(rosbag2_py.StorageFilter(topics=[*cameras, joint_topic, *grippers]))
+    wanted = {c.removesuffix('/compressed') for c in capture_time}
+    captured = {tp: _by_capture_time(path, tp) for tp in cameras if tp.removesuffix('/compressed') in wanted}
+    decoded = {}  # topic -> (index, image) of the last capture-timed image decoded
+    reader.set_filter(rosbag2_py.StorageFilter(topics=[*(set(cameras) - set(captured)), joint_topic, *grippers]))
     names = [f'{arm}_{j}' for arm in arms for j in JOINTS]
     latest = {}  # topic -> (time, value)
     k, started = 0, False
 
     def snapshot():
         nonlocal started
+        for tp, (stamps, raws, msg_type) in captured.items():
+            i = int(np.searchsorted(stamps, t[k], side='right')) - 1  # newest image taken at or before t[k]
+            if i < 0:
+                continue
+            if decoded.get(tp, (None,))[0] != i:
+                decoded[tp] = (i, image_rgb(deserialize_message(raws[i], msg_type)))
+            latest[tp] = (int(stamps[i]), decoded[tp][1])
         missing = [tp for tp in (*cameras, joint_topic, *grippers) if tp not in latest]
         if missing:
             if started:
@@ -222,6 +250,7 @@ def export(
     trim_still=None,
     intervention=False,
     plans=False,
+    capture_time=(),
 ):
     """Write every episode_* of `session` (in order) as one LeRobot dataset at `root`.
 
@@ -250,6 +279,7 @@ def export(
         repo_id=repo_id,
         task=task,
         cameras=cameras,
+        capture_time=tuple(capture_time),
         fps=fps,
         robot_type=robot_type,
         arms=arms,
@@ -326,6 +356,7 @@ def _export_episodes(
     trim_still=None,
     intervention=False,
     plans=False,
+    capture_time=(),
 ):
     """`episodes` as one LeRobot dataset at `root`; per episode, a summary of what was written."""
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -342,7 +373,9 @@ def _export_episodes(
         return {arm: ep}
 
     first = load(episodes[0])[arms[0]]
-    sample = read_frames(episodes[0], arms, cameras, first.t[-1:], gripper)[0][0]  # last frame: all streams are up
+    sample = read_frames(episodes[0], arms, cameras, first.t[-1:], gripper, capture_time)[0][
+        0
+    ]  # last frame: all streams are up
     shapes = {key: img.shape for key, img in sample.items()}
     dataset = LeRobotDataset.create(
         repo_id,
@@ -368,7 +401,7 @@ def _export_episodes(
         eps = {a: _drop_leading(e, idle) for a, e in eps.items()}
         skip, stale, poses, n, k = 0, 0, None, 0, -1
         still = StillRuns(*trim_still) if trim_still else None
-        for frame in iter_frames(path, arms, cameras, eps[arms[0]].t, gripper):
+        for frame in iter_frames(path, arms, cameras, eps[arms[0]].t, gripper, capture_time):
             if frame is None:  # leading frames before every stream started
                 skip += 1
                 continue
