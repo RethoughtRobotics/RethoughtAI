@@ -107,6 +107,14 @@ def adapt(config, sessions, output, hub_repo):
     help="Add each frame's intervention flag (1 while a person drives: VR takeover, cuff), for adapt corrections --whole",
 )
 @click.option(
+    '--speed-to',
+    default=None,
+    type=float,
+    help='measured labels: play each episode back sped up toward this median moving TCP speed (mm/s), e.g. the '
+    "demonstrations', so slow on-policy rollouts teach the demonstrations' pace (never slowed down)",
+)
+@click.option('--speed-max', default=1.6, show_default=True, help='--speed-to: the largest speedup')
+@click.option(
     '--plans',
     is_flag=True,
     help="Add the policy's plans as they ran (/policy/{arm}/chunk), for ttt correction-rows; goal labels only",
@@ -125,6 +133,8 @@ def lerobot(
     trim_still,
     workers,
     intervention,
+    speed_to,
+    speed_max,
     plans,
 ):
     """Convert a teleop session (every episode_*) to a LeRobot v3 dataset on labels.py's actions.
@@ -169,6 +179,8 @@ def lerobot(
         intervention=intervention,
         plans=plans,
         capture_time=capture_time,
+        speed_to=None if speed_to is None else speed_to / 1000.0,
+        speed_max=speed_max,
     )
     click.echo(f'Dataset written to {output}')
 

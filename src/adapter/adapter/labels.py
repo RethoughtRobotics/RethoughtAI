@@ -54,6 +54,7 @@ class Episode:
     offset: np.ndarray | None = None  # (N, 6) a nudge's or a steered cuff's offset from the plan
     plan: np.ndarray | None = None  # (N, steps, 8) the policy's plan from the step's observation (load_plans)
     planned: np.ndarray | None = None  # (N,) 1 where a plan was made from the step's observation
+    speedup: float = 1.0  # recording seconds per step, in units of 1/fps (load_measured's speed_to)
 
     def __len__(self):
         return len(self.t)
@@ -229,14 +230,31 @@ def load_plans(path, t, arm='left'):
     return plan, planned
 
 
-def load_measured(path, arms=('left',), fps=25.0, lead=1) -> dict[str, Episode]:
+def speedup_to(times_ns, positions, speed_to, speed_max, fps=25.0, moving=0.02):
+    """The factor that brings a recording's median moving TCP speed (m/s, over steps faster than `moving`
+    m/s at `fps`) up to `speed_to`, between 1 (never slowed) and `speed_max`."""
+    t = np.arange(times_ns[0], times_ns[-1], 1e9 / fps)
+    p = np.stack([np.interp(t, times_ns, positions[:, k]) for k in range(3)], axis=1)
+    v = np.linalg.norm(np.diff(p, axis=0), axis=1) * fps
+    v = v[v > moving]
+    return 1.0 if not len(v) else float(np.clip(speed_to / np.median(v), 1.0, speed_max))
+
+
+def load_measured(path, arms=('left',), fps=25.0, lead=1, speed_to=None, speed_max=1.6) -> dict[str, Episode]:
     """Kinesthetic episodes (the arm guided by hand, no teleop goal): per arm, the target at a step is
     the measured TCP `lead` steps later (the last step holds), so even the first action of a chunk is
     where the hand took the arm next, as a teleop goal leads the arm. The trigger is the measured
     gripper opening (0 open .. 1 closed). Steps span the time every arm's TCP is recorded, on one
     clock for all arms. The TCP is interpolated to each step's time. `intervention` is 1 while a person
     drives the arm (cuff squeezed, VR takeover or nudge), as load_episode's, for policy rollouts with
-    corrections; a recording without those topics gets zeros."""
+    corrections; a recording without those topics gets zeros.
+
+    `speed_to` (m/s) plays a slow recording back faster: steps are taken every speedup / fps s of the
+    recording instead of 1 / fps, the speedup bringing the first arm's median moving TCP speed up to
+    `speed_to` (speedup_to, at most `speed_max`, never below 1). Images, state, gripper and intervention
+    are all read at the steps' times and the target stays `lead` steps ahead, so a sped-up recording is
+    consistent, only faster: the policy learns the path at the demonstrations' pace instead of the slower
+    pace of an on-policy rollout steered by hand (DemoSpeedup, Guo et al. 2025; SAIL, 2025)."""
     drivers = {
         'cuff': '/robot/digital_io/{arm}_lower_cuff/state',
         'takeover': '/teleop/{arm}/takeover',
@@ -273,7 +291,13 @@ def load_measured(path, arms=('left',), fps=25.0, lead=1) -> dict[str, Episode]:
 
     start = max(data[(arm, 'tcp')][0][0] for arm in arms)
     end = min(data[(arm, 'tcp')][-1][0] for arm in arms)
-    t = np.arange(start, end + 1, int(1e9 / fps))
+    speedup = 1.0
+    if speed_to is not None:
+        tcp0 = data[(arms[0], 'tcp')]
+        speedup = speedup_to(
+            np.array([x for x, _ in tcp0], dtype=float), np.array([v[0] for _, v in tcp0]), speed_to, speed_max, fps
+        )
+    t = np.arange(start, end + 1, int(1e9 * speedup / fps))
 
     def latest(rows):
         times = np.array([x for x, _ in rows])
@@ -300,7 +324,7 @@ def load_measured(path, arms=('left',), fps=25.0, lead=1) -> dict[str, Episode]:
                 i = np.searchsorted(times, t, side='right') - 1  # the latest state at or before each step
                 on = np.array([v for _, v in rows])
                 intervention = np.maximum(intervention, np.where(i >= 0, on[np.maximum(i, 0)], False).astype(float))
-        out[arm] = Episode(p, q, p[ahead], q[ahead], trigger, t, fps, intervention)
+        out[arm] = Episode(p, q, p[ahead], q[ahead], trigger, t, fps, intervention, speedup=speedup)
     return out
 
 
